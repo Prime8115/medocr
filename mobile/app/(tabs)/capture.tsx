@@ -5,8 +5,8 @@ import * as ImagePicker from 'expo-image-picker';
 import axios from 'axios';
 import { router } from 'expo-router';
 
-// Make sure backend is running on a reachable IP
-const API_URL = 'http://127.0.0.1:8000/v1/documents';
+// Use your computer's local network IP so the physical phone can reach the backend
+const API_URL = 'http://192.168.0.107:8080/v1/documents';
 
 export default function CaptureScreen() {
   const [permission, requestPermission] = useCameraPermissions();

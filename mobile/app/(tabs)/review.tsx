@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, ActivityIndicator, ScrollView, TouchableOpacity } from 'react-native';
 import axios from 'axios';
 
-const API_URL = 'http://127.0.0.1:8000/v1/documents';
+const API_URL = 'http://192.168.0.107:8080/v1/documents';
 
 export default function ReviewScreen() {
   const { docId } = useLocalSearchParams();
