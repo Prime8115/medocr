@@ -2,6 +2,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useState } from 'react';
 import { Button, StyleSheet, Text, TouchableOpacity, View, Image } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import axios from 'axios';
 import { router } from 'expo-router';
 
@@ -11,6 +12,7 @@ const API_URL = 'http://192.168.0.107:8080/v1/documents';
 export default function CaptureScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [photo, setPhoto] = useState<string | null>(null);
+  const [fileType, setFileType] = useState<'image/jpeg' | 'application/pdf'>('image/jpeg');
   const [uploading, setUploading] = useState(false);
   let camera: any = null;
 
@@ -43,6 +45,18 @@ export default function CaptureScreen() {
     });
     if (!result.canceled) {
       setPhoto(result.assets[0].uri);
+      setFileType('image/jpeg');
+    }
+  };
+
+  const pickDocument = async () => {
+    let result = await DocumentPicker.getDocumentAsync({
+      type: 'application/pdf',
+      copyToCacheDirectory: true
+    });
+    if (!result.canceled) {
+      setPhoto(result.assets[0].uri);
+      setFileType('application/pdf');
     }
   };
 
@@ -53,8 +67,8 @@ export default function CaptureScreen() {
       const formData = new FormData();
       formData.append('file', {
         uri: photo,
-        name: 'prescription.jpg',
-        type: 'image/jpeg',
+        name: fileType === 'application/pdf' ? 'document.pdf' : 'prescription.jpg',
+        type: fileType,
       } as any);
 
       const response = await axios.post(API_URL, formData, {
@@ -77,7 +91,13 @@ export default function CaptureScreen() {
   if (photo) {
     return (
       <View style={styles.container}>
-        <Image source={{ uri: photo }} style={styles.preview} />
+        {fileType === 'application/pdf' ? (
+          <View style={[styles.preview, { justifyContent: 'center', alignItems: 'center' }]}>
+            <Text style={{ fontSize: 24, fontWeight: 'bold' }}>📄 PDF Selected</Text>
+          </View>
+        ) : (
+          <Image source={{ uri: photo }} style={styles.preview} />
+        )}
         <View style={styles.buttonContainer}>
           <TouchableOpacity style={styles.button} onPress={() => setPhoto(null)}>
             <Text style={styles.text}>Retake</Text>
@@ -96,6 +116,9 @@ export default function CaptureScreen() {
         <View style={styles.buttonContainer}>
           <TouchableOpacity style={styles.button} onPress={pickImage}>
             <Text style={styles.text}>Gallery</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.button} onPress={pickDocument}>
+            <Text style={styles.text}>PDF</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.button} onPress={takePicture}>
             <Text style={styles.text}>Scan</Text>

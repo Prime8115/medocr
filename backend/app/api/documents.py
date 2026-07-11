@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import uuid
 import time
 from typing import Optional
-from app.services.ocr import process_document_mock
+from app.services.ocr import process_document
 
 router = APIRouter()
 
@@ -34,9 +34,12 @@ async def submit_document(
         "status": "processing"
     }
     
+    file_bytes = await file.read()
+    content_type = file.content_type
+    
     # Background processing
     def process_and_update():
-        result = process_document_mock(document_id, file.filename, doc_type)
+        result = process_document(document_id, file_bytes, content_type, doc_type)
         DOCUMENTS_DB[document_id] = result
 
     background_tasks.add_task(process_and_update)
