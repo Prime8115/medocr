@@ -1,9 +1,34 @@
+# --- Web framework ---
 fastapi==0.111.0
-uvicorn==0.30.1
+uvicorn[standard]==0.30.1
 python-multipart==0.0.9
-google-generativeai>=0.5.4
-python-dotenv>=1.0.1
+
+# --- Config & validation ---
+pydantic-settings>=2.2.0
+email-validator>=2.1.0
+
+# --- Database ---
+sqlalchemy>=2.0.30
+alembic>=1.13.0
+psycopg2-binary>=2.9.9   # PostgreSQL driver (prod)
+
+# --- Auth & security ---
+PyJWT>=2.8.0
+bcrypt>=4.1.0
+slowapi>=0.1.9
+
+# --- OCR ---
+google-genai>=1.0.0
 pillow>=10.3.0
-python-dotenv
-sqlalchemy
-requests
+python-dateutil>=2.9.0
+
+# --- Storage (optional S3) ---
+boto3>=1.34.0
+
+# --- Utilities ---
+python-dotenv>=1.0.1
+requests>=2.31.0
+
+# --- Testing ---
+pytest>=8.0.0
+httpx>=0.27.0

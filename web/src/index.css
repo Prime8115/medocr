@@ -168,3 +168,37 @@ h1, h2, h3 {
 }
 .badge-processing { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
 .badge-approved { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+.badge-pushed { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+.badge-needs_review { background: rgba(99, 102, 241, 0.2); color: var(--primary-color); }
+.badge-failed { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+.badge-queued { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
+
+.data-row { cursor: pointer; }
+.data-row:hover { background: rgba(255,255,255,0.03); }
+
+.field-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border-glass);
+  border-left-width: 4px;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+.field-input:focus { border-color: var(--primary-color); }
+
+button:disabled { opacity: 0.6; cursor: not-allowed; }

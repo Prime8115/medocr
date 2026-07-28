@@ -1,0 +1,11 @@
+# Files NOT uploaded to the EAS cloud build (keeps the upload small).
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.env
+.env.*
+!.env.example
+__tests__/
+coverage/

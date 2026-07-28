@@ -1,163 +1,224 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useState } from 'react';
-import { Button, StyleSheet, Text, TouchableOpacity, View, Image } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import axios from 'axios';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
+import NetInfo from '@react-native-community/netinfo';
 import { router } from 'expo-router';
+import { useRef, useState } from 'react';
+import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-// Use your computer's local network IP so the physical phone can reach the backend
-const API_URL = 'http://192.168.0.107:8080/v1/documents';
+import { uploadDocument } from '@/src/api/documents';
+import { useQueue } from '@/src/queue/QueueContext';
+import { Badge, Button, Screen } from '@/src/theme/components';
+import { colors, font, radius, spacing } from '@/src/theme/tokens';
+import { IMAGE_COMPRESSION, MAX_IMAGE_DIMENSION } from '@/src/config';
+import { t } from '@/src/i18n/strings';
+
+type DocType = 'prescription' | 'invoice' | undefined;
+
+interface Picked {
+  uri: string;
+  type: 'image/jpeg' | 'application/pdf';
+  name: string;
+}
+
+async function compressImage(uri: string): Promise<string> {
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: MAX_IMAGE_DIMENSION } }],
+      { compress: IMAGE_COMPRESSION, format: ImageManipulator.SaveFormat.JPEG },
+    );
+    return result.uri;
+  } catch {
+    return uri; // fall back to original on any failure
+  }
+}
 
 export default function CaptureScreen() {
   const [permission, requestPermission] = useCameraPermissions();
-  const [photo, setPhoto] = useState<string | null>(null);
-  const [fileType, setFileType] = useState<'image/jpeg' | 'application/pdf'>('image/jpeg');
-  const [uploading, setUploading] = useState(false);
-  let camera: any = null;
+  const cameraRef = useRef<CameraView>(null);
+  const [ready, setReady] = useState(false);
+  const [picked, setPicked] = useState<Picked | null>(null);
+  const [docType, setDocType] = useState<DocType>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const { add } = useQueue();
 
-  if (!permission) {
-    // Camera permissions are still loading.
-    return <View />;
-  }
+  if (!permission) return <Screen />;
 
   if (!permission.granted) {
-    // Camera permissions are not granted yet.
     return (
-      <View style={styles.container}>
-        <Text style={{ textAlign: 'center', marginBottom: 10 }}>We need your permission to show the camera</Text>
-        <Button onPress={requestPermission} title="grant permission" />
-      </View>
+      <Screen>
+        <View style={styles.permission}>
+          <Text style={styles.permissionText}>{t('cameraPermission')}</Text>
+          <Button title={t('grantPermission')} onPress={requestPermission} />
+        </View>
+      </Screen>
     );
   }
 
-  const takePicture = async () => {
-    if (camera) {
-      const photoData = await camera.takePictureAsync();
-      setPhoto(photoData.uri);
+  async function takePicture() {
+    if (!cameraRef.current || !ready) return;
+    const photo = await cameraRef.current.takePictureAsync();
+    if (photo?.uri) {
+      const uri = await compressImage(photo.uri);
+      setPicked({ uri, type: 'image/jpeg', name: 'scan.jpg' });
     }
-  };
+  }
 
-  const pickImage = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 1,
-    });
-    if (!result.canceled) {
-      setPhoto(result.assets[0].uri);
-      setFileType('image/jpeg');
+  async function pickImage() {
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    if (!result.canceled && result.assets[0]) {
+      const uri = await compressImage(result.assets[0].uri);
+      setPicked({ uri, type: 'image/jpeg', name: 'upload.jpg' });
     }
-  };
+  }
 
-  const pickDocument = async () => {
-    let result = await DocumentPicker.getDocumentAsync({
-      type: 'application/pdf',
-      copyToCacheDirectory: true
-    });
-    if (!result.canceled) {
-      setPhoto(result.assets[0].uri);
-      setFileType('application/pdf');
+  async function pickPdf() {
+    const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true });
+    if (!result.canceled && result.assets[0]) {
+      setPicked({ uri: result.assets[0].uri, type: 'application/pdf', name: result.assets[0].name || 'document.pdf' });
     }
-  };
+  }
 
-  const uploadPhoto = async () => {
-    if (!photo) return;
-    setUploading(true);
+  async function process() {
+    if (!picked) return;
+    setBusy(true);
+    setNote(null);
     try {
-      const formData = new FormData();
-      formData.append('file', {
-        uri: photo,
-        name: fileType === 'application/pdf' ? 'document.pdf' : 'prescription.jpg',
-        type: fileType,
-      } as any);
-
-      const response = await axios.post(API_URL, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      
-      const documentId = response.data.document_id;
-      alert('Document uploaded: ' + documentId);
-      // Navigate to review screen
-      router.push(`/(tabs)/review?docId=${documentId}`);
-      setPhoto(null);
-    } catch (error) {
-      console.error(error);
-      alert('Upload failed');
+      const net = await NetInfo.fetch();
+      if (net.isConnected) {
+        const id = await uploadDocument({ uri: picked.uri, name: picked.name, type: picked.type }, docType);
+        setPicked(null);
+        router.push(`/review/${id}`);
+      } else {
+        await add({ uri: picked.uri, fileName: picked.name, contentType: picked.type, docType });
+        setPicked(null);
+        setNote(t('offline'));
+        router.push('/(tabs)/history');
+      }
+    } catch {
+      // Network hiccup mid-upload: fall back to the offline queue.
+      await add({ uri: picked.uri, fileName: picked.name, contentType: picked.type, docType });
+      setPicked(null);
+      setNote(t('offline'));
+      router.push('/(tabs)/history');
     } finally {
-      setUploading(false);
+      setBusy(false);
     }
-  };
+  }
 
-  if (photo) {
+  if (picked) {
     return (
-      <View style={styles.container}>
-        {fileType === 'application/pdf' ? (
-          <View style={[styles.preview, { justifyContent: 'center', alignItems: 'center' }]}>
-            <Text style={{ fontSize: 24, fontWeight: 'bold' }}>📄 PDF Selected</Text>
+      <Screen>
+        <ScrollView contentContainerStyle={styles.previewWrap}>
+          {picked.type === 'application/pdf' ? (
+            <View style={styles.pdfBox}>
+              <Text style={styles.pdfText}>📄 PDF selected</Text>
+            </View>
+          ) : (
+            <Image source={{ uri: picked.uri }} style={styles.preview} resizeMode="contain" />
+          )}
+
+          <Text style={styles.chooseLabel}>Document type</Text>
+          <View style={styles.chips}>
+            {(
+              [
+                [undefined, t('autoDetect')],
+                ['prescription', t('prescription')],
+                ['invoice', t('invoice')],
+              ] as [DocType, string][]
+            ).map(([value, label]) => (
+              <TouchableOpacity
+                key={label}
+                onPress={() => setDocType(value)}
+                style={[styles.chip, docType === value && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, docType === value && styles.chipTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
           </View>
-        ) : (
-          <Image source={{ uri: photo }} style={styles.preview} />
-        )}
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity style={styles.button} onPress={() => setPhoto(null)}>
-            <Text style={styles.text}>Retake</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.button} onPress={uploadPhoto} disabled={uploading}>
-            <Text style={styles.text}>{uploading ? 'Uploading...' : 'Process'}</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+
+          <View style={styles.actionRow}>
+            <Button title={t('retake')} variant="secondary" onPress={() => setPicked(null)} style={styles.half} />
+            <Button title={t('process')} onPress={process} loading={busy} style={styles.half} />
+          </View>
+        </ScrollView>
+      </Screen>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <CameraView style={styles.camera} facing="back" ref={(r) => (camera = r)}>
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity style={styles.button} onPress={pickImage}>
-            <Text style={styles.text}>Gallery</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.button} onPress={pickDocument}>
-            <Text style={styles.text}>PDF</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.button} onPress={takePicture}>
-            <Text style={styles.text}>Scan</Text>
-          </TouchableOpacity>
-        </View>
+    <Screen>
+      <CameraView ref={cameraRef} style={styles.camera} facing="back" onCameraReady={() => setReady(true)}>
+        <View style={styles.frame} pointerEvents="none" />
+        <Text style={styles.frameHint}>{t('framingHint')}</Text>
       </CameraView>
-    </View>
+
+      {note ? (
+        <View style={styles.noteBar}>
+          <Badge label={note} tone="warning" />
+        </View>
+      ) : null}
+
+      <View style={styles.controls}>
+        <TouchableOpacity style={styles.sideBtn} onPress={pickImage}>
+          <Text style={styles.sideText}>{t('gallery')}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.shutter} onPress={takePicture} disabled={!ready}>
+          <View style={styles.shutterInner} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.sideBtn} onPress={pickPdf}>
+          <Text style={styles.sideText}>{t('pdf')}</Text>
+        </TouchableOpacity>
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  permission: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.lg },
+  permissionText: { ...font.body, color: colors.text, textAlign: 'center' },
+  camera: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  frame: {
+    width: '82%',
+    height: '62%',
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.85)',
+    borderRadius: radius.lg,
+  },
+  frameHint: { ...font.body, color: colors.white, marginTop: spacing.lg, backgroundColor: 'rgba(0,0,0,0.4)', paddingHorizontal: spacing.md, paddingVertical: spacing.xs, borderRadius: radius.pill },
+  noteBar: { padding: spacing.md, alignItems: 'center', backgroundColor: colors.surface },
+  controls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingVertical: spacing.lg,
+    backgroundColor: colors.surface,
+  },
+  sideBtn: { minWidth: 64, alignItems: 'center', paddingVertical: spacing.md },
+  sideText: { ...font.h3, color: colors.primary },
+  shutter: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    borderWidth: 4,
+    borderColor: colors.primary,
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  camera: {
-    flex: 1,
-  },
-  preview: {
-    flex: 1,
-    width: '100%',
-  },
-  buttonContainer: {
-    flex: 1,
-    flexDirection: 'row',
-    backgroundColor: 'transparent',
-    margin: 64,
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
-  },
-  button: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    padding: 15,
-    borderRadius: 10,
-  },
-  text: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: 'white',
-  },
+  shutterInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary },
+  previewWrap: { padding: spacing.lg },
+  preview: { width: '100%', height: 360, borderRadius: radius.lg, backgroundColor: colors.surfaceAlt },
+  pdfBox: { width: '100%', height: 220, borderRadius: radius.lg, backgroundColor: colors.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
+  pdfText: { ...font.h2, color: colors.textSecondary },
+  chooseLabel: { ...font.label, color: colors.textSecondary, marginTop: spacing.xl, marginBottom: spacing.sm, textTransform: 'uppercase' },
+  chips: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  chip: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  chipActive: { backgroundColor: colors.primaryTint, borderColor: colors.primary },
+  chipText: { ...font.body, color: colors.textSecondary },
+  chipTextActive: { color: colors.primaryDark, fontWeight: '600' },
+  actionRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.xl },
+  half: { flex: 1 },
 });

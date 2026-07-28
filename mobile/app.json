@@ -18,7 +18,11 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -34,10 +38,30 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
+      ],
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "MediScan needs the camera to scan prescriptions and invoices."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "MediScan needs photo access to upload document images."
+        }
       ]
     ],
     "experiments": {
-      "typedRoutes": true
-    }
+      "typedRoutes": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ee472a58-2c19-45b7-aab6-c35d850d39da"
+      }
+    },
+    "owner": "prime1474"
   }
 }

@@ -1,0 +1,5 @@
+{
+  "base_url": "https://api.mediscan.example.com",
+  "output_dir": "C:\\PharmacySoftware\\import",
+  "poll_seconds": 15
+}

@@ -1,63 +1,35 @@
-import { SymbolView } from 'expo-symbols';
 import { Tabs } from 'expo-router';
-import { Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
-import Colors from '@/constants/Colors';
-import { useColorScheme } from '@/components/useColorScheme';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
+import { useQueue } from '@/src/queue/QueueContext';
+import { colors } from '@/src/theme/tokens';
+import { t } from '@/src/i18n/strings';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  const { pending } = useQueue();
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme].tint,
-        headerShown: useClientOnlyValue(false, true),
-      }}>
-      
-      {/* Hide the index redirect route */}
-      <Tabs.Screen
-        name="index"
-        options={{
-          href: null,
-        }}
-      />
-      
-      {/* Hide the default two route */}
-      <Tabs.Screen
-        name="two"
-        options={{
-          href: null,
-        }}
-      />
-
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textMuted,
+        headerStyle: { backgroundColor: colors.surface },
+        headerTitleStyle: { color: colors.text },
+      }}
+    >
       <Tabs.Screen
         name="capture"
         options={{
-          title: 'Scan Prescription',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'camera', android: 'camera', web: 'camera' }}
-              tintColor={color}
-              size={28}
-              fallback={Platform.OS === 'android' ? 'camera' : undefined}
-            />
-          ),
+          title: t('scan'),
+          tabBarIcon: ({ color, size }) => <Ionicons name="camera" color={color} size={size} />,
         }}
       />
-      
       <Tabs.Screen
-        name="review"
+        name="history"
         options={{
-          title: 'Review Data',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'doc.text.magnifyingglass', android: 'text-snippet', web: 'text-snippet' }}
-              tintColor={color}
-              size={28}
-            />
-          ),
+          title: t('history'),
+          tabBarBadge: pending > 0 ? pending : undefined,
+          tabBarIcon: ({ color, size }) => <Ionicons name="documents" color={color} size={size} />,
         }}
       />
     </Tabs>
