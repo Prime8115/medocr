@@ -1,43 +1,68 @@
 name: Build Android APK
 
+# Builds an installable APK entirely on GitHub's runners (no Expo cloud / no build
+# limits) and uploads it as a downloadable artifact.
+#
+# Trigger it two ways:
+#   • Manually: Actions tab → "Build Android APK" → Run workflow → enter your
+#     backend URL (the public URL from your deployment, e.g. https://...onrender.com).
+#   • Automatically: push a version tag like `v1.0.0`.
+#
+# The backend URL is baked into the app at build time. Set a repo variable
+# `API_URL` (Settings → Secrets and variables → Actions → Variables) to provide a
+# default for tag builds.
+
 on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Backend API URL to bake into the APK'
+        required: true
+        default: 'http://10.0.2.2:8080'
   push:
-    branches:
-      - main
-  workflow_dispatch: # Allow manual trigger
+    tags:
+      - 'v*'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_API_URL: ${{ github.event.inputs.api_url || vars.API_URL || 'http://10.0.2.2:8080' }}
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Install dependencies
         working-directory: ./mobile
-        run: npm install
+        run: npm ci
 
-      - name: Run Expo Prebuild
+      - name: Show baked API URL
+        run: echo "Building APK against $EXPO_PUBLIC_API_URL"
+
+      - name: Expo prebuild (Android)
         working-directory: ./mobile
         run: npx expo prebuild --platform android --clean
 
-      - name: Setup Java
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Build APK (Release)
+      - name: Build release APK
         working-directory: ./mobile/android
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --no-daemon
 
-      - name: Upload APK Artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mediscan-app-release
+          name: mediscan-apk
           path: mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
