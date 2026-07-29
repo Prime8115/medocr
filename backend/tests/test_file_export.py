@@ -1,14 +1,10 @@
-"""File-export connector: CSV/JSON rendering and folder writing."""
+"""File-export connector: mapping-driven CSV/JSON rendering and folder writing."""
 import csv
 import io
 import json
 
 from app.services.connectors.base import SUCCESS
-from app.services.connectors.file_export import (
-    FileExportConnector,
-    render_csv,
-    render_json,
-)
+from app.services.connectors.file_export import FileExportConnector
 
 PRESCRIPTION_PAYLOAD = {
     "payload_version": "1.0",
@@ -37,39 +33,42 @@ INVOICE_PAYLOAD = {
 }
 
 
-def test_render_csv_prescription():
-    out = render_csv(PRESCRIPTION_PAYLOAD)
-    rows = list(csv.DictReader(io.StringIO(out)))
-    assert len(rows) == 1
-    assert rows[0]["patient"] == "Ramesh"
-    assert rows[0]["medication"] == "Paracetamol"
-    assert rows[0]["strength"] == "500 mg"
-
-
-def test_render_csv_invoice():
-    rows = list(csv.DictReader(io.StringIO(render_csv(INVOICE_PAYLOAD))))
-    assert rows[0]["description"] == "Paracetamol"
-    assert rows[0]["batch_no"] == "B1"
-    assert rows[0]["quantity"] == "100"
-
-
-def test_render_json_roundtrips():
-    parsed = json.loads(render_json(PRESCRIPTION_PAYLOAD))
-    assert parsed["document_id"] == "doc_rx1"
-
-
-def test_file_export_writes_files(tmp_path):
-    conn = FileExportConnector({"output_dir": str(tmp_path), "formats": ["csv", "json"]})
+def test_default_csv_prescription_uses_generic_profile():
+    conn = FileExportConnector({"format": "csv"})
     result = conn.deliver(PRESCRIPTION_PAYLOAD)
     assert result.status == SUCCESS
-    written = {p.name for p in tmp_path.iterdir()}
-    assert "doc_rx1.csv" in written
-    assert "doc_rx1.json" in written
+    rows = list(csv.DictReader(io.StringIO(result.detail["artifacts"]["csv"])))
+    assert rows[0]["Patient"] == "Ramesh"
+    assert rows[0]["Medicine"] == "Paracetamol"
+    assert rows[0]["Strength"] == "500 mg"
 
 
-def test_file_export_without_dir_still_generates(tmp_path):
-    conn = FileExportConnector({"formats": ["csv"]})
+def test_default_csv_invoice():
+    conn = FileExportConnector({"format": "csv"})
+    rows = list(csv.DictReader(io.StringIO(conn.deliver(INVOICE_PAYLOAD).detail["artifacts"]["csv"])))
+    assert rows[0]["Item"] == "Paracetamol"
+    assert rows[0]["Batch"] == "B1"
+    assert rows[0]["Qty"] == "100"
+
+
+def test_json_format_is_mapped():
+    conn = FileExportConnector({"format": "json"})
+    parsed = json.loads(conn.deliver(INVOICE_PAYLOAD).detail["artifacts"]["json"])
+    assert parsed[0]["Item"] == "Paracetamol"
+
+
+def test_writes_files_to_folder(tmp_path):
+    conn = FileExportConnector({"format": "both", "output_dir": str(tmp_path)})
     result = conn.deliver(PRESCRIPTION_PAYLOAD)
     assert result.status == SUCCESS
-    assert "csv" in result.detail["formats"]
+    names = {p.name for p in tmp_path.iterdir()}
+    assert "doc_rx1.csv" in names
+    assert "doc_rx1.json" in names
+
+
+def test_without_dir_still_generates():
+    conn = FileExportConnector({"format": "csv"})
+    result = conn.deliver(PRESCRIPTION_PAYLOAD)
+    assert result.status == SUCCESS
     assert result.detail["written"] == []
+    assert "csv" in result.detail["formats"]
