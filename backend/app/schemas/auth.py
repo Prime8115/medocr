@@ -19,3 +19,8 @@ class UserOut(BaseModel):
     shop_id: str
 
     model_config = {"from_attributes": True}
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)

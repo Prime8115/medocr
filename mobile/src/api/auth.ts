@@ -31,3 +31,10 @@ export async function me(): Promise<User> {
   const res = await api.get('/v1/auth/me');
   return res.data as User;
 }
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await api.post('/v1/auth/change-password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}

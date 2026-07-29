@@ -1,39 +1,63 @@
 import { useEffect, useState } from 'react';
-import { Link2, Plus, Trash2, Zap } from 'lucide-react';
+import { KeyRound, Link2, Plus, Trash2, Zap } from 'lucide-react';
 
 import {
   createConnector,
   deleteConnector,
+  getConnectorOptions,
   listConnectors,
   testConnector,
   type Connector,
+  type ConnectorOptions,
   type ConnectorType,
 } from '../api/connectors';
+import { changePassword } from '../api/auth';
 
 const TYPE_LABEL: Record<ConnectorType, string> = {
-  webhook: 'Webhook (HTTP push)',
-  file_export: 'File export (CSV/JSON)',
+  webhook: 'Webhook (HTTP / REST API)',
+  file_export: 'File export (CSV / JSON / Tally)',
   desktop_agent: 'Desktop agent (Windows)',
+};
+
+const PROFILE_LABEL: Record<string, string> = {
+  generic: 'Generic',
+  marg: 'Marg ERP',
+  vyapar: 'Vyapar',
+  tally: 'Tally',
+};
+
+const FORMAT_LABEL: Record<string, string> = {
+  csv: 'CSV', json: 'JSON', tally_xml: 'Tally XML', both: 'CSV + JSON',
 };
 
 export default function Settings() {
   const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [options, setOptions] = useState<ConnectorOptions | null>(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [testResult, setTestResult] = useState<Record<string, string>>({});
 
-  // New connector form state
+  // New connector form
   const [type, setType] = useState<ConnectorType>('webhook');
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [secret, setSecret] = useState('');
   const [outputDir, setOutputDir] = useState('');
+  const [format, setFormat] = useState('csv');
+  const [profile, setProfile] = useState('generic');
   const [saving, setSaving] = useState(false);
+
+  // Change password
+  const [curPw, setCurPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [pwMsg, setPwMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   async function load() {
     setLoading(true);
     try {
-      setConnectors(await listConnectors());
+      const [conns, opts] = await Promise.all([listConnectors(), getConnectorOptions()]);
+      setConnectors(conns);
+      setOptions(opts);
     } finally {
       setLoading(false);
     }
@@ -48,14 +72,17 @@ export default function Settings() {
     try {
       const config: Record<string, unknown> = {};
       if (type === 'webhook') config.url = url;
-      if (type === 'file_export') config.output_dir = outputDir || undefined;
+      if (type === 'file_export') {
+        if (outputDir) config.output_dir = outputDir;
+        config.format = format;
+        config.profile = profile;
+      }
       await createConnector({ type, name, config, secret: type === 'webhook' ? secret || undefined : undefined });
       setShowForm(false);
-      setName('');
-      setUrl('');
-      setSecret('');
-      setOutputDir('');
+      setName(''); setUrl(''); setSecret(''); setOutputDir('');
       await load();
+    } catch {
+      alert('Could not create connector (owner role required).');
     } finally {
       setSaving(false);
     }
@@ -73,6 +100,19 @@ export default function Settings() {
       setTestResult((p) => ({ ...p, [id]: `${r.ok ? '✓' : '✗'} ${r.status}${r.response_body ? ` — ${r.response_body}` : ''}` }));
     } catch {
       setTestResult((p) => ({ ...p, [id]: '✗ test failed' }));
+    }
+  }
+
+  async function submitPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setPwMsg(null);
+    try {
+      await changePassword(curPw, newPw);
+      setPwMsg({ text: 'Password changed.', ok: true });
+      setCurPw(''); setNewPw('');
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setPwMsg({ text: typeof detail === 'string' ? detail : 'Could not change password', ok: false });
     }
   }
 
@@ -106,21 +146,35 @@ export default function Settings() {
 
           {type === 'webhook' && (
             <>
-              <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Endpoint URL</label>
+              <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Endpoint URL (REST)</label>
               <input className="input-field" style={{ marginBottom: 16 }} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" required />
               <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Signing secret (optional)</label>
               <input className="input-field" style={{ marginBottom: 16 }} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="HMAC secret" />
             </>
           )}
+
           {type === 'file_export' && (
             <>
+              <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Software profile</label>
+              <select className="input-field" style={{ marginBottom: 16 }} value={profile} onChange={(e) => setProfile(e.target.value)}>
+                {(options?.profiles ?? ['generic']).map((p) => (
+                  <option key={p} value={p}>{PROFILE_LABEL[p] ?? p}</option>
+                ))}
+              </select>
+              <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Format</label>
+              <select className="input-field" style={{ marginBottom: 16 }} value={format} onChange={(e) => setFormat(e.target.value)}>
+                {(options?.formats ?? ['csv']).map((f) => (
+                  <option key={f} value={f}>{FORMAT_LABEL[f] ?? f}</option>
+                ))}
+              </select>
               <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Output folder (optional)</label>
               <input className="input-field" style={{ marginBottom: 16 }} value={outputDir} onChange={(e) => setOutputDir(e.target.value)} placeholder="C:\PharmacySoftware\import" />
             </>
           )}
+
           {type === 'desktop_agent' && (
             <div className="text-muted" style={{ marginBottom: 16 }}>
-              After creating, a one-time pairing code will be shown to pair the Windows agent.
+              After creating, a one-time pairing code is shown to pair the Windows agent.
             </div>
           )}
 
@@ -138,7 +192,11 @@ export default function Settings() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
                 <h3 style={{ marginBottom: 4 }}>{c.name}</h3>
-                <div className="text-muted">{TYPE_LABEL[c.type]}{!c.enabled && ' · disabled'}</div>
+                <div className="text-muted">
+                  {TYPE_LABEL[c.type]}{!c.enabled && ' · disabled'}
+                  {c.type === 'file_export' && c.config.profile ? ` · ${PROFILE_LABEL[String(c.config.profile)] ?? c.config.profile}` : ''}
+                  {c.type === 'file_export' && c.config.format ? ` · ${FORMAT_LABEL[String(c.config.format)] ?? c.config.format}` : ''}
+                </div>
                 {c.type === 'webhook' && <div className="text-muted" style={{ marginTop: 4 }}>{String(c.config.url ?? '')}</div>}
                 {c.type === 'desktop_agent' && c.config.pairing_code != null && (
                   <div style={{ marginTop: 8 }}>
@@ -161,6 +219,19 @@ export default function Settings() {
           </div>
         ))
       )}
+
+      {/* Change password */}
+      <form onSubmit={submitPassword} className="glass-card" style={{ marginTop: 32 }}>
+        <h3 style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
+          <KeyRound size={18} color="var(--primary-color)" /> Change password
+        </h3>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <input className="input-field" style={{ flex: 1, minWidth: 200 }} type="password" placeholder="Current password" value={curPw} onChange={(e) => setCurPw(e.target.value)} autoComplete="current-password" required />
+          <input className="input-field" style={{ flex: 1, minWidth: 200 }} type="password" placeholder="New password (min 8)" value={newPw} onChange={(e) => setNewPw(e.target.value)} autoComplete="new-password" required />
+          <button className="btn-primary" type="submit">Update</button>
+        </div>
+        {pwMsg && <div style={{ marginTop: 12, color: pwMsg.ok ? 'var(--success)' : 'var(--danger)' }}>{pwMsg.text}</div>}
+      </form>
     </div>
   );
 }

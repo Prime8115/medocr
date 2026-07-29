@@ -47,3 +47,34 @@ def test_short_password_rejected(client):
         json={"email": "x@shop.com", "password": "short", "shop_name": "S"},
     )
     assert resp.status_code == 422
+
+
+def test_change_password_flow(client):
+    headers = register_and_login(client, email="cp@shop.com", password="password123")
+    # Wrong current password rejected.
+    bad = client.post(
+        "/v1/auth/change-password",
+        json={"current_password": "wrong", "new_password": "newpass456"},
+        headers=headers,
+    )
+    assert bad.status_code == 400
+    # Correct change succeeds.
+    ok = client.post(
+        "/v1/auth/change-password",
+        json={"current_password": "password123", "new_password": "newpass456"},
+        headers=headers,
+    )
+    assert ok.status_code == 200
+    # Old password no longer works; new one does.
+    assert client.post("/v1/auth/login", data={"username": "cp@shop.com", "password": "password123"}).status_code == 401
+    assert client.post("/v1/auth/login", data={"username": "cp@shop.com", "password": "newpass456"}).status_code == 200
+
+
+def test_connector_options_endpoint(client):
+    headers = register_and_login(client, email="opt@shop.com")
+    resp = client.get("/v1/connectors/options", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "webhook" in body["types"]
+    assert "marg" in body["profiles"]
+    assert "csv" in body["formats"]

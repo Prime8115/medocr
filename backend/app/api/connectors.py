@@ -17,8 +17,19 @@ from app.schemas.connector import (
     DeliveryOut,
 )
 from app.services.connectors.registry import CONNECTOR_TYPES, build_connector
+from app.services.connectors import mapping
 
 router = APIRouter()
+
+
+@router.get("/options")
+def connector_options(user: User = Depends(get_current_user)):
+    """Available connector types, export formats, and mapping profiles for the UI."""
+    return {
+        "types": list(CONNECTOR_TYPES),
+        "formats": mapping.AVAILABLE_FORMATS,
+        "profiles": mapping.AVAILABLE_PROFILES,
+    }
 
 
 def _to_out(model: Connector) -> ConnectorOut:

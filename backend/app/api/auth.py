@@ -9,7 +9,7 @@ from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.shop import Shop
 from app.models.user import User
-from app.schemas.auth import Token, UserCreate, UserOut
+from app.schemas.auth import PasswordChange, Token, UserCreate, UserOut
 
 router = APIRouter()
 
@@ -51,3 +51,17 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.post("/change-password")
+def change_password(
+    body: PasswordChange,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if not verify_password(body.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    user.hashed_password = hash_password(body.new_password)
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="user.password_changed", target=user.id))
+    db.commit()
+    return {"status": "ok", "message": "Password changed"}

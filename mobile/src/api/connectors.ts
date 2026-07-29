@@ -19,6 +19,17 @@ export interface ConnectorCreate {
   secret?: string;
 }
 
+export interface ConnectorOptions {
+  types: ConnectorType[];
+  formats: string[];
+  profiles: string[];
+}
+
+export async function getConnectorOptions(): Promise<ConnectorOptions> {
+  const res = await api.get('/v1/connectors/options');
+  return res.data as ConnectorOptions;
+}
+
 export async function listConnectors(): Promise<Connector[]> {
   const res = await api.get('/v1/connectors/');
   return res.data as Connector[];

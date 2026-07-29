@@ -1,12 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { login as apiLogin, me as apiMe, type User } from '../api/auth';
+import { login as apiLogin, me as apiMe, register as apiRegister, type User } from '../api/auth';
 import { getToken, setToken } from '../api/client';
 
 interface AuthState {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string, shopName: string) => Promise<void>;
   signOut: () => void;
 }
 
@@ -34,6 +35,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       async signIn(email, password) {
+        setToken(await apiLogin(email, password));
+        setUser(await apiMe());
+      },
+      async signUp(email, password, shopName) {
+        await apiRegister(email, password, shopName);
         setToken(await apiLogin(email, password));
         setUser(await apiMe());
       },

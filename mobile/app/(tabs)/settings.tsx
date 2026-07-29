@@ -5,12 +5,22 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import { useAuth } from '@/src/auth/AuthContext';
 import {
   Connector,
+  ConnectorOptions,
   ConnectorType,
   createConnector,
   deleteConnector,
+  getConnectorOptions,
   listConnectors,
   testConnector,
 } from '@/src/api/connectors';
+import { changePassword } from '@/src/api/auth';
+
+const PROFILE_LABEL: Record<string, string> = {
+  generic: 'Generic', marg: 'Marg ERP', vyapar: 'Vyapar', tally: 'Tally',
+};
+const FORMAT_LABEL: Record<string, string> = {
+  csv: 'CSV', json: 'JSON', tally_xml: 'Tally XML', both: 'CSV + JSON',
+};
 import { Badge, Button, Card, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
 
@@ -38,20 +48,43 @@ export default function SettingsScreen() {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [secret, setSecret] = useState('');
+  const [profile, setProfile] = useState('generic');
+  const [format, setFormat] = useState('csv');
+  const [options, setOptions] = useState<ConnectorOptions | null>(null);
   const [saving, setSaving] = useState(false);
   const [testMsg, setTestMsg] = useState<Record<string, string>>({});
+
+  // change password
+  const [curPw, setCurPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [pwMsg, setPwMsg] = useState<string | null>(null);
 
   const isOwner = user?.role === 'owner';
 
   const load = useCallback(async () => {
     try {
-      setConnectors(await listConnectors());
+      const [conns, opts] = await Promise.all([listConnectors(), getConnectorOptions().catch(() => null)]);
+      setConnectors(conns);
+      if (opts) setOptions(opts);
     } catch {
       /* ignore */
     } finally {
       setLoading(false);
     }
   }, []);
+
+  async function submitPassword() {
+    setPwMsg(null);
+    try {
+      await changePassword(curPw, newPw);
+      setPwMsg('✓ Password changed');
+      setCurPw('');
+      setNewPw('');
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setPwMsg('✗ ' + (typeof detail === 'string' ? detail : 'Could not change password'));
+    }
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -69,6 +102,10 @@ export default function SettingsScreen() {
     try {
       const config: Record<string, unknown> = {};
       if (type === 'webhook') config.url = url.trim();
+      if (type === 'file_export') {
+        config.profile = profile;
+        config.format = format;
+      }
       await createConnector({ type, name: name.trim(), config, secret: type === 'webhook' ? secret.trim() || undefined : undefined });
       setShowForm(false);
       setName('');
@@ -202,6 +239,27 @@ export default function SettingsScreen() {
                   <TextInput style={styles.input} value={secret} onChangeText={setSecret} placeholder="Shared secret" placeholderTextColor={colors.textMuted} />
                 </>
               )}
+              {type === 'file_export' && (
+                <>
+                  <Text style={styles.fieldLabel}>Your software</Text>
+                  <View style={styles.typeChips}>
+                    {(options?.profiles ?? ['generic']).map((p) => (
+                      <TouchableOpacity key={p} onPress={() => setProfile(p)} style={[styles.typeChip, profile === p && styles.typeChipActive]}>
+                        <Text style={[styles.typeChipText, profile === p && styles.typeChipTextActive]}>{PROFILE_LABEL[p] ?? p}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <Text style={styles.fieldLabel}>Format</Text>
+                  <View style={styles.typeChips}>
+                    {(options?.formats ?? ['csv']).map((f) => (
+                      <TouchableOpacity key={f} onPress={() => setFormat(f)} style={[styles.typeChip, format === f && styles.typeChipActive]}>
+                        <Text style={[styles.typeChipText, format === f && styles.typeChipTextActive]}>{FORMAT_LABEL[f] ?? f}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+
               {type === 'desktop_agent' && (
                 <Text style={styles.mutedNote}>After creating, a pairing code appears here to link your shop PC's helper app.</Text>
               )}
@@ -209,6 +267,29 @@ export default function SettingsScreen() {
               <Button title={saving ? 'Saving…' : 'Create connection'} onPress={add} loading={saving} style={{ marginTop: spacing.md }} />
             </View>
           )}
+        </Card>
+
+        {/* Change password */}
+        <Card>
+          <SectionTitle>Change password</SectionTitle>
+          <TextInput
+            style={[styles.input, { marginTop: spacing.sm }]}
+            value={curPw}
+            onChangeText={setCurPw}
+            placeholder="Current password"
+            placeholderTextColor={colors.textMuted}
+            secureTextEntry
+          />
+          <TextInput
+            style={[styles.input, { marginTop: spacing.sm }]}
+            value={newPw}
+            onChangeText={setNewPw}
+            placeholder="New password (min 8)"
+            placeholderTextColor={colors.textMuted}
+            secureTextEntry
+          />
+          {pwMsg && <Text style={styles.testMsg}>{pwMsg}</Text>}
+          <Button title="Update password" onPress={submitPassword} style={{ marginTop: spacing.md }} />
         </Card>
       </ScrollView>
     </Screen>
