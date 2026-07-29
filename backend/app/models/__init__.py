@@ -6,5 +6,8 @@ from app.models.document import Document
 from app.models.connector import Connector
 from app.models.push_delivery import PushDelivery
 from app.models.audit_log import AuditLog
+from app.models.inventory import InventoryItem
 
-__all__ = ["Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog"]
+__all__ = [
+    "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "InventoryItem",
+]

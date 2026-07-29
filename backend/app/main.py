@@ -7,7 +7,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app import models  # noqa: F401  (populate SQLAlchemy metadata)
-from app.api import agent, auth, connectors, documents
+from app.api import agent, auth, connectors, documents, inventory
 from app.config import settings
 
 limiter = Limiter(
@@ -49,6 +49,7 @@ async def limit_request_body(request: Request, call_next):
 app.include_router(auth.router, prefix="/v1/auth", tags=["Auth"])
 app.include_router(documents.router, prefix="/v1/documents", tags=["Documents"])
 app.include_router(connectors.router, prefix="/v1/connectors", tags=["Connectors"])
+app.include_router(inventory.router, prefix="/v1/inventory", tags=["Inventory"])
 app.include_router(agent.router, prefix="/v1/agent", tags=["Desktop Agent"])
 
 
