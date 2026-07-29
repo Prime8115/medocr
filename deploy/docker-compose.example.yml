@@ -1,0 +1,36 @@
+# MediScan production stack (backend + Postgres), isolated on one port.
+# Copy to docker-compose.yml on the server, create .env (see .env.example),
+# then:  docker compose up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mediscan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # set in shell or a db.env
+      POSTGRES_DB: mediscan
+    volumes:
+      - mediscan_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediscan"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: ./.env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8090:8080"   # bound to localhost; nginx terminates TLS in front
+    volumes:
+      - mediscan_storage:/app/storage
+    restart: unless-stopped
+
+volumes:
+  mediscan_pgdata:
+  mediscan_storage:
