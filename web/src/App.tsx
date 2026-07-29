@@ -63,7 +63,7 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
-      <Router basename={import.meta.env.BASE_URL}>
+      <Router basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
         <Gate />
       </Router>
     </AuthProvider>
