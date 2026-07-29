@@ -35,3 +35,10 @@ class ImportResult(BaseModel):
 class MatchQuery(BaseModel):
     name: str
     limit: int = 3
+
+
+class InventorySync(BaseModel):
+    url: str
+    auth_header: Optional[str] = None       # e.g. "Bearer xyz" or "ApiKey abc"
+    items_path: Optional[str] = None        # dotted path to the array, e.g. "data.items"
+    mapping: Optional[dict] = None          # our_field -> their_key

@@ -16,7 +16,9 @@ from app.models.audit_log import AuditLog
 from app.models.document import Document
 from app.models.inventory import InventoryItem
 from app.models.user import User
-from app.schemas.inventory import ImportResult, InventoryItemOut, MatchQuery
+from app.models.shop import Shop
+from app.schemas.inventory import ImportResult, InventoryItemOut, InventorySync, MatchQuery
+from app.services.inventory.ingest import ingest_records, pull_from_api
 from app.services.inventory.matching import (
     alternatives_for,
     match_document_items,
@@ -75,32 +77,54 @@ async def import_inventory(
     if "name" not in header_map.values():
         raise HTTPException(status_code=400, detail="CSV must have a name/item/medicine column.")
 
-    if replace:
-        db.query(InventoryItem).filter(InventoryItem.shop_id == user.shop_id).delete()
-
-    count = 0
-    for row in reader:
-        rec = {field: row.get(col) for col, field in header_map.items()}
-        name = (rec.get("name") or "").strip()
-        if not name:
-            continue
-        db.add(InventoryItem(
-            shop_id=user.shop_id,
-            name=name,
-            normalized_name=normalize(name),
-            composition=(rec.get("composition") or None),
-            sku=(rec.get("sku") or None),
-            strength=(rec.get("strength") or None),
-            pack=(rec.get("pack") or None),
-            mrp=_to_float(rec.get("mrp")),
-            stock_qty=_to_float(rec.get("stock_qty")) or 0,
-        ))
-        count += 1
-
+    records = [{field: row.get(col) for col, field in header_map.items()} for row in reader]
+    count = ingest_records(db, user.shop_id, records, replace=replace)
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="inventory.imported",
-                    target=user.shop_id, detail={"count": count, "replace": replace}))
+                    target=user.shop_id, detail={"count": count, "source": "csv"}))
     db.commit()
     return ImportResult(imported=count, replaced=replace)
+
+
+@router.post("/sync", response_model=ImportResult)
+def sync_inventory(
+    body: InventorySync, db: Session = Depends(get_db), user: User = Depends(require_owner)
+):
+    """Pull the catalog from the shop's software / middleware REST endpoint and
+    import it. The source config is saved so it can be re-synced later."""
+    try:
+        records = pull_from_api(
+            url=body.url,
+            auth_header=body.auth_header,
+            items_path=body.items_path,
+            mapping=body.mapping,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Sync failed: {exc}")
+
+    count = ingest_records(db, user.shop_id, records, replace=True)
+
+    # Persist source config (minus any secret header value) for re-sync.
+    shop = db.get(Shop, user.shop_id)
+    if shop is not None:
+        settings = dict(shop.settings or {})
+        settings["inventory_source"] = {
+            "url": body.url,
+            "items_path": body.items_path,
+            "mapping": body.mapping,
+            "has_auth": bool(body.auth_header),
+        }
+        shop.settings = settings
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="inventory.synced",
+                    target=user.shop_id, detail={"count": count, "source": "api"}))
+    db.commit()
+    return ImportResult(imported=count, replaced=True)
+
+
+@router.get("/source")
+def inventory_source(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The saved API sync source config for this shop, if any."""
+    shop = db.get(Shop, user.shop_id)
+    return (shop.settings or {}).get("inventory_source") if shop else None
 
 
 @router.get("/", response_model=list[InventoryItemOut])
