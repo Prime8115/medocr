@@ -14,6 +14,7 @@ import {
   testConnector,
 } from '@/src/api/connectors';
 import { changePassword } from '@/src/api/auth';
+import { inventoryCount, syncInventory } from '@/src/api/inventory';
 
 const PROFILE_LABEL: Record<string, string> = {
   generic: 'Generic', marg: 'Marg ERP', vyapar: 'Vyapar', tally: 'Tally',
@@ -59,13 +60,43 @@ export default function SettingsScreen() {
   const [newPw, setNewPw] = useState('');
   const [pwMsg, setPwMsg] = useState<string | null>(null);
 
+  // inventory
+  const [invCount, setInvCount] = useState<number | null>(null);
+  const [invUrl, setInvUrl] = useState('');
+  const [invMsg, setInvMsg] = useState<string | null>(null);
+  const [invSyncing, setInvSyncing] = useState(false);
+
   const isOwner = user?.role === 'owner';
+
+  async function syncNow() {
+    if (!invUrl.trim()) {
+      Alert.alert('Enter your inventory API URL');
+      return;
+    }
+    setInvSyncing(true);
+    setInvMsg(null);
+    try {
+      const r = await syncInventory(invUrl.trim());
+      setInvMsg(`✓ Synced ${r.imported} items`);
+      setInvCount(r.imported);
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setInvMsg('✗ ' + (typeof detail === 'string' ? detail : 'Sync failed'));
+    } finally {
+      setInvSyncing(false);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
-      const [conns, opts] = await Promise.all([listConnectors(), getConnectorOptions().catch(() => null)]);
+      const [conns, opts, inv] = await Promise.all([
+        listConnectors(),
+        getConnectorOptions().catch(() => null),
+        inventoryCount().catch(() => null),
+      ]);
       setConnectors(conns);
       if (opts) setOptions(opts);
+      if (inv) setInvCount(inv.count);
     } catch {
       /* ignore */
     } finally {
@@ -266,6 +297,41 @@ export default function SettingsScreen() {
 
               <Button title={saving ? 'Saving…' : 'Create connection'} onPress={add} loading={saving} style={{ marginTop: spacing.md }} />
             </View>
+          )}
+        </Card>
+
+        {/* Inventory */}
+        <Card>
+          <SectionTitle>Inventory</SectionTitle>
+          <Text style={styles.help}>
+            Connect your stock so scanned medicines are matched to your inventory and substitutes
+            in stock are suggested. Leave it unconnected to use the app normally.
+          </Text>
+          <View style={{ flexDirection: 'row', marginTop: spacing.xs, marginBottom: spacing.sm }}>
+            <Badge
+              label={invCount && invCount > 0 ? `${invCount} items connected` : 'Not connected'}
+              tone={invCount && invCount > 0 ? 'success' : 'neutral'}
+            />
+          </View>
+          {isOwner ? (
+            <>
+              <Text style={styles.fieldLabel}>Sync from your software's API</Text>
+              <TextInput
+                style={styles.input}
+                value={invUrl}
+                onChangeText={setInvUrl}
+                autoCapitalize="none"
+                placeholder="https://your-software/api/items"
+                placeholderTextColor={colors.textMuted}
+              />
+              {invMsg && <Text style={styles.testMsg}>{invMsg}</Text>}
+              <Button title={invSyncing ? 'Syncing…' : 'Sync now'} onPress={syncNow} loading={invSyncing} style={{ marginTop: spacing.md }} />
+              <Text style={[styles.mutedNote, { marginTop: spacing.sm }]}>
+                Tip: CSV upload of stock is available in the web Admin console.
+              </Text>
+            </>
+          ) : (
+            <Text style={styles.mutedNote}>Only the shop owner can manage inventory.</Text>
           )}
         </Card>
 

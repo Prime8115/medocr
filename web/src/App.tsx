@@ -1,10 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { Settings as SettingsIcon, FileText, LogOut } from 'lucide-react';
+import { Settings as SettingsIcon, FileText, LogOut, Boxes } from 'lucide-react';
 import './index.css';
 
 import ReviewQueue from './components/ReviewQueue';
 import DocumentDetail from './components/DocumentDetail';
 import Settings from './components/Settings';
+import Inventory from './components/Inventory';
 import Login from './components/Login';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 
@@ -23,6 +24,11 @@ function Shell() {
         <NavLink to="/queue" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <FileText size={18} /> Review Queue
+          </div>
+        </NavLink>
+        <NavLink to="/inventory" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Boxes size={18} /> Inventory
           </div>
         </NavLink>
         <NavLink to="/settings" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
@@ -46,6 +52,7 @@ function Shell() {
           <Route path="/" element={<Navigate to="/queue" replace />} />
           <Route path="/queue" element={<ReviewQueue />} />
           <Route path="/documents/:id" element={<DocumentDetail />} />
+          <Route path="/inventory" element={<Inventory />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/queue" replace />} />
         </Routes>

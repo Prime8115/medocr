@@ -11,6 +11,7 @@ import {
   type ExtractionPayload,
 } from '../api/documents';
 import { buildSections, confidencePercent, getLeaf, isLowConfidence, setLeafValue } from '../lib/payload';
+import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 
 type Fields = Record<string, unknown>;
 
@@ -29,11 +30,18 @@ export default function DocumentDetail() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
+  const [inv, setInv] = useState<DocMatch | null>(null);
 
   const apply = useCallback((d: DocumentDto) => {
     setDoc(d);
     if (d.payload?.fields) setFields(d.payload.fields);
   }, []);
+
+  useEffect(() => {
+    if (doc && ['needs_review', 'approved', 'pushed'].includes(doc.status)) {
+      matchDocument(id).then(setInv).catch(() => setInv(null));
+    }
+  }, [doc, id]);
 
   useEffect(() => {
     (async () => {
@@ -118,32 +126,68 @@ export default function DocumentDetail() {
         </div>
       )}
 
-      {sections.map((section) => (
-        <div key={section.title} className="glass-card" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginBottom: 16 }}>{section.title}</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
-            {section.fields.map((spec) => {
-              const leaf = getLeaf(fields, spec.path);
-              const conf = leaf?.confidence ?? null;
-              return (
-                <div key={spec.path}>
-                  <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>
-                    {spec.label} {conf != null && <span style={{ opacity: 0.6 }}>· {confidencePercent(conf)}</span>}
-                  </label>
-                  <input
-                    className="field-input"
-                    style={{ borderLeftColor: accentFor(conf) }}
-                    value={leaf?.value ?? ''}
-                    disabled={!editable}
-                    onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
-                  />
-                  {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
-                </div>
-              );
-            })}
+      {sections.map((section) => {
+        const idxMatch = section.title.match(/#(\d+)$/);
+        const mi: MatchItem | undefined =
+          inv?.connected && idxMatch ? inv.items[Number(idxMatch[1]) - 1] : undefined;
+        return (
+          <div key={section.title} className="glass-card" style={{ marginBottom: 16 }}>
+            <h3 style={{ marginBottom: 16 }}>{section.title}</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+              {section.fields.map((spec) => {
+                const leaf = getLeaf(fields, spec.path);
+                const conf = leaf?.confidence ?? null;
+                return (
+                  <div key={spec.path}>
+                    <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>
+                      {spec.label} {conf != null && <span style={{ opacity: 0.6 }}>· {confidencePercent(conf)}</span>}
+                    </label>
+                    <input
+                      className="field-input"
+                      style={{ borderLeftColor: accentFor(conf) }}
+                      value={leaf?.value ?? ''}
+                      disabled={!editable}
+                      onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
+                    />
+                    {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
+                  </div>
+                );
+              })}
+            </div>
+
+            {mi && (
+              <div style={{ marginTop: 16, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
+                {mi.candidates.length > 0 ? (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span className="text-muted" style={{ fontSize: 12, textTransform: 'uppercase' }}>In your inventory</span>
+                      <span className={`badge ${mi.best_score >= 85 ? 'badge-approved' : 'badge-processing'}`}>
+                        {Math.round(mi.best_score)}% match
+                      </span>
+                    </div>
+                    {mi.candidates.slice(0, 3).map((c) => (
+                      <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                        <span>{c.name}{c.composition ? <span className="text-muted"> · {c.composition}</span> : null}</span>
+                        <span className="text-muted">
+                          {c.stock_qty != null ? `stock ${c.stock_qty}` : ''}{c.mrp != null ? `  ₹${c.mrp}` : ''} · {Math.round(c.score)}%
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <span className="text-muted" style={{ fontSize: 13 }}>No inventory match — possibly a new item.</span>
+                )}
+              </div>
+            )}
           </div>
+        );
+      })}
+
+      {inv?.connected && (
+        <div className="text-muted" style={{ marginBottom: 16, fontSize: 13 }}>
+          Inventory reconciliation: {inv.matched}/{inv.total} items matched.
         </div>
-      ))}
+      )}
 
       {toast && (
         <div style={{ margin: '12px 0', color: toast.ok ? 'var(--success)' : 'var(--danger)' }}>{toast.text}</div>

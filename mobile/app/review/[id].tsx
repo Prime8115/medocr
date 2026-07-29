@@ -10,9 +10,10 @@ import {
   pushDocument,
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
-import { colors, font, spacing } from '@/src/theme/tokens';
+import { colors, font, radius, spacing } from '@/src/theme/tokens';
 import { buildSections, getLeaf, setLeafValue, ExtractionPayload, Fields } from '@/src/lib/payload';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
+import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
 
 const POLL_MS = 2000;
@@ -24,11 +25,19 @@ export default function ReviewScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [inv, setInv] = useState<DocMatch | null>(null);
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
     if (d.payload?.fields) setFields(d.payload.fields);
   }, []);
+
+  // Once the document is ready, reconcile against inventory (if connected).
+  useEffect(() => {
+    if (doc && (doc.status === 'needs_review' || doc.status === 'approved' || doc.status === 'pushed')) {
+      matchDocument(id).then(setInv).catch(() => setInv(null));
+    }
+  }, [doc, id]);
 
   // Poll until processing completes.
   useEffect(() => {
@@ -153,26 +162,65 @@ export default function ReviewScreen() {
           </View>
         )}
 
-        {sections.map((section) => (
-          <Card key={section.title}>
-            <SectionTitle>{section.title}</SectionTitle>
-            {section.fields.map((spec) => {
-              const leaf = getLeaf(fields, spec.path);
-              const conf = leaf?.confidence ?? null;
-              return (
-                <Field
-                  key={spec.path}
-                  label={spec.label}
-                  value={leaf?.value ?? ''}
-                  editable={editable}
-                  onChangeText={(v) => onChangeField(spec.path, v)}
-                  accentColor={confidenceColor(conf)}
-                  hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
-                />
-              );
-            })}
-          </Card>
-        ))}
+        {sections.map((section) => {
+          // Item sections end with "#N"; map to the inventory match at index N-1.
+          const idxMatch = section.title.match(/#(\d+)$/);
+          const matchInfo: MatchItem | undefined =
+            inv?.connected && idxMatch ? inv.items[Number(idxMatch[1]) - 1] : undefined;
+          return (
+            <Card key={section.title}>
+              <SectionTitle>{section.title}</SectionTitle>
+              {section.fields.map((spec) => {
+                const leaf = getLeaf(fields, spec.path);
+                const conf = leaf?.confidence ?? null;
+                return (
+                  <Field
+                    key={spec.path}
+                    label={spec.label}
+                    value={leaf?.value ?? ''}
+                    editable={editable}
+                    onChangeText={(v) => onChangeField(spec.path, v)}
+                    accentColor={confidenceColor(conf)}
+                    hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                  />
+                );
+              })}
+
+              {matchInfo && (
+                <View style={styles.invBox}>
+                  {matchInfo.candidates.length > 0 ? (
+                    <>
+                      <View style={styles.invHeader}>
+                        <Text style={styles.invLabel}>In your inventory</Text>
+                        <Badge
+                          label={`${Math.round(matchInfo.best_score)}% match`}
+                          tone={matchInfo.best_score >= 85 ? 'success' : matchInfo.best_score >= 70 ? 'warning' : 'neutral'}
+                        />
+                      </View>
+                      {matchInfo.candidates.slice(0, 3).map((c) => (
+                        <View key={c.id} style={styles.invRow}>
+                          <Text style={styles.invName}>{c.name}</Text>
+                          <Text style={styles.invMeta}>
+                            {c.stock_qty != null ? `stock ${c.stock_qty}` : ''}
+                            {c.mrp != null ? `  ₹${c.mrp}` : ''}  · {Math.round(c.score)}%
+                          </Text>
+                        </View>
+                      ))}
+                    </>
+                  ) : (
+                    <Text style={styles.invNone}>No inventory match — new item?</Text>
+                  )}
+                </View>
+              )}
+            </Card>
+          );
+        })}
+
+        {inv?.connected && (
+          <Text style={styles.invSummary}>
+            Inventory: {inv.matched}/{inv.total} items matched
+          </Text>
+        )}
 
         <View style={styles.actions}>
           {doc.status === 'needs_review' && (
@@ -201,4 +249,12 @@ const styles = StyleSheet.create({
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
   warnText: { ...font.body, color: colors.warning },
   actions: { gap: spacing.md, marginTop: spacing.sm },
+  invBox: { marginTop: spacing.md, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: spacing.md },
+  invHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
+  invLabel: { ...font.label, color: colors.textSecondary, textTransform: 'uppercase' },
+  invRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.xs },
+  invName: { ...font.body, color: colors.text, flex: 1 },
+  invMeta: { ...font.caption, color: colors.textSecondary },
+  invNone: { ...font.caption, color: colors.textMuted },
+  invSummary: { ...font.caption, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.md },
 });
