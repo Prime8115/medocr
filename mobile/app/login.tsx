@@ -24,8 +24,18 @@ export default function LoginScreen() {
       } else {
         await signUp(email.trim(), password, shopName.trim());
       }
-    } catch {
-      setError(mode === 'login' ? t('loginError') : t('errorGeneric'));
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (typeof detail === 'string') {
+        setError(detail); // e.g. "Email already registered", "Incorrect email or password"
+      } else if (status === 422) {
+        setError('Please check your details — password must be at least 8 characters.');
+      } else if (!status) {
+        setError('Cannot reach the server. Check your internet connection.');
+      } else {
+        setError(mode === 'login' ? t('loginError') : t('errorGeneric'));
+      }
     } finally {
       setLoading(false);
     }
