@@ -114,6 +114,48 @@ async def submit_document(
     return DocumentResponse(document_id=doc.id, status=doc.status)
 
 
+def _infer_content_type(ref: str) -> str:
+    r = (ref or "").lower()
+    if r.endswith(".pdf"):
+        return "application/pdf"
+    if r.endswith(".png"):
+        return "image/png"
+    if r.endswith(".webp"):
+        return "image/webp"
+    return "image/jpeg"
+
+
+@router.post("/{document_id}/retry", response_model=DocumentResponse)
+def retry_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Re-run OCR on a document's stored image (e.g. after an 'AI busy' failure)
+    without needing to photograph it again."""
+    doc = _get_owned_document(document_id, db, user)
+    if doc.status not in (lifecycle.FAILED, lifecycle.NEEDS_REVIEW):
+        raise HTTPException(status_code=409, detail="Only failed or unreviewed documents can be re-run.")
+    if not doc.image_ref:
+        raise HTTPException(status_code=400, detail="No stored image to re-process.")
+
+    try:
+        data = storage.load(doc.image_ref)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=410, detail="Stored image is no longer available.")
+
+    doc.status = lifecycle.QUEUED
+    doc.error = None
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.retried", target=doc.id))
+    db.commit()
+
+    background_tasks.add_task(
+        _run_ocr_job, doc.id, data, _infer_content_type(doc.image_ref), doc.doc_type
+    )
+    return DocumentResponse(document_id=doc.id, status=lifecycle.QUEUED)
+
+
 @router.get("/", response_model=list[DocumentOut])
 def list_documents(
     status_filter: Optional[str] = Query(None, alias="status"),

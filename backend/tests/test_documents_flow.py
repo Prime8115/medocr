@@ -103,6 +103,21 @@ def test_approve_before_review_rejected(client, mock_ocr, db_session):
     assert client.post(f"/v1/documents/{doc_id}/approve", headers=headers).status_code == 409
 
 
+def test_retry_reprocesses_stored_image(client, mock_ocr):
+    """A document can be re-run on its stored image without re-uploading."""
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    # First pass reaches needs_review with a stored image.
+    assert client.get(f"/v1/documents/{doc_id}", headers=headers).json()["status"] == "needs_review"
+
+    # Retry re-runs OCR on the stored image.
+    r = client.post(f"/v1/documents/{doc_id}/retry", headers=headers)
+    assert r.status_code == 200
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["status"] == "needs_review"
+    assert doc["payload"]["fields"]["patient"]["name"]["value"].endswith("(MOCK)")
+
+
 def test_ocr_failure_marks_document_failed(client, monkeypatch):
     """No mock, no API key -> provider raises OCRError -> document ends 'failed' (never faked)."""
     monkeypatch.setattr(settings, "allow_mock_ocr", False)

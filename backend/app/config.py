@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # --- OCR ---
     gemini_api_key: Optional[str] = None
     ocr_model: str = "gemini-2.5-flash"
+    # Fallback model tried when the primary is overloaded/unavailable after retries.
+    ocr_fallback_model: Optional[str] = "gemini-2.0-flash"
+    ocr_max_retries: int = 4          # attempts per model on transient errors
+    ocr_base_backoff: float = 1.5     # seconds; doubles each retry
     # Mock OCR must be OFF by default: we never fabricate medical data in real use.
     # Enabled only for tests/local demos via env ALLOW_MOCK_OCR=true.
     allow_mock_ocr: bool = False
