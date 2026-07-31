@@ -8,6 +8,7 @@ import {
   getDocument,
   patchDocument,
   pushDocument,
+  retryDocument,
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
@@ -17,6 +18,7 @@ import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
 
 const POLL_MS = 2000;
+const MAX_AUTO_RETRIES = 3;
 
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -26,6 +28,8 @@ export default function ReviewScreen() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [inv, setInv] = useState<DocMatch | null>(null);
+  const [autoRetry, setAutoRetry] = useState(0); // >0 while auto-retrying
+  const [manualRetrying, setManualRetrying] = useState(false);
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -39,17 +43,29 @@ export default function ReviewScreen() {
     }
   }, [doc, id]);
 
-  // Poll until processing completes.
+  // Poll until processing completes. On a failed extraction (e.g. AI busy),
+  // automatically re-run OCR a few times before surfacing the failure.
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
+    let retries = 0;
     async function poll() {
       try {
         const d = await getDocument(id);
         if (!active) return;
         if (d.status === 'queued' || d.status === 'processing') {
           timer = setTimeout(poll, POLL_MS);
+        } else if (d.status === 'failed' && retries < MAX_AUTO_RETRIES) {
+          retries += 1;
+          setAutoRetry(retries);
+          try {
+            await retryDocument(id); // re-runs OCR on the stored image
+          } catch {
+            /* if retry itself can't be issued, fall through on next poll */
+          }
+          timer = setTimeout(poll, POLL_MS);
         } else {
+          setAutoRetry(0);
           applyDoc(d);
           setLoading(false);
         }
@@ -111,10 +127,36 @@ export default function ReviewScreen() {
     }
   }
 
+  async function tryAgain() {
+    setManualRetrying(true);
+    setLoading(true);
+    try {
+      await retryDocument(id);
+    } catch {
+      /* ignore; poll will reflect state */
+    } finally {
+      setManualRetrying(false);
+    }
+    // Re-enter polling by refetching until resolved.
+    const pollOnce = async () => {
+      const d = await getDocument(id);
+      if (d.status === 'queued' || d.status === 'processing') {
+        setTimeout(pollOnce, POLL_MS);
+      } else {
+        applyDoc(d);
+        setLoading(false);
+      }
+    };
+    pollOnce();
+  }
+
   if (loading) {
     return (
       <Screen>
-        <CenterState title={t('processing')} subtitle="Reading the document…" />
+        <CenterState
+          title={autoRetry > 0 ? 'AI busy — retrying…' : t('processing')}
+          subtitle={autoRetry > 0 ? `Attempt ${autoRetry} of ${MAX_AUTO_RETRIES}` : 'Reading the document…'}
+        />
       </Screen>
     );
   }
@@ -130,7 +172,17 @@ export default function ReviewScreen() {
   if (doc.status === 'failed') {
     return (
       <Screen>
-        <CenterState title={t('failed')} subtitle={doc.error ?? 'Extraction failed. Please rescan.'} />
+        <CenterState
+          title={t('failed')}
+          subtitle={doc.error ?? 'Extraction failed. The AI may be busy — please try again.'}
+        >
+          <Button
+            title={manualRetrying ? 'Retrying…' : 'Try again'}
+            onPress={tryAgain}
+            loading={manualRetrying}
+            style={{ marginTop: spacing.lg, minWidth: 200 }}
+          />
+        </CenterState>
       </Screen>
     );
   }

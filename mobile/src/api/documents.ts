@@ -33,6 +33,11 @@ export async function getDocument(id: string): Promise<DocumentDto> {
   return res.data as DocumentDto;
 }
 
+export async function retryDocument(id: string): Promise<DocumentDto> {
+  const res = await api.post(`/v1/documents/${id}/retry`);
+  return res.data as DocumentDto;
+}
+
 export async function listDocuments(params?: {
   status?: string;
   doc_type?: string;
