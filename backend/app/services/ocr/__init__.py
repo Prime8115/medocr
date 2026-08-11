@@ -176,7 +176,40 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     return merged, failed_pages, total_pages
 
 
+def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0):
+    fields = postprocess_fields(resolved_type, fields)
+    list_key = _LIST_KEY.get(resolved_type)
+    item_count = len(fields.get(list_key, []) or []) if list_key else 0
+    warnings = collect_low_confidence(fields, settings.low_confidence_threshold)
+    if failed_pages:
+        warnings.insert(0, f"{failed_pages} of {pages} page(s) could not be read; review may be incomplete.")
+    meta = ExtractionMeta(
+        overall_confidence=_overall_confidence(fields),
+        language="en", pipeline=pipeline, processed_at=time.time(), warnings=warnings,
+    ).model_dump()
+    meta["pages"] = pages
+    meta["item_count"] = item_count
+    meta["pages_failed"] = failed_pages
+    return {"schema_version": SCHEMA_VERSION, "doc_type": resolved_type, "fields": fields, "meta": meta}
+
+
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None) -> dict:
+    # --- Tier 1: deterministic parse of digital PDF invoices (free, exact, unlimited
+    # pages). Real (not mock) — runs whenever the input is a digital PDF and the
+    # document isn't explicitly a prescription. ---
+    if content_type == "application/pdf" and doc_type in (None, "invoice"):
+        try:
+            if is_digital_pdf(file_bytes):
+                from app.services.ocr.invoice_parser import parse_invoice_pdf
+
+                parsed = parse_invoice_pdf(file_bytes)
+                if parsed and len(parsed.get("line_items", [])) >= 3:
+                    fields = validate_fields("invoice", parsed)
+                    return _finalize("invoice", fields, "pdf_parser", page_count(file_bytes))
+        except Exception:  # noqa: BLE001 - any failure -> fall back to the AI pipeline
+            pass
+
+    # --- Tier 2: AI vision/text pipeline (images, scanned PDFs, non-invoice PDFs) ---
     provider = get_provider()
 
     # Classify on the first page only (cheaper for long PDFs); use text when digital.
@@ -194,32 +227,4 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     fields, failed_pages, total_pages = _extract_chunked(
         provider, file_bytes, content_type, resolved_type, on_progress=on_progress
     )
-    fields = postprocess_fields(resolved_type, fields)
-
-    pages = page_count(file_bytes) if content_type == "application/pdf" else 1
-    list_key = _LIST_KEY.get(resolved_type)
-    item_count = len(fields.get(list_key, []) or []) if list_key else 0
-
-    warnings = collect_low_confidence(fields, settings.low_confidence_threshold)
-    if failed_pages:
-        warnings.insert(
-            0, f"{failed_pages} of {total_pages} page(s) could not be read; review may be incomplete."
-        )
-
-    meta = ExtractionMeta(
-        overall_confidence=_overall_confidence(fields),
-        language="en",
-        pipeline=provider.name,
-        processed_at=time.time(),
-        warnings=warnings,
-    ).model_dump()
-    meta["pages"] = pages
-    meta["item_count"] = item_count
-    meta["pages_failed"] = failed_pages
-
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "doc_type": resolved_type,
-        "fields": fields,
-        "meta": meta,
-    }
+    return _finalize(resolved_type, fields, provider.name, total_pages, failed_pages)
