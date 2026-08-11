@@ -20,6 +20,7 @@ class DocumentOut(BaseModel):
     status: str
     overall_confidence: Optional[float] = None
     payload: Optional[Any] = None
+    progress: Optional[str] = None
     error: Optional[str] = None
     created_at: datetime
 

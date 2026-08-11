@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     ocr_fallback_model: Optional[str] = "gemini-2.0-flash"
     ocr_max_retries: int = 4          # attempts per model on transient errors
     ocr_base_backoff: float = 1.5     # seconds; doubles each retry
+    # Large multi-page PDFs (e.g. long distributor invoices) are processed in
+    # page-chunks and merged, to stay under the model's output-token limit.
+    ocr_pdf_chunk_pages: int = 2
+    ocr_max_output_tokens: int = 65536
+    # Parallel chunk extraction: how many page-chunks to send to the model at
+    # once. Higher = faster for long PDFs, but watch the model's rate limits.
+    ocr_chunk_concurrency: int = 5
     # Mock OCR must be OFF by default: we never fabricate medical data in real use.
     # Enabled only for tests/local demos via env ALLOW_MOCK_OCR=true.
     allow_mock_ocr: bool = False
@@ -47,7 +54,7 @@ class Settings(BaseSettings):
     s3_endpoint_url: Optional[str] = None
 
     # --- Limits ---
-    max_upload_mb: int = 15
+    max_upload_mb: int = 25
     rate_limit_per_minute: int = 60
 
     @property

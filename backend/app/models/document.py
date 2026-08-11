@@ -20,5 +20,6 @@ class Document(Base, TimestampMixin):
     image_ref = Column(String(512), nullable=True)
     overall_confidence = Column(Float, nullable=True)
     payload = Column(JSON, nullable=True)  # extracted structured data
+    progress = Column(String(16), nullable=True)  # e.g. "12/60" while processing
     error = Column(Text, nullable=True)
     created_by = Column(String(32), ForeignKey("users.id"), nullable=True)

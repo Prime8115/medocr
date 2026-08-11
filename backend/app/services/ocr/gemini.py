@@ -105,6 +105,7 @@ class GeminiProvider(OCRProvider):
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_json_schema=model_cls.model_json_schema(),
+                max_output_tokens=settings.ocr_max_output_tokens,
             ),
         )
 

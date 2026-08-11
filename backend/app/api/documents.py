@@ -49,7 +49,15 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
             doc.status = lifecycle.PROCESSING
             db.commit()
 
-        result = process_document(document_id, data, content_type, doc_type)
+        # Persist progress for long PDFs so the app can show "page 12/60".
+        def _on_progress(done: int, total: int):
+            if total > 1:
+                d = db.get(Document, document_id)
+                if d:
+                    d.progress = f"{done}/{total}"
+                    db.commit()
+
+        result = process_document(document_id, data, content_type, doc_type, on_progress=_on_progress)
 
         doc = db.get(Document, document_id)
         if not doc:
@@ -58,6 +66,7 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
         doc.status = lifecycle.NEEDS_REVIEW
+        doc.progress = None
         doc.error = None
         db.commit()
     except OCRError as exc:

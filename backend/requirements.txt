@@ -22,6 +22,7 @@ google-genai>=1.0.0
 pillow>=10.3.0
 python-dateutil>=2.9.0
 rapidfuzz>=3.9.0
+pypdf>=4.0.0
 
 # --- Storage (optional S3) ---
 boto3>=1.34.0
