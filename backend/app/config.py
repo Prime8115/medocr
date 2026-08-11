@@ -29,9 +29,10 @@ class Settings(BaseSettings):
 
     # --- OCR ---
     gemini_api_key: Optional[str] = None
-    ocr_model: str = "gemini-2.5-flash"
-    # Fallback model tried when the primary is overloaded/unavailable after retries.
-    ocr_fallback_model: Optional[str] = "gemini-2.0-flash"
+    # Use the "-latest" aliases so Google's deprecations don't 404 us.
+    ocr_model: str = "gemini-flash-latest"
+    # Fallback (separate quota) tried when the primary is overloaded after retries.
+    ocr_fallback_model: Optional[str] = "gemini-flash-lite-latest"
     ocr_max_retries: int = 6          # attempts per model on transient errors
     ocr_base_backoff: float = 2.0     # seconds; doubles each retry (caps at ~60s)
     # Large multi-page PDFs (e.g. long distributor invoices) are processed in
