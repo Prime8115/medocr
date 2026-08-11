@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -41,6 +42,8 @@ export default function ReviewScreen() {
   const [autoRetry, setAutoRetry] = useState(0);
   const [manualRetrying, setManualRetrying] = useState(false);
   const [editIndex, setEditIndex] = useState<number | null>(null); // item section being edited
+  const [search, setSearch] = useState('');
+  const [attentionOnly, setAttentionOnly] = useState(false);
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -203,27 +206,32 @@ export default function ReviewScreen() {
   const matchForIndex = (i: number): MatchItem | undefined =>
     inv?.connected ? inv.items[i] : undefined;
 
-  const header = (
+  const needsAttention = (section: Section, i: number): boolean => {
+    if (section.fields.some((f) => isLowConfidence(getLeaf(fields, f.path)?.confidence ?? null))) return true;
+    if (inv?.connected) {
+      const mi = inv.items[i];
+      if (!mi || mi.candidates.length === 0 || mi.best_score < 70) return true;
+    }
+    return false;
+  };
+
+  const manyItems = itemSections.length > 6;
+  const q = search.trim().toLowerCase();
+  const filtered = itemSections
+    .map((section, i) => ({ section, i }))
+    .filter(({ section, i }) => {
+      if (attentionOnly && !needsAttention(section, i)) return false;
+      if (q) {
+        const primary = String(getLeaf(fields, section.fields[0].path)?.value ?? '').toLowerCase();
+        if (!primary.includes(q)) return false;
+      }
+      return true;
+    });
+  const attentionCount = itemSections.filter((s, i) => needsAttention(s, i)).length;
+
+  // Header sections (patient/supplier) + line-item title — scroll with the list.
+  const listHeader = (
     <View>
-      <View style={styles.headerRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.docType}>{doc.doc_type === 'invoice' ? t('invoice') : t('prescription')}</Text>
-          <Text style={styles.confidence}>
-            {itemSections.length > 0
-              ? `${itemSections.length} items${meta?.pages ? ` · ${meta.pages} pages` : ''}`
-              : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
-          </Text>
-        </View>
-        <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
-      </View>
-
-      {warnings.length > 0 && (
-        <View style={styles.warnBanner}>
-          <Text style={styles.warnText}>{warnings[0]}</Text>
-        </View>
-      )}
-
-      {/* Header sections (patient/prescriber or supplier/invoice) — editable inline */}
       {singleSections.map((section) => (
         <Card key={section.title}>
           <SectionTitle>{section.title}</SectionTitle>
@@ -244,8 +252,7 @@ export default function ReviewScreen() {
           })}
         </Card>
       ))}
-
-      {itemSections.length > 0 && (
+      {itemSections.length > 0 && !manyItems && (
         <View style={styles.listHeaderRow}>
           <SectionTitle>{doc.doc_type === 'invoice' ? t('lineItems') : t('medications')}</SectionTitle>
           <Text style={styles.itemCount}>{itemSections.length}</Text>
@@ -254,44 +261,90 @@ export default function ReviewScreen() {
     </View>
   );
 
-  const footer = (
-    <View style={styles.actions}>
-      {inv?.connected && (
-        <Text style={styles.invSummary}>Inventory: {inv.matched}/{inv.total} items matched</Text>
-      )}
-      {doc.status === 'needs_review' && (
-        <>
-          <Button title={t('save')} variant="secondary" onPress={save} loading={saving} />
-          <Button title={t('approve')} variant="success" onPress={approveOnly} loading={busy === 'approve'} />
-        </>
-      )}
-      {(doc.status === 'needs_review' || doc.status === 'approved') && (
-        <Button title={t('approveAndPush')} onPress={approveAndSend} loading={busy === 'push'} />
-      )}
-      {doc.status === 'pushed' && <CenterState title={t('pushed')} subtitle="Sent to your software." />}
-    </View>
-  );
-
   return (
     <Screen>
+      {/* Fixed top: title, summary, and (for long lists) search + filter — always visible */}
+      <View style={styles.topBar}>
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.docType}>{doc.doc_type === 'invoice' ? t('invoice') : t('prescription')}</Text>
+            <Text style={styles.confidence}>
+              {itemSections.length > 0
+                ? `${itemSections.length} items${meta?.pages ? ` · ${meta.pages} pages` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
+                : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
+            </Text>
+          </View>
+          <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
+        </View>
+
+        {warnings.length > 0 && (
+          <View style={styles.warnBanner}>
+            <Text style={styles.warnText}>{warnings[0]}</Text>
+          </View>
+        )}
+
+        {manyItems && (
+          <>
+            <TextInput
+              style={styles.search}
+              value={search}
+              onChangeText={setSearch}
+              placeholder={`Search ${itemSections.length} items…`}
+              placeholderTextColor={colors.textMuted}
+              autoCorrect={false}
+            />
+            <View style={styles.filterRow}>
+              <TouchableOpacity onPress={() => setAttentionOnly(false)} style={[styles.chip, !attentionOnly && styles.chipActive]}>
+                <Text style={[styles.chipText, !attentionOnly && styles.chipTextActive]}>All ({itemSections.length})</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setAttentionOnly(true)} style={[styles.chip, attentionOnly && styles.chipActive]}>
+                <Text style={[styles.chipText, attentionOnly && styles.chipTextActive]}>Needs check ({attentionCount})</Text>
+              </TouchableOpacity>
+              {(q || attentionOnly) && (
+                <Text style={styles.showing}>{filtered.length} shown</Text>
+              )}
+            </View>
+          </>
+        )}
+      </View>
+
       <FlatList
-        data={itemSections}
-        keyExtractor={(s) => s.title}
-        ListHeaderComponent={header}
-        ListFooterComponent={footer}
+        data={filtered}
+        keyExtractor={({ section }) => section.title}
+        ListHeaderComponent={listHeader}
         contentContainerStyle={styles.content}
-        initialNumToRender={12}
+        initialNumToRender={14}
         windowSize={11}
         removeClippedSubviews
-        renderItem={({ item: section, index }) => (
-          <ItemRow
-            section={section}
-            fields={fields}
-            match={matchForIndex(index)}
-            onPress={() => setEditIndex(index)}
-          />
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={
+          itemSections.length > 0 ? (
+            <Text style={styles.noMatch}>No items match “{search}”.</Text>
+          ) : null
+        }
+        renderItem={({ item: { section, i } }) => (
+          <ItemRow section={section} fields={fields} match={matchForIndex(i)} onPress={() => setEditIndex(i)} />
         )}
       />
+
+      {/* Fixed bottom: actions — always reachable without scrolling */}
+      {doc.status !== 'pushed' ? (
+        <View style={styles.bottomBar}>
+          {doc.status === 'needs_review' && (
+            <Button title={t('save')} variant="secondary" onPress={save} loading={saving} style={styles.flexBtn} />
+          )}
+          {doc.status === 'needs_review' && (
+            <Button title={t('approve')} variant="success" onPress={approveOnly} loading={busy === 'approve'} style={styles.flexBtn} />
+          )}
+          {(doc.status === 'needs_review' || doc.status === 'approved') && (
+            <Button title={t('approveAndPush')} onPress={approveAndSend} loading={busy === 'push'} style={styles.flexBtn} />
+          )}
+        </View>
+      ) : (
+        <View style={styles.bottomBar}>
+          <Text style={styles.sentText}>✓ {t('pushed')}</Text>
+        </View>
+      )}
 
       {/* Edit-a-single-item modal */}
       <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => setEditIndex(null)}>
@@ -383,8 +436,23 @@ function ItemRow({
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, paddingBottom: spacing.xxl },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.lg },
+  content: { padding: spacing.lg, paddingBottom: spacing.xl },
+  topBar: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  search: {
+    minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    paddingHorizontal: spacing.md, ...font.body, color: colors.text, backgroundColor: colors.surfaceAlt, marginTop: spacing.sm,
+  },
+  filterRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm },
+  chip: { paddingHorizontal: spacing.md, paddingVertical: spacing.xs, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt },
+  chipActive: { backgroundColor: colors.primaryTint },
+  chipText: { ...font.caption, color: colors.textSecondary },
+  chipTextActive: { color: colors.primaryDark, fontWeight: '600' },
+  showing: { ...font.caption, color: colors.textMuted, marginLeft: 'auto' },
+  noMatch: { ...font.body, color: colors.textMuted, textAlign: 'center', padding: spacing.xl },
+  bottomBar: { flexDirection: 'row', gap: spacing.sm, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border },
+  flexBtn: { flex: 1 },
+  sentText: { ...font.h3, color: colors.success, textAlign: 'center', flex: 1, paddingVertical: spacing.sm },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.sm },
   docType: { ...font.h1, color: colors.text },
   confidence: { ...font.body, color: colors.textSecondary, marginTop: spacing.xs },
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },

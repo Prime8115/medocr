@@ -32,6 +32,7 @@ export default function DocumentDetail() {
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
   const [inv, setInv] = useState<DocMatch | null>(null);
   const [editItem, setEditItem] = useState<number | null>(null);
+  const [itemSearch, setItemSearch] = useState('');
 
   const apply = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -162,10 +163,19 @@ export default function DocumentDetail() {
       {/* Line items / medications — compact table, click a row to edit */}
       {itemSections.length > 0 && (
         <div className="glass-card" style={{ padding: 0, marginBottom: 16 }}>
-          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-glass)', display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-glass)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
             <h3 style={{ margin: 0 }}>{doc.doc_type === 'invoice' ? 'Line items' : 'Medications'}</h3>
-            <span className="text-muted">
-              {itemSections.length} items{meta?.pages ? ` · ${meta.pages} pages` : ''}
+            {itemSections.length > 8 && (
+              <input
+                className="field-input"
+                style={{ maxWidth: 260, borderLeftWidth: 1 }}
+                placeholder={`Search ${itemSections.length} items…`}
+                value={itemSearch}
+                onChange={(e) => setItemSearch(e.target.value)}
+              />
+            )}
+            <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>
+              {itemSections.length} items{meta?.pages ? ` · ${meta.pages}p` : ''}
               {inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}
             </span>
           </div>
@@ -184,6 +194,7 @@ export default function DocumentDetail() {
               <tbody>
                 {itemSections.map((section, i) => {
                   const primary = getLeaf(fields, section.fields[0].path)?.value || '—';
+                  if (itemSearch && !String(primary).toLowerCase().includes(itemSearch.toLowerCase())) return null;
                   const mi = matchFor(i);
                   return (
                     <tr key={section.title} className="data-row" onClick={() => setEditItem(i)} style={{ borderTop: '1px solid var(--border-glass)', cursor: 'pointer' }}>
