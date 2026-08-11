@@ -18,7 +18,7 @@ on:
       api_url:
         description: 'Backend API URL to bake into the APK'
         required: true
-        default: 'http://10.0.2.2:8080'
+        default: 'https://mediscan.maxxcom.in'
   push:
     tags:
       - 'v*'
@@ -27,7 +27,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      EXPO_PUBLIC_API_URL: ${{ github.event.inputs.api_url || vars.API_URL || 'http://10.0.2.2:8080' }}
+      EXPO_PUBLIC_API_URL: ${{ github.event.inputs.api_url || vars.API_URL || 'https://mediscan.maxxcom.in' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
