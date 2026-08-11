@@ -31,6 +31,7 @@ export default function DocumentDetail() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
   const [inv, setInv] = useState<DocMatch | null>(null);
+  const [editItem, setEditItem] = useState<number | null>(null);
 
   const apply = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -98,6 +99,10 @@ export default function DocumentDetail() {
   const payload = doc.payload as ExtractionPayload | null;
   const editable = ['needs_review', 'approved', 'pushed'].includes(doc.status);
   const sections = payload ? buildSections(payload, fields) : [];
+  const singleSections = sections.filter((s) => !/#\d+$/.test(s.title));
+  const itemSections = sections.filter((s) => /#\d+$/.test(s.title));
+  const meta = payload?.meta as { pages?: number } | undefined;
+  const matchFor = (i: number): MatchItem | undefined => (inv?.connected ? inv.items[i] : undefined);
 
   return (
     <div style={{ maxWidth: 820 }}>
@@ -126,66 +131,120 @@ export default function DocumentDetail() {
         </div>
       )}
 
-      {sections.map((section) => {
-        const idxMatch = section.title.match(/#(\d+)$/);
-        const mi: MatchItem | undefined =
-          inv?.connected && idxMatch ? inv.items[Number(idxMatch[1]) - 1] : undefined;
-        return (
-          <div key={section.title} className="glass-card" style={{ marginBottom: 16 }}>
-            <h3 style={{ marginBottom: 16 }}>{section.title}</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
-              {section.fields.map((spec) => {
+      {/* Header sections (patient/prescriber or supplier/invoice) — editable inline */}
+      {singleSections.map((section) => (
+        <div key={section.title} className="glass-card" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 16 }}>{section.title}</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+            {section.fields.map((spec) => {
+              const leaf = getLeaf(fields, spec.path);
+              const conf = leaf?.confidence ?? null;
+              return (
+                <div key={spec.path}>
+                  <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>
+                    {spec.label} {conf != null && <span style={{ opacity: 0.6 }}>· {confidencePercent(conf)}</span>}
+                  </label>
+                  <input
+                    className="field-input"
+                    style={{ borderLeftColor: accentFor(conf) }}
+                    value={leaf?.value ?? ''}
+                    disabled={!editable}
+                    onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
+                  />
+                  {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* Line items / medications — compact table, click a row to edit */}
+      {itemSections.length > 0 && (
+        <div className="glass-card" style={{ padding: 0, marginBottom: 16 }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-glass)', display: 'flex', justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0 }}>{doc.doc_type === 'invoice' ? 'Line items' : 'Medications'}</h3>
+            <span className="text-muted">
+              {itemSections.length} items{meta?.pages ? ` · ${meta.pages} pages` : ''}
+              {inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}
+            </span>
+          </div>
+          <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 14 }}>
+              <thead>
+                <tr style={{ color: 'var(--text-secondary)', position: 'sticky', top: 0, background: '#131722' }}>
+                  <th style={{ padding: '10px 20px' }}>{itemSections[0].fields[0].label}</th>
+                  {itemSections[0].fields.slice(1, 4).map((f) => (
+                    <th key={f.path} style={{ padding: '10px 12px' }}>{f.label}</th>
+                  ))}
+                  {inv?.connected && <th style={{ padding: '10px 12px' }}>Match</th>}
+                  <th style={{ padding: '10px 12px' }} />
+                </tr>
+              </thead>
+              <tbody>
+                {itemSections.map((section, i) => {
+                  const primary = getLeaf(fields, section.fields[0].path)?.value || '—';
+                  const mi = matchFor(i);
+                  return (
+                    <tr key={section.title} className="data-row" onClick={() => setEditItem(i)} style={{ borderTop: '1px solid var(--border-glass)', cursor: 'pointer' }}>
+                      <td style={{ padding: '10px 20px' }}>{primary}</td>
+                      {section.fields.slice(1, 4).map((f) => (
+                        <td key={f.path} style={{ padding: '10px 12px' }} className="text-muted">
+                          {getLeaf(fields, f.path)?.value ?? '—'}
+                        </td>
+                      ))}
+                      {inv?.connected && (
+                        <td style={{ padding: '10px 12px' }}>
+                          {mi && mi.candidates.length > 0 ? (
+                            <span className={`badge ${mi.best_score >= 85 ? 'badge-approved' : 'badge-processing'}`}>{Math.round(mi.best_score)}%</span>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                      )}
+                      <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>edit ›</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Edit-a-single-item modal */}
+      {editItem !== null && itemSections[editItem] && (
+        <div onClick={() => setEditItem(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ width: 560, maxWidth: '90vw', maxHeight: '85vh', overflowY: 'auto', padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>{itemSections[editItem].title}</h3>
+              <span style={{ cursor: 'pointer', color: 'var(--primary-color)' }} onClick={() => setEditItem(null)}>Done</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+              {itemSections[editItem].fields.map((spec) => {
                 const leaf = getLeaf(fields, spec.path);
                 const conf = leaf?.confidence ?? null;
                 return (
                   <div key={spec.path}>
-                    <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>
-                      {spec.label} {conf != null && <span style={{ opacity: 0.6 }}>· {confidencePercent(conf)}</span>}
-                    </label>
-                    <input
-                      className="field-input"
-                      style={{ borderLeftColor: accentFor(conf) }}
-                      value={leaf?.value ?? ''}
-                      disabled={!editable}
-                      onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
-                    />
-                    {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
+                    <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>{spec.label}</label>
+                    <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable}
+                      onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
                   </div>
                 );
               })}
             </div>
-
-            {mi && (
+            {matchFor(editItem)?.candidates?.length ? (
               <div style={{ marginTop: 16, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
-                {mi.candidates.length > 0 ? (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span className="text-muted" style={{ fontSize: 12, textTransform: 'uppercase' }}>In your inventory</span>
-                      <span className={`badge ${mi.best_score >= 85 ? 'badge-approved' : 'badge-processing'}`}>
-                        {Math.round(mi.best_score)}% match
-                      </span>
-                    </div>
-                    {mi.candidates.slice(0, 3).map((c) => (
-                      <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
-                        <span>{c.name}{c.composition ? <span className="text-muted"> · {c.composition}</span> : null}</span>
-                        <span className="text-muted">
-                          {c.stock_qty != null ? `stock ${c.stock_qty}` : ''}{c.mrp != null ? `  ₹${c.mrp}` : ''} · {Math.round(c.score)}%
-                        </span>
-                      </div>
-                    ))}
-                  </>
-                ) : (
-                  <span className="text-muted" style={{ fontSize: 13 }}>No inventory match — possibly a new item.</span>
-                )}
+                <div className="text-muted" style={{ fontSize: 12, textTransform: 'uppercase', marginBottom: 8 }}>In your inventory</div>
+                {matchFor(editItem)!.candidates.slice(0, 3).map((c) => (
+                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                    <span>{c.name}{c.composition ? <span className="text-muted"> · {c.composition}</span> : null}</span>
+                    <span className="text-muted">{c.stock_qty != null ? `stock ${c.stock_qty}` : ''} · {Math.round(c.score)}%</span>
+                  </div>
+                ))}
               </div>
-            )}
+            ) : null}
           </div>
-        );
-      })}
-
-      {inv?.connected && (
-        <div className="text-muted" style={{ marginBottom: 16, fontSize: 13 }}>
-          Inventory reconciliation: {inv.matched}/{inv.total} items matched.
         </div>
       )}
 

@@ -1,6 +1,16 @@
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  FlatList,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
 import {
   DocumentDto,
@@ -12,7 +22,7 @@ import {
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { buildSections, getLeaf, setLeafValue, ExtractionPayload, Fields } from '@/src/lib/payload';
+import { buildSections, getLeaf, setLeafValue, ExtractionPayload, Fields, Section } from '@/src/lib/payload';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
@@ -28,23 +38,21 @@ export default function ReviewScreen() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [inv, setInv] = useState<DocMatch | null>(null);
-  const [autoRetry, setAutoRetry] = useState(0); // >0 while auto-retrying
+  const [autoRetry, setAutoRetry] = useState(0);
   const [manualRetrying, setManualRetrying] = useState(false);
+  const [editIndex, setEditIndex] = useState<number | null>(null); // item section being edited
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
     if (d.payload?.fields) setFields(d.payload.fields);
   }, []);
 
-  // Once the document is ready, reconcile against inventory (if connected).
   useEffect(() => {
-    if (doc && (doc.status === 'needs_review' || doc.status === 'approved' || doc.status === 'pushed')) {
+    if (doc && ['needs_review', 'approved', 'pushed'].includes(doc.status)) {
       matchDocument(id).then(setInv).catch(() => setInv(null));
     }
   }, [doc, id]);
 
-  // Poll until processing completes. On a failed extraction (e.g. AI busy),
-  // automatically re-run OCR a few times before surfacing the failure.
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -59,9 +67,9 @@ export default function ReviewScreen() {
           retries += 1;
           setAutoRetry(retries);
           try {
-            await retryDocument(id); // re-runs OCR on the stored image
+            await retryDocument(id);
           } catch {
-            /* if retry itself can't be issued, fall through on next poll */
+            /* ignore */
           }
           timer = setTimeout(poll, POLL_MS);
         } else {
@@ -80,15 +88,12 @@ export default function ReviewScreen() {
     };
   }, [id, applyDoc]);
 
-  const onChangeField = (path: string, value: string) => {
-    setFields((prev) => setLeafValue(prev, path, value));
-  };
+  const onChangeField = (path: string, value: string) => setFields((prev) => setLeafValue(prev, path, value));
 
   async function save(): Promise<boolean> {
     setSaving(true);
     try {
-      const updated = await patchDocument(id, fields);
-      applyDoc(updated);
+      applyDoc(await patchDocument(id, fields));
       return true;
     } catch {
       Alert.alert(t('errorGeneric'));
@@ -119,8 +124,7 @@ export default function ReviewScreen() {
       applyDoc(result);
       Alert.alert(t('pushed'), `${result.deliveries.length} delivery(ies)`);
     } catch (e: unknown) {
-      const detail =
-        (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? t('errorGeneric');
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? t('errorGeneric');
       Alert.alert(t('failed'), detail);
     } finally {
       setBusy(null);
@@ -133,16 +137,14 @@ export default function ReviewScreen() {
     try {
       await retryDocument(id);
     } catch {
-      /* ignore; poll will reflect state */
+      /* ignore */
     } finally {
       setManualRetrying(false);
     }
-    // Re-enter polling by refetching until resolved.
     const pollOnce = async () => {
       const d = await getDocument(id);
-      if (d.status === 'queued' || d.status === 'processing') {
-        setTimeout(pollOnce, POLL_MS);
-      } else {
+      if (d.status === 'queued' || d.status === 'processing') setTimeout(pollOnce, POLL_MS);
+      else {
         applyDoc(d);
         setLoading(false);
       }
@@ -150,17 +152,34 @@ export default function ReviewScreen() {
     pollOnce();
   }
 
+  const payload = doc?.payload as ExtractionPayload | undefined;
+  const sections = useMemo<Section[]>(
+    () => (payload ? buildSections({ ...payload, fields }) : []),
+    [payload, fields],
+  );
+  // Split into single (header) sections and repeating item sections (title has "#N").
+  const singleSections = sections.filter((s) => !/#\d+$/.test(s.title));
+  const itemSections = sections.filter((s) => /#\d+$/.test(s.title));
+
+  const editable = !!doc && ['needs_review', 'approved', 'pushed'].includes(doc.status);
+
+  // ---- states ----
   if (loading) {
     return (
       <Screen>
         <CenterState
           title={autoRetry > 0 ? 'AI busy — retrying…' : t('processing')}
-          subtitle={autoRetry > 0 ? `Attempt ${autoRetry} of ${MAX_AUTO_RETRIES}` : 'Reading the document…'}
+          subtitle={
+            autoRetry > 0
+              ? `Attempt ${autoRetry} of ${MAX_AUTO_RETRIES}`
+              : doc?.progress
+                ? `Reading page ${doc.progress}`
+                : 'Reading the document…'
+          }
         />
       </Screen>
     );
   }
-
   if (!doc) {
     return (
       <Screen>
@@ -168,128 +187,198 @@ export default function ReviewScreen() {
       </Screen>
     );
   }
-
   if (doc.status === 'failed') {
     return (
       <Screen>
-        <CenterState
-          title={t('failed')}
-          subtitle={doc.error ?? 'Extraction failed. The AI may be busy — please try again.'}
-        >
-          <Button
-            title={manualRetrying ? 'Retrying…' : 'Try again'}
-            onPress={tryAgain}
-            loading={manualRetrying}
-            style={{ marginTop: spacing.lg, minWidth: 200 }}
-          />
+        <CenterState title={t('failed')} subtitle={doc.error ?? 'Extraction failed. The AI may be busy — please try again.'}>
+          <Button title={manualRetrying ? 'Retrying…' : 'Try again'} onPress={tryAgain} loading={manualRetrying} style={{ marginTop: spacing.lg, minWidth: 200 }} />
         </CenterState>
       </Screen>
     );
   }
 
-  const payload = doc.payload as ExtractionPayload;
-  const sections = buildSections({ ...payload, fields });
-  const warnings = payload?.meta?.warnings ?? [];
-  const editable = doc.status === 'needs_review' || doc.status === 'approved' || doc.status === 'pushed';
+  const meta = payload?.meta as { warnings?: string[]; pages?: number; item_count?: number } | undefined;
+  const warnings = meta?.warnings ?? [];
+
+  const matchForIndex = (i: number): MatchItem | undefined =>
+    inv?.connected ? inv.items[i] : undefined;
+
+  const header = (
+    <View>
+      <View style={styles.headerRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.docType}>{doc.doc_type === 'invoice' ? t('invoice') : t('prescription')}</Text>
+          <Text style={styles.confidence}>
+            {itemSections.length > 0
+              ? `${itemSections.length} items${meta?.pages ? ` · ${meta.pages} pages` : ''}`
+              : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
+          </Text>
+        </View>
+        <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
+      </View>
+
+      {warnings.length > 0 && (
+        <View style={styles.warnBanner}>
+          <Text style={styles.warnText}>{warnings[0]}</Text>
+        </View>
+      )}
+
+      {/* Header sections (patient/prescriber or supplier/invoice) — editable inline */}
+      {singleSections.map((section) => (
+        <Card key={section.title}>
+          <SectionTitle>{section.title}</SectionTitle>
+          {section.fields.map((spec) => {
+            const leaf = getLeaf(fields, spec.path);
+            const conf = leaf?.confidence ?? null;
+            return (
+              <Field
+                key={spec.path}
+                label={spec.label}
+                value={leaf?.value ?? ''}
+                editable={editable}
+                onChangeText={(v) => onChangeField(spec.path, v)}
+                accentColor={confidenceColor(conf)}
+                hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+              />
+            );
+          })}
+        </Card>
+      ))}
+
+      {itemSections.length > 0 && (
+        <View style={styles.listHeaderRow}>
+          <SectionTitle>{doc.doc_type === 'invoice' ? t('lineItems') : t('medications')}</SectionTitle>
+          <Text style={styles.itemCount}>{itemSections.length}</Text>
+        </View>
+      )}
+    </View>
+  );
+
+  const footer = (
+    <View style={styles.actions}>
+      {inv?.connected && (
+        <Text style={styles.invSummary}>Inventory: {inv.matched}/{inv.total} items matched</Text>
+      )}
+      {doc.status === 'needs_review' && (
+        <>
+          <Button title={t('save')} variant="secondary" onPress={save} loading={saving} />
+          <Button title={t('approve')} variant="success" onPress={approveOnly} loading={busy === 'approve'} />
+        </>
+      )}
+      {(doc.status === 'needs_review' || doc.status === 'approved') && (
+        <Button title={t('approveAndPush')} onPress={approveAndSend} loading={busy === 'push'} />
+      )}
+      {doc.status === 'pushed' && <CenterState title={t('pushed')} subtitle="Sent to your software." />}
+    </View>
+  );
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.docType}>{doc.doc_type === 'invoice' ? t('invoice') : t('prescription')}</Text>
-            <Text style={styles.confidence}>
-              {t('review')} · {confidencePercent(doc.overall_confidence)}
-            </Text>
-          </View>
-          <Badge
-            label={doc.status.replace('_', ' ')}
-            tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'}
+      <FlatList
+        data={itemSections}
+        keyExtractor={(s) => s.title}
+        ListHeaderComponent={header}
+        ListFooterComponent={footer}
+        contentContainerStyle={styles.content}
+        initialNumToRender={12}
+        windowSize={11}
+        removeClippedSubviews
+        renderItem={({ item: section, index }) => (
+          <ItemRow
+            section={section}
+            fields={fields}
+            match={matchForIndex(index)}
+            onPress={() => setEditIndex(index)}
           />
-        </View>
-
-        {warnings.length > 0 && (
-          <View style={styles.warnBanner}>
-            <Text style={styles.warnText}>{t('lowConfidence')}</Text>
-          </View>
         )}
+      />
 
-        {sections.map((section) => {
-          // Item sections end with "#N"; map to the inventory match at index N-1.
-          const idxMatch = section.title.match(/#(\d+)$/);
-          const matchInfo: MatchItem | undefined =
-            inv?.connected && idxMatch ? inv.items[Number(idxMatch[1]) - 1] : undefined;
-          return (
-            <Card key={section.title}>
-              <SectionTitle>{section.title}</SectionTitle>
-              {section.fields.map((spec) => {
-                const leaf = getLeaf(fields, spec.path);
-                const conf = leaf?.confidence ?? null;
-                return (
-                  <Field
-                    key={spec.path}
-                    label={spec.label}
-                    value={leaf?.value ?? ''}
-                    editable={editable}
-                    onChangeText={(v) => onChangeField(spec.path, v)}
-                    accentColor={confidenceColor(conf)}
-                    hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
-                  />
-                );
-              })}
-
-              {matchInfo && (
-                <View style={styles.invBox}>
-                  {matchInfo.candidates.length > 0 ? (
-                    <>
-                      <View style={styles.invHeader}>
-                        <Text style={styles.invLabel}>In your inventory</Text>
-                        <Badge
-                          label={`${Math.round(matchInfo.best_score)}% match`}
-                          tone={matchInfo.best_score >= 85 ? 'success' : matchInfo.best_score >= 70 ? 'warning' : 'neutral'}
-                        />
-                      </View>
-                      {matchInfo.candidates.slice(0, 3).map((c) => (
-                        <View key={c.id} style={styles.invRow}>
-                          <Text style={styles.invName}>{c.name}</Text>
-                          <Text style={styles.invMeta}>
-                            {c.stock_qty != null ? `stock ${c.stock_qty}` : ''}
-                            {c.mrp != null ? `  ₹${c.mrp}` : ''}  · {Math.round(c.score)}%
-                          </Text>
-                        </View>
-                      ))}
-                    </>
-                  ) : (
-                    <Text style={styles.invNone}>No inventory match — new item?</Text>
-                  )}
-                </View>
-              )}
-            </Card>
-          );
-        })}
-
-        {inv?.connected && (
-          <Text style={styles.invSummary}>
-            Inventory: {inv.matched}/{inv.total} items matched
-          </Text>
-        )}
-
-        <View style={styles.actions}>
-          {doc.status === 'needs_review' && (
+      {/* Edit-a-single-item modal */}
+      <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => setEditIndex(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setEditIndex(null)} />
+        <View style={styles.modalSheet}>
+          {editIndex !== null && itemSections[editIndex] && (
             <>
-              <Button title={t('save')} variant="secondary" onPress={save} loading={saving} />
-              <Button title={t('approve')} variant="success" onPress={approveOnly} loading={busy === 'approve'} />
+              <View style={styles.modalHead}>
+                <Text style={styles.modalTitle}>{itemSections[editIndex].title}</Text>
+                <TouchableOpacity onPress={() => setEditIndex(null)}>
+                  <Text style={styles.modalDone}>Done</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView>
+                {itemSections[editIndex].fields.map((spec) => {
+                  const leaf = getLeaf(fields, spec.path);
+                  const conf = leaf?.confidence ?? null;
+                  return (
+                    <Field
+                      key={spec.path}
+                      label={spec.label}
+                      value={leaf?.value ?? ''}
+                      editable={editable}
+                      onChangeText={(v) => onChangeField(spec.path, v)}
+                      accentColor={confidenceColor(conf)}
+                      hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                    />
+                  );
+                })}
+                {matchForIndex(editIndex)?.candidates?.length ? (
+                  <View style={styles.invBox}>
+                    <Text style={styles.invLabel}>In your inventory</Text>
+                    {matchForIndex(editIndex)!.candidates.slice(0, 3).map((c) => (
+                      <View key={c.id} style={styles.invRow}>
+                        <Text style={styles.invName}>{c.name}</Text>
+                        <Text style={styles.invMeta}>
+                          {c.stock_qty != null ? `stock ${c.stock_qty}` : ''} · {Math.round(c.score)}%
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </ScrollView>
             </>
           )}
-          {(doc.status === 'needs_review' || doc.status === 'approved') && (
-            <Button title={t('approveAndPush')} onPress={approveAndSend} loading={busy === 'push'} />
-          )}
-          {doc.status === 'pushed' && (
-            <CenterState title={t('pushed')} subtitle="Sent to your software." />
-          )}
         </View>
-      </ScrollView>
+      </Modal>
     </Screen>
+  );
+}
+
+/** Compact, read-only row for a line item / medication. Tap to edit. */
+function ItemRow({
+  section,
+  fields,
+  match,
+  onPress,
+}: {
+  section: Section;
+  fields: Fields;
+  match?: MatchItem;
+  onPress: () => void;
+}) {
+  const primary = getLeaf(fields, section.fields[0].path)?.value || '(unnamed)';
+  // Secondary summary from a couple of key fields (skip the primary).
+  const secondary = section.fields
+    .slice(1)
+    .map((f) => {
+      const v = getLeaf(fields, f.path)?.value;
+      return v ? `${f.label}: ${v}` : null;
+    })
+    .filter(Boolean)
+    .slice(0, 3)
+    .join('  ·  ');
+  const best = match?.best_score ?? null;
+
+  return (
+    <TouchableOpacity style={styles.itemRow} onPress={onPress} activeOpacity={0.7}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.itemPrimary} numberOfLines={1}>{primary}</Text>
+        {secondary ? <Text style={styles.itemSecondary} numberOfLines={1}>{secondary}</Text> : null}
+      </View>
+      {best != null && (
+        <Badge label={`${Math.round(best)}%`} tone={best >= 85 ? 'success' : best >= 70 ? 'warning' : 'neutral'} />
+      )}
+      <Text style={styles.chevron}>›</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -300,13 +389,32 @@ const styles = StyleSheet.create({
   confidence: { ...font.body, color: colors.textSecondary, marginTop: spacing.xs },
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
   warnText: { ...font.body, color: colors.warning },
-  actions: { gap: spacing.md, marginTop: spacing.sm },
+  listHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.sm, marginBottom: spacing.sm },
+  itemCount: { ...font.label, color: colors.textSecondary },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: spacing.sm,
+  },
+  itemPrimary: { ...font.h3, color: colors.text },
+  itemSecondary: { ...font.caption, color: colors.textSecondary, marginTop: 2 },
+  chevron: { ...font.h2, color: colors.textMuted },
+  actions: { gap: spacing.md, marginTop: spacing.lg },
+  invSummary: { ...font.caption, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.sm },
+  modalBackdrop: { flex: 1, backgroundColor: colors.overlay },
+  modalSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, maxHeight: '85%', backgroundColor: colors.bg, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
+  modalHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
+  modalTitle: { ...font.h2, color: colors.text },
+  modalDone: { ...font.h3, color: colors.primary },
   invBox: { marginTop: spacing.md, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: spacing.md },
-  invHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
-  invLabel: { ...font.label, color: colors.textSecondary, textTransform: 'uppercase' },
-  invRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.xs },
+  invLabel: { ...font.label, color: colors.textSecondary, textTransform: 'uppercase', marginBottom: spacing.sm },
+  invRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.xs },
   invName: { ...font.body, color: colors.text, flex: 1 },
   invMeta: { ...font.caption, color: colors.textSecondary },
-  invNone: { ...font.caption, color: colors.textMuted },
-  invSummary: { ...font.caption, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.md },
 });

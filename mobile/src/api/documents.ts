@@ -7,6 +7,7 @@ export interface DocumentDto {
   status: string;
   overall_confidence?: number | null;
   payload?: ExtractionPayload | null;
+  progress?: string | null;
   error?: string | null;
   created_at: string;
 }

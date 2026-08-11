@@ -1,4 +1,6 @@
 """MediScan OCR Connect API — application entrypoint."""
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,6 +11,25 @@ from slowapi.util import get_remote_address
 from app import models  # noqa: F401  (populate SQLAlchemy metadata)
 from app.api import agent, auth, connectors, documents, inventory
 from app.config import settings
+from app.database import SessionLocal
+from app.services.recovery import recover_stuck_documents
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Recover any documents left mid-processing by a previous restart/crash.
+    # Never let a recovery hiccup prevent the app from starting.
+    try:
+        db = SessionLocal()
+        try:
+            n = recover_stuck_documents(db)
+            if n:
+                print(f"[startup] recovered {n} interrupted document(s) -> failed (retryable)")
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] recovery skipped: {exc}")
+    yield
 
 limiter = Limiter(
     key_func=get_remote_address,
@@ -19,6 +40,7 @@ app = FastAPI(
     title=settings.app_name,
     description="API for processing and pushing medical documents.",
     version="2.0.0",
+    lifespan=lifespan,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
