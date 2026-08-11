@@ -46,11 +46,16 @@ class GeminiProvider(OCRProvider):
         self._base_backoff = settings.ocr_base_backoff
         self._sleep = sleep
 
-    def _media_part(self, file_bytes: bytes, content_type: str) -> dict:
+    def _content_parts(self, prompt: str, file_bytes: bytes, content_type: str) -> list:
+        """Build the model input: raw text for digital PDFs (compact, reliable),
+        otherwise the media (image/PDF) part for the vision model."""
+        if content_type == "text/plain":
+            text = file_bytes.decode("utf-8", "replace")
+            return [prompt, "DOCUMENT TEXT (extract structured data from this):\n\n" + text]
         mime = content_type if content_type == "application/pdf" or content_type.startswith(
             "image/"
         ) else "image/jpeg"
-        return {"inline_data": {"data": file_bytes, "mimeType": mime}}
+        return [prompt, {"inline_data": {"data": file_bytes, "mimeType": mime}}]
 
     def _generate(self, model: str, contents, config=None):
         """One or more attempts against a single model with backoff on transient errors."""
@@ -64,8 +69,8 @@ class GeminiProvider(OCRProvider):
                 last_exc = exc
                 if not _is_transient(exc) or attempt == self._max_retries:
                     raise
-                # Exponential backoff: base, 2x, 4x, ...
-                self._sleep(self._base_backoff * (2 ** (attempt - 1)))
+                # Exponential backoff (capped at 60s), for rate-limit recovery.
+                self._sleep(min(60.0, self._base_backoff * (2 ** (attempt - 1))))
         raise last_exc  # pragma: no cover
 
     def _generate_with_fallback(self, contents, config=None):
@@ -87,7 +92,7 @@ class GeminiProvider(OCRProvider):
 
     def classify(self, file_bytes: bytes, content_type: str) -> str:
         resp = self._generate_with_fallback(
-            [CLASSIFY_PROMPT, self._media_part(file_bytes, content_type)]
+            self._content_parts(CLASSIFY_PROMPT, file_bytes, content_type)
         )
         text = (getattr(resp, "text", "") or "").strip().lower()
         return "invoice" if "invoice" in text else "prescription"
@@ -101,7 +106,7 @@ class GeminiProvider(OCRProvider):
         from google.genai import types
 
         resp = self._generate_with_fallback(
-            [prompt, self._media_part(file_bytes, content_type)],
+            self._content_parts(prompt, file_bytes, content_type),
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_json_schema=model_cls.model_json_schema(),
