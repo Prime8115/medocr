@@ -22,12 +22,14 @@ from app.database import SessionLocal, get_db
 from app.models.audit_log import AuditLog
 from app.models.connector import Connector
 from app.models.document import Document
+from app.models.inventory import InventoryItem
 from app.models.user import User
 from app.schemas.connector import DeliveryOut
 from app.schemas.document import DocumentOut, DocumentResponse, DocumentUpdate
 from app.schemas.extraction import validate_fields
 from app.services import lifecycle
 from app.services.connectors import service as connector_service
+from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
 from app.services.ocr.postprocess import postprocess_fields
 from app.services.storage import storage
@@ -236,6 +238,19 @@ def approve_document(document_id: str, db: Session = Depends(get_db), user: User
     except lifecycle.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     doc.status = lifecycle.APPROVED
+
+    # Link line items to the shop's inventory (attach matched SKUs) so the pushed
+    # data can update their stock directly.
+    inv_items = db.query(InventoryItem).filter(InventoryItem.shop_id == user.shop_id).all()
+    if inv_items and doc.payload:
+        import copy
+
+        payload = copy.deepcopy(doc.payload)  # deep copy so SQLAlchemy detects the change
+        linked = enrich_payload_with_matches(payload, inv_items)
+        if linked:
+            payload.setdefault("meta", {})["inventory_linked"] = linked
+        doc.payload = payload
+
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.approved", target=doc.id))
     db.commit()
     db.refresh(doc)

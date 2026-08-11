@@ -162,6 +162,34 @@ def alternatives_for(query: str, items: Sequence, limit: int = 5) -> List[Candid
     return find_alternatives(query, items, limit=limit, query_composition=comp)
 
 
+def enrich_payload_with_matches(payload: dict, items: Sequence, min_score: float = 70.0) -> int:
+    """Attach the best inventory match to each line item / medication IN PLACE.
+
+    Adds `inventory_match: {id, sku, name, score}` to every item whose best match
+    scores >= min_score, so the pushed data carries the shop's own item codes and
+    can update their inventory directly. Returns the number of items linked.
+    """
+    fields = (payload or {}).get("fields") or {}
+    doc_type = (payload or {}).get("doc_type", "prescription")
+    if doc_type == "invoice":
+        rows = fields.get("line_items", []) or []
+        name_of = lambda r: ((r.get("description") or {}).get("value"))
+    else:
+        rows = fields.get("medications", []) or []
+        name_of = lambda r: ((r.get("name") or {}).get("value"))
+
+    linked = 0
+    for row in rows:
+        cands = match_name(name_of(row) or "", items, limit=1, min_score=min_score)
+        if cands:
+            c = cands[0]
+            row["inventory_match"] = {"id": c.id, "sku": c.sku, "name": c.name, "score": c.score}
+            linked += 1
+        else:
+            row.pop("inventory_match", None)
+    return linked
+
+
 def match_document_items(payload: dict, items: Sequence) -> dict:
     """Attach inventory matches to each medication / invoice line item.
 
