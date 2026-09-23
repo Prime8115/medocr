@@ -29,12 +29,16 @@ class Settings(BaseSettings):
 
     # --- OCR ---
     gemini_api_key: Optional[str] = None
-    # Use the "-latest" aliases so Google's deprecations don't 404 us.
-    ocr_model: str = "gemini-flash-latest"
-    # Fallback (separate quota) tried when the primary is overloaded after retries.
-    ocr_fallback_model: Optional[str] = "gemini-flash-lite-latest"
-    ocr_max_retries: int = 6          # attempts per model on transient errors
-    ocr_base_backoff: float = 2.0     # seconds; doubles each retry (caps at ~60s)
+    # Multi-key pool: comma-separated list of Gemini API keys for load balancing & 429 rotation
+    gemini_api_keys: Optional[str] = None
+    # Maximum concurrent background OCR jobs across the server (smooth pacing for simultaneous users)
+    ocr_max_concurrent_jobs: int = 6
+    # Use high-throughput, low-latency Flash-Lite as primary (sub-2s latency, high quota)
+    ocr_model: str = "gemini-flash-lite-latest"
+    # Fallback tried when the primary is overloaded or errors
+    ocr_fallback_model: Optional[str] = "gemini-2.5-flash"
+    ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
+    ocr_base_backoff: float = 1.0     # seconds; doubles each retry
     # Large multi-page PDFs (e.g. long distributor invoices) are processed in
     # page-chunks and merged, to stay under the model's output-token limit.
     ocr_pdf_chunk_pages: int = 2
@@ -69,6 +73,15 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment.lower() in {"production", "prod"}
+
+    @property
+    def gemini_keys_list(self) -> list[str]:
+        keys: list[str] = []
+        if self.gemini_api_keys:
+            keys.extend([k.strip() for k in self.gemini_api_keys.split(",") if k.strip()])
+        if self.gemini_api_key and self.gemini_api_key.strip() and self.gemini_api_key.strip() not in keys:
+            keys.append(self.gemini_api_key.strip())
+        return keys
 
 
 @lru_cache

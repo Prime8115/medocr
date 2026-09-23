@@ -1,6 +1,7 @@
 """Document endpoints — DB-backed, authenticated, shop-scoped, with a real
 lifecycle state machine and human-correction (PATCH) support.
 """
+import threading
 import time
 from typing import Optional
 
@@ -39,11 +40,17 @@ router = APIRouter()
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 ALLOWED_DOC_TYPES = {"prescription", "invoice"}
 
+# Regulate concurrent outbound OCR processing (smooth pacing for simultaneous user scans)
+_ocr_semaphore = threading.Semaphore(settings.ocr_max_concurrent_jobs)
+
 
 def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Optional[str]):
-    """Background OCR task with its own DB session. Never leaves a doc stuck."""
+    """Background OCR task with its own DB session and concurrency regulation."""
     db = SessionLocal()
+    acquired = False
     try:
+        # Bounded concurrency: wait for a processing slot without crashing or overloading the AI API
+        acquired = _ocr_semaphore.acquire(timeout=120)
         doc = db.get(Document, document_id)
         if not doc:
             return
@@ -76,6 +83,8 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
     except Exception as exc:  # noqa: BLE001 — never leave "processing"
         _mark_failed(db, document_id, f"Unexpected error: {exc}")
     finally:
+        if acquired:
+            _ocr_semaphore.release()
         db.close()
 
 

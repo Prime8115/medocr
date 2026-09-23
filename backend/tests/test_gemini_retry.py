@@ -89,3 +89,28 @@ def test_non_transient_error_not_retried(monkeypatch):
         p.extract(b"img", "image/jpeg", "prescription")
     # Only one call — no retries on a permanent error.
     assert len(p._client.models.calls) == 1
+
+
+class RateLimited(Exception):
+    code = 429
+
+
+def test_multi_key_rotation_on_429(monkeypatch):
+    from app.services.ocr.key_pool import KeyPool
+
+    monkeypatch.setattr(settings, "gemini_api_key", "keyA")
+    monkeypatch.setattr(settings, "ocr_max_retries", 3)
+
+    client_a = FakeClient([RateLimited()])
+    client_b = FakeClient([json.dumps({"patient": {"name": {"value": "Alice"}}})])
+
+    def client_factory(k):
+        return client_a if k == "keyA" else client_b
+
+    pool = KeyPool(["keyA", "keyB"], client_factory=client_factory)
+    p = gem.GeminiProvider(sleep=lambda _s: None, key_pool=pool)
+
+    out = p.extract(b"img", "image/jpeg", "prescription")
+    assert out["patient"]["name"]["value"] == "Alice"
+    assert pool.is_in_cooldown("keyA")
+    assert not pool.is_in_cooldown("keyB")

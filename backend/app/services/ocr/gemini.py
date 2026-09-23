@@ -31,15 +31,19 @@ def _is_transient(exc: Exception) -> bool:
 class GeminiProvider(OCRProvider):
     name = "gemini"
 
-    def __init__(self, sleep=time.sleep):
-        if not settings.gemini_api_key:
+    def __init__(self, sleep=time.sleep, key_pool=None):
+        keys = settings.gemini_keys_list
+        if not keys and not key_pool:
             raise OCRError("OCR not configured: GEMINI_API_KEY is missing.")
         try:
             from google import genai  # imported lazily
         except ImportError as exc:  # pragma: no cover
             raise OCRError("google-genai is not installed.") from exc
         self._genai = genai
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+        from app.services.ocr.key_pool import KeyPool
+
+        self._key_pool = key_pool or KeyPool(keys) if keys else None
+        self._client = None
         self._primary = settings.ocr_model
         self._fallback = settings.ocr_fallback_model
         self._max_retries = max(1, settings.ocr_max_retries)
@@ -57,16 +61,36 @@ class GeminiProvider(OCRProvider):
         ) else "image/jpeg"
         return [prompt, {"inline_data": {"data": file_bytes, "mimeType": mime}}]
 
+    def _is_rate_limit(self, exc: Exception) -> bool:
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        if code == 429:
+            return True
+        msg = str(exc).lower()
+        return "429" in msg or "resource_exhausted" in msg or "rate limit" in msg
+
     def _generate(self, model: str, contents, config=None):
-        """One or more attempts against a single model with backoff on transient errors."""
+        """One or more attempts against a single model with key rotation and backoff on transient errors."""
         last_exc = None
         for attempt in range(1, self._max_retries + 1):
+            if self._client is not None:
+                client = self._client
+                key = "default"
+            elif self._key_pool is not None:
+                client, key = self._key_pool.get_client()
+            else:
+                client = self._genai.Client(api_key=settings.gemini_api_key)
+                key = "default"
+
             try:
-                return self._client.models.generate_content(
+                return client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                if self._is_rate_limit(exc) and self._key_pool is not None:
+                    self._key_pool.mark_rate_limited(key, cooldown_seconds=45.0)
+                    if len(self._key_pool) > 1 and attempt < self._max_retries:
+                        continue
                 if not _is_transient(exc) or attempt == self._max_retries:
                     raise
                 # Exponential backoff (capped at 60s), for rate-limit recovery.

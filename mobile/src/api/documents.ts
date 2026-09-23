@@ -23,9 +23,7 @@ export async function uploadDocument(file: UploadFile, docType?: string): Promis
   // React Native FormData file shape.
   form.append('file', { uri: file.uri, name: file.name, type: file.type } as unknown as Blob);
   if (docType) form.append('doc_type', docType);
-  const res = await api.post('/v1/documents/', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  const res = await api.post('/v1/documents/', form);
   return res.data.document_id as string;
 }
 

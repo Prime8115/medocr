@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -44,6 +44,7 @@ export default function ReviewScreen() {
   const [editIndex, setEditIndex] = useState<number | null>(null); // item section being edited
   const [search, setSearch] = useState('');
   const [attentionOnly, setAttentionOnly] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -59,14 +60,23 @@ export default function ReviewScreen() {
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
+    let interval: ReturnType<typeof setInterval>;
     let retries = 0;
+    let errorCount = 0;
+
+    interval = setInterval(() => {
+      if (active) setElapsed((prev) => prev + 1);
+    }, 1000);
+
     async function poll() {
       try {
         const d = await getDocument(id);
         if (!active) return;
+        errorCount = 0;
+        setDoc(d); // Always update doc so progress (e.g. 2/5 pages) updates in real-time
         if (d.status === 'queued' || d.status === 'processing') {
           timer = setTimeout(poll, POLL_MS);
-        } else if (d.status === 'failed' && retries < MAX_AUTO_RETRIES) {
+        } else if (d.status === 'failed' && retries < 1) {
           retries += 1;
           setAutoRetry(retries);
           try {
@@ -81,13 +91,21 @@ export default function ReviewScreen() {
           setLoading(false);
         }
       } catch {
-        if (active) setLoading(false);
+        if (!active) return;
+        errorCount += 1;
+        // If it's a momentary network blip, keep trying instead of failing immediately
+        if (errorCount < 5) {
+          timer = setTimeout(poll, POLL_MS);
+        } else {
+          setLoading(false);
+        }
       }
     }
     poll();
     return () => {
       active = false;
       clearTimeout(timer);
+      clearInterval(interval);
     };
   }, [id, applyDoc]);
 
@@ -137,6 +155,7 @@ export default function ReviewScreen() {
   async function tryAgain() {
     setManualRetrying(true);
     setLoading(true);
+    setElapsed(0);
     try {
       await retryDocument(id);
     } catch {
@@ -145,10 +164,15 @@ export default function ReviewScreen() {
       setManualRetrying(false);
     }
     const pollOnce = async () => {
-      const d = await getDocument(id);
-      if (d.status === 'queued' || d.status === 'processing') setTimeout(pollOnce, POLL_MS);
-      else {
-        applyDoc(d);
+      try {
+        const d = await getDocument(id);
+        setDoc(d);
+        if (d.status === 'queued' || d.status === 'processing') setTimeout(pollOnce, POLL_MS);
+        else {
+          applyDoc(d);
+          setLoading(false);
+        }
+      } catch {
         setLoading(false);
       }
     };
@@ -174,12 +198,23 @@ export default function ReviewScreen() {
           title={autoRetry > 0 ? 'AI busy — retrying…' : t('processing')}
           subtitle={
             autoRetry > 0
-              ? `Attempt ${autoRetry} of ${MAX_AUTO_RETRIES}`
+              ? 'Retrying with backup AI model…'
               : doc?.progress
-                ? `Reading page ${doc.progress}`
-                : 'Reading the document…'
+                ? `Reading page ${doc.progress}…`
+                : elapsed > 15
+                  ? `Analyzing document (${elapsed}s)…`
+                  : 'Reading the document…'
           }
-        />
+        >
+          {elapsed > 12 && (
+            <Button
+              title="Check History"
+              variant="secondary"
+              onPress={() => router.replace('/(tabs)/history')}
+              style={{ marginTop: spacing.lg, minWidth: 180 }}
+            />
+          )}
+        </CenterState>
       </Screen>
     );
   }
