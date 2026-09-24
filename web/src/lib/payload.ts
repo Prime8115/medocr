@@ -1,6 +1,6 @@
 import type { ExtractionPayload, Leaf } from '../api/documents';
 
-type Fields = Record<string, unknown>;
+export type Fields = Record<string, unknown>;
 
 function tokenize(path: string): (string | number)[] {
   const parts: (string | number)[] = [];

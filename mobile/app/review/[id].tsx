@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -23,13 +24,19 @@ import {
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { buildSections, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Section } from '@/src/lib/payload';
+import { buildSections, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
+import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
+import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
 
 const POLL_MS = 2000;
 const MAX_AUTO_RETRIES = 3;
+
+/** Table vs cards is a working preference, so it outlives the screen. */
+const VIEW_MODE_KEY = 'review.viewMode';
+type ViewMode = 'table' | 'cards';
 
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -45,6 +52,21 @@ export default function ReviewScreen() {
   const [search, setSearch] = useState('');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [headerOpen, setHeaderOpen] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(VIEW_MODE_KEY)
+      .then((saved) => {
+        if (saved === 'table' || saved === 'cards') setViewMode(saved);
+      })
+      .catch(() => {});
+  }, []);
+
+  const chooseViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    AsyncStorage.setItem(VIEW_MODE_KEY, mode).catch(() => {});
+  };
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -272,6 +294,16 @@ export default function ReviewScreen() {
     });
   const attentionCount = itemSections.filter((s, i) => needsAttention(s, i)).length;
 
+  // Table mode is for invoices only; a prescription's fields are prose, not columns.
+  const isInvoice = doc.doc_type === 'invoice';
+  const showTable = isInvoice && viewMode === 'table' && itemSections.length > 0;
+  const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
+  const tableRows: TableRow[] = filtered.map(({ section, i }) => ({
+    item: rawItems[i] ?? {},
+    index: i,
+    attention: needsAttention(section, i),
+  }));
+
   // Header sections (patient/supplier) + line-item title — scroll with the list.
   const listHeader = (
     <View>
@@ -316,26 +348,63 @@ export default function ReviewScreen() {
                 ? `${itemSections.length} items${meta?.pages ? ` · ${meta.pages} pages` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
                 : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
             </Text>
-            {/* The trust signal: do the lines we read add up to the printed total? */}
-            {doc.doc_type === 'invoice' && meta?.line_items_total ? (
-              <Text
-                style={[
-                  styles.total,
-                  meta.total_reconciles === false && styles.totalMismatch,
-                  meta.total_reconciles === true && styles.totalOk,
-                ]}
-              >
-                {meta.total_reconciles === true ? '✓ ' : meta.total_reconciles === false ? '⚠ ' : ''}
-                Items total ₹{meta.line_items_total}
-              </Text>
-            ) : null}
           </View>
           <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
         </View>
 
-        {warnings.length > 0 && (
-          <View style={styles.warnBanner}>
-            <Text style={styles.warnText}>{warnings[0]}</Text>
+        {/* Integrity warnings are full sentences ("the invoice states 143 items
+            but 429 were read"); low-confidence warnings are dotted field paths.
+            Show the sentences — they are the ones that change a decision. */}
+        {warnings.length > 0 &&
+          (() => {
+            const sentences = warnings.filter((w) => w.includes(' ')).slice(0, 2);
+            const shown = sentences.length > 0 ? sentences : [t('lowConfidence')];
+            return (
+              <View style={styles.warnBanner}>
+                {shown.map((w) => (
+                  <Text key={w} style={styles.warnText}>
+                    {w}
+                  </Text>
+                ))}
+              </View>
+            );
+          })()}
+
+        {/* In table mode the supplier/invoice fields live behind this line, so the
+            table gets the full height of the screen. */}
+        {showTable && (
+          <TouchableOpacity style={styles.headerSummary} onPress={() => setHeaderOpen(true)} activeOpacity={0.7}>
+            <Text style={styles.headerSummaryText} numberOfLines={1}>
+              {[
+                getLeaf(fields, 'supplier.name')?.value,
+                getLeaf(fields, 'invoice.invoice_no')?.value,
+                getLeaf(fields, 'invoice.invoice_date')?.value,
+              ]
+                .filter(Boolean)
+                .join('  ·  ') || 'Invoice details'}
+            </Text>
+            <Text style={styles.headerSummaryChevron}>›</Text>
+          </TouchableOpacity>
+        )}
+
+        {isInvoice && itemSections.length > 0 && (
+          <View style={styles.viewToggle}>
+            <TouchableOpacity
+              onPress={() => chooseViewMode('table')}
+              style={[styles.toggleBtn, viewMode === 'table' && styles.toggleBtnActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: viewMode === 'table' }}
+            >
+              <Text style={[styles.toggleText, viewMode === 'table' && styles.toggleTextActive]}>▤  Table</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => chooseViewMode('cards')}
+              style={[styles.toggleBtn, viewMode === 'cards' && styles.toggleBtnActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: viewMode === 'cards' }}
+            >
+              <Text style={[styles.toggleText, viewMode === 'cards' && styles.toggleTextActive]}>☰  Cards</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -364,24 +433,54 @@ export default function ReviewScreen() {
         )}
       </View>
 
-      <FlatList
-        data={filtered}
-        keyExtractor={({ section }) => section.title}
-        ListHeaderComponent={listHeader}
-        contentContainerStyle={styles.content}
-        initialNumToRender={14}
-        windowSize={11}
-        removeClippedSubviews
-        keyboardShouldPersistTaps="handled"
-        ListEmptyComponent={
-          itemSections.length > 0 ? (
-            <Text style={styles.noMatch}>No items match “{search}”.</Text>
-          ) : null
-        }
-        renderItem={({ item: { section, i } }) => (
-          <ItemRow section={section} fields={fields} match={matchForIndex(i)} onPress={() => setEditIndex(i)} />
-        )}
-      />
+      {showTable ? (
+        <InvoiceTable
+          fields={fields}
+          rows={tableRows}
+          onSelect={setEditIndex}
+          emptyText={itemSections.length > 0 ? `No items match “${search}”.` : undefined}
+        />
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={({ section }) => section.title}
+          ListHeaderComponent={listHeader}
+          contentContainerStyle={styles.content}
+          initialNumToRender={14}
+          windowSize={11}
+          removeClippedSubviews
+          keyboardShouldPersistTaps="handled"
+          ListEmptyComponent={
+            itemSections.length > 0 ? (
+              <Text style={styles.noMatch}>No items match “{search}”.</Text>
+            ) : null
+          }
+          renderItem={({ item: { section, i } }) => (
+            <ItemRow section={section} fields={fields} match={matchForIndex(i)} onPress={() => setEditIndex(i)} />
+          )}
+        />
+      )}
+
+      {/* The trust signal: do the lines we read add up to the total on the paper?
+          If they do, the pharmacist can approve without checking every line. */}
+      {isInvoice && itemSections.length > 0 && (
+        <View
+          style={[
+            styles.totalsBar,
+            meta?.total_reconciles === true && styles.totalsOk,
+            meta?.total_reconciles === false && styles.totalsMismatch,
+          ]}
+        >
+          <Text style={styles.totalsItems}>
+            {itemSections.length} items
+            {filtered.length !== itemSections.length ? ` · ${filtered.length} shown` : ''}
+          </Text>
+          <Text style={styles.totalsAmount}>
+            {meta?.total_reconciles === true ? '✓ ' : meta?.total_reconciles === false ? '⚠ ' : ''}
+            ₹{meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
+          </Text>
+        </View>
+      )}
 
       {/* Fixed bottom: actions — always reachable without scrolling */}
       {doc.status !== 'pushed' ? (
@@ -401,6 +500,41 @@ export default function ReviewScreen() {
           <Text style={styles.sentText}>✓ {t('pushed')}</Text>
         </View>
       )}
+
+      {/* Supplier / invoice fields — reachable from the summary line in table mode */}
+      <Modal visible={headerOpen} animationType="slide" transparent onRequestClose={() => setHeaderOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setHeaderOpen(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>{t('invoiceDetails')}</Text>
+            <TouchableOpacity onPress={() => setHeaderOpen(false)}>
+              <Text style={styles.modalDone}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView>
+            {singleSections.map((section) => (
+              <View key={section.title}>
+                <SectionTitle>{section.title}</SectionTitle>
+                {section.fields.map((spec) => {
+                  const leaf = getLeaf(fields, spec.path);
+                  const conf = leaf?.confidence ?? null;
+                  return (
+                    <Field
+                      key={spec.path}
+                      label={spec.label}
+                      value={leaf?.value ?? ''}
+                      editable={editable}
+                      onChangeText={(v) => onChangeField(spec.path, v)}
+                      accentColor={confidenceColor(conf)}
+                      hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                    />
+                  );
+                })}
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
 
       {/* Edit-a-single-item modal */}
       <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => setEditIndex(null)}>
@@ -523,9 +657,30 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.sm },
   docType: { ...font.h1, color: colors.text },
   confidence: { ...font.body, color: colors.textSecondary, marginTop: spacing.xs },
-  total: { ...font.body, color: colors.textSecondary, marginTop: 2, fontWeight: '600' },
-  totalOk: { color: colors.success },
-  totalMismatch: { color: colors.warning },
+  headerSummary: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    backgroundColor: colors.surfaceAlt, borderRadius: radius.md,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginTop: spacing.sm,
+  },
+  headerSummaryText: { ...font.caption, color: colors.textSecondary, flex: 1 },
+  headerSummaryChevron: { ...font.h3, color: colors.textMuted },
+  viewToggle: {
+    flexDirection: 'row', gap: spacing.xs, marginTop: spacing.sm,
+    backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, padding: 3, alignSelf: 'flex-start',
+  },
+  toggleBtn: { paddingHorizontal: spacing.lg, paddingVertical: spacing.xs, borderRadius: radius.pill },
+  toggleBtnActive: { backgroundColor: colors.surface },
+  toggleText: { ...font.caption, color: colors.textSecondary },
+  toggleTextActive: { color: colors.primaryDark, fontWeight: '700' },
+  totalsBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceAlt, borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  totalsOk: { backgroundColor: colors.successTint },
+  totalsMismatch: { backgroundColor: colors.warningTint },
+  totalsItems: { ...font.caption, color: colors.textSecondary, fontWeight: '600' },
+  totalsAmount: { ...font.h3, color: colors.text },
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
   warnText: { ...font.body, color: colors.warning },
   listHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.sm, marginBottom: spacing.sm },
