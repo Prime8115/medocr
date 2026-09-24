@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, Save, Send } from 'lucide-react';
+import { ArrowLeft, Check, Flag, Save, Send } from 'lucide-react';
 
 import {
   approveDocument,
   getDocument,
   patchDocument,
   pushDocument,
+  reportDocument,
   type DocumentDto,
   type ExtractionPayload,
 } from '../api/documents';
@@ -36,6 +37,8 @@ export default function DocumentDetail() {
   const [inv, setInv] = useState<DocMatch | null>(null);
   const [editItem, setEditItem] = useState<number | null>(null);
   const [itemSearch, setItemSearch] = useState('');
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportNote, setReportNote] = useState('');
 
   const apply = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -92,6 +95,25 @@ export default function DocumentDetail() {
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Push failed';
       setToast({ text: detail, ok: false });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Every defect so far arrived as a message that had to be reproduced from a
+   * description. This records what the pipeline actually produced next to the
+   * stored file, so the report can become a test fixture.
+   */
+  async function report() {
+    setBusy('report');
+    try {
+      const ack = await reportDocument(id, reportNote);
+      setReportOpen(false);
+      setReportNote('');
+      setToast({ text: ack.message, ok: true });
+    } catch {
+      setToast({ text: 'Could not send the report', ok: false });
     } finally {
       setBusy(null);
     }
@@ -155,7 +177,16 @@ export default function DocumentDetail() {
           <h1 style={{ textTransform: 'capitalize' }}>{doc.doc_type}</h1>
           <div className="text-muted" style={{ fontFamily: 'monospace' }}>{doc.id} · {confidencePercent(doc.overall_confidence)}</div>
         </div>
-        <span className={`badge badge-${doc.status}`}>{doc.status.replace('_', ' ')}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          <span className={`badge badge-${doc.status}`}>{doc.status.replace('_', ' ')}</span>
+          <button
+            className="btn-secondary"
+            onClick={() => setReportOpen(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+          >
+            <Flag size={14} /> Report a problem
+          </button>
+        </div>
       </div>
 
       {doc.status === 'failed' && (
@@ -290,6 +321,32 @@ export default function DocumentDetail() {
               </strong>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Report-a-problem modal */}
+      {reportOpen && (
+        <div onClick={() => setReportOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+          <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ width: 520, maxWidth: '90vw', padding: 24 }}>
+            <h3 style={{ marginTop: 0 }}>Report a problem</h3>
+            <p className="text-muted" style={{ fontSize: 14 }}>
+              What looks wrong on this {doc.doc_type === 'invoice' ? 'bill' : 'prescription'}? The document and
+              everything we read from it are attached automatically.
+            </p>
+            <textarea
+              className="field-input"
+              style={{ width: '100%', minHeight: 110, resize: 'vertical', borderLeftWidth: 1 }}
+              placeholder="e.g. 143 items on the bill but the app shows 429"
+              value={reportNote}
+              onChange={(e) => setReportNote(e.target.value)}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button className="btn-secondary" onClick={() => setReportOpen(false)}>Cancel</button>
+              <button className="btn-primary" onClick={report} disabled={busy === 'report'}>
+                {busy === 'report' ? 'Sending…' : 'Send report'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

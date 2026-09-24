@@ -72,3 +72,45 @@ def test_render_dispatches_by_format():
     assert "xml" in mapping.render(INVOICE, {"format": "tally_xml"})
     both = mapping.render(INVOICE, {"format": "both"})
     assert "csv" in both and "json" in both
+
+
+# --------------------------- the "detailed" profile ---------------------------
+def _full_invoice_payload():
+    return {
+        "doc_type": "invoice",
+        "document_id": "d1",
+        "data": {
+            "supplier": {"name": {"value": "Zydus"}},
+            "invoice": {"invoice_no": {"value": "229"}, "invoice_date": {"value": "30/06/2025"}},
+            "line_items": [{
+                "description": {"value": "ESPRA 40"}, "pack": {"value": "10 X 10"},
+                "batch_no": {"value": "TB-1"}, "expiry": {"value": "01/2027"},
+                "quantity": {"value": "25"}, "free_quantity": {"value": "5"},
+                "mrp": {"value": "108.90"}, "ptr": {"value": "77.79"}, "pts": {"value": None},
+                "rate": {"value": "77.79"}, "rate_source": {"value": "PTR"},
+                "discount_percent": {"value": None}, "amount": {"value": "1750.25"},
+                "hsn": {"value": "3004"}, "gst_percent": {"value": "12"},
+            }],
+        },
+    }
+
+
+def test_detailed_profile_carries_scheme_goods_and_the_rate_source():
+    """A shop that receives 10+2 and imports only the billed 10 has wrong stock."""
+    csv_out = mapping.render_csv(_full_invoice_payload(), {"profile": "detailed"})
+    header, row = csv_out.strip().splitlines()[:2]
+    assert "Free Qty" in header and "Rate Source" in header and "PTR" in header
+    cells = row.split(",")
+    assert "5" in cells          # free quantity survived the export
+    assert "PTR" in cells        # and the reader can see which price `rate` is
+
+
+def test_generic_profile_is_unchanged_by_the_new_fields():
+    """Existing shops import against a fixed column shape - it must not move."""
+    header = mapping.render_csv(_full_invoice_payload(), {"profile": "generic"}).splitlines()[0]
+    assert header == "Supplier,Invoice No,Item,Batch,Expiry,Qty,MRP,Rate,Amount,HSN,GST%"
+
+
+def test_detailed_profile_exists_for_prescriptions_too():
+    columns = mapping.resolve_columns({"profile": "detailed"}, "prescription")
+    assert [c["field"] for c in columns][:3] == ["patient", "prescriber", "medication"]

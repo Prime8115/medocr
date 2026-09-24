@@ -114,6 +114,43 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "Duration", "field": "duration"},
         ],
     },
+    # Everything we extract, for shops whose software can take it. Scheme goods
+    # (free_quantity) are the reason this exists: a shop that receives 10+2 and
+    # imports only the billed 10 has wrong stock from day one. Kept as a separate
+    # profile rather than added to "generic", because changing the column shape
+    # of a profile a shop already imports would break their import.
+    "detailed": {
+        "invoice": [
+            {"header": "Supplier", "field": "supplier"},
+            {"header": "Invoice No", "field": "invoice_no"},
+            {"header": "Invoice Date", "field": "invoice_date"},
+            {"header": "Item", "field": "description"},
+            {"header": "Pack", "field": "pack"},
+            {"header": "Batch", "field": "batch_no"},
+            {"header": "Expiry", "field": "expiry"},
+            {"header": "Qty", "field": "quantity"},
+            {"header": "Free Qty", "field": "free_quantity"},
+            {"header": "MRP", "field": "mrp"},
+            {"header": "PTR", "field": "ptr"},
+            {"header": "PTS", "field": "pts"},
+            {"header": "Rate", "field": "rate"},
+            {"header": "Rate Source", "field": "rate_source"},
+            {"header": "Disc%", "field": "discount_percent"},
+            {"header": "Amount", "field": "amount"},
+            {"header": "HSN", "field": "hsn"},
+            {"header": "GST%", "field": "gst_percent"},
+        ],
+        "prescription": [
+            {"header": "Patient", "field": "patient"},
+            {"header": "Doctor", "field": "prescriber"},
+            {"header": "Medicine", "field": "medication"},
+            {"header": "Strength", "field": "strength"},
+            {"header": "Form", "field": "form"},
+            {"header": "Frequency", "field": "frequency"},
+            {"header": "Duration", "field": "duration"},
+            {"header": "Instructions", "field": "instructions"},
+        ],
+    },
     "marg": {  # Marg ERP purchase import (item-wise)
         "invoice": [
             {"header": "ItemName", "field": "description"},

@@ -70,6 +70,36 @@ Any mismatch also appears in plain language in `meta.warnings`.
 
 ---
 
+## Export profiles
+
+`profile` picks a ready-made column layout; `columns` overrides it entirely.
+
+| Profile | Use it for |
+|---|---|
+| `generic` | A stable, minimal column set. **Its shape never changes** — safe to import against. |
+| `detailed` | Everything we extract: pack, free qty, MRP, PTR, PTS, rate + rate source, discount, HSN, GST. |
+| `marg` / `vyapar` / `tally` | Matched to those products' import layouts. |
+
+**If your shop receives scheme goods (10+2), use `detailed` or add
+`free_quantity` to a custom `columns` list.** `generic` carries only the billed
+quantity, so scheme units would never reach your stock.
+
+---
+
+## Monitoring
+
+`GET /v1/documents/stats?days=30` returns extraction health for your shop:
+counts by status / doc type / pipeline, and for invoices the share that
+reconcile against their printed total, the share handled by the exact PDF
+parser rather than the AI fallback, duplicate rows removed, and multi-copy PDFs
+seen. `warnings` carries plain-language flags worth acting on.
+
+`POST /v1/documents/{id}/report` with `{"note": "..."}` flags an extraction as
+wrong. The note is stored with what the pipeline produced and the stored file
+reference, so the case can be reproduced exactly.
+
+---
+
 ## Connector 1 — Webhook
 
 MediScan sends `POST <your-url>` with the JSON payload. Configure a **secret** to

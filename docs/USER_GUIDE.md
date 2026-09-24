@@ -42,6 +42,12 @@ A one-page guide for the counter. No technical knowledge needed.
   Duplicate, Triplicate). The app reads it **once** and tells you in an orange
   message at the top when it has done so.
 
+### Something still wrong?
+Tap **⚑ Report a problem** at the top of the document and say what you see
+(e.g. "143 items on the bill but the app shows 429"). The bill and everything the
+app read from it are sent along, so it can be fixed properly — you don't need to
+explain it twice.
+
 ## Send it on
 - **Approve** — marks the document as checked and correct.
 - **Approve & Send** — checks it *and* sends it to your billing/inventory

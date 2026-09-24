@@ -10,9 +10,9 @@ Built for pharmacy shopkeepers. Production-grade, tested end to end.
 
 | Path | What it is |
 |------|-----------|
-| `backend/` | FastAPI API — auth, OCR pipeline, connectors, Postgres. **170 tests.** |
+| `backend/` | FastAPI API — auth, OCR pipeline, connectors, Postgres. **199 tests.** |
 | `mobile/` | Expo/React Native Android app — capture, offline queue, review, send. **31 tests.** |
-| `web/` | React admin console — review queue, connector config, delivery logs. **25 tests.** |
+| `web/` | React admin console — review queue, connector config, delivery logs. **31 tests.** |
 | `desktop-agent/` | Windows companion that writes data into legacy software. |
 | `docs/` | PRD, SDLC plan, integration guide, deployment, user guide, UAT. |
 
@@ -59,9 +59,9 @@ cd web && npm install && npm run dev
 ## Tests
 
 ```bash
-cd backend && pytest -q          # 170
+cd backend && pytest -q          # 199
 cd mobile  && npm test           # 31
-cd web     && npm test           # 25
+cd web     && npm test           # 31
 ```
 
 CI runs all three on every push (`.github/workflows/ci.yml`); a signed Android APK

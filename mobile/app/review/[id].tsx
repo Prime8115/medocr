@@ -20,6 +20,7 @@ import {
   getDocument,
   patchDocument,
   pushDocument,
+  reportDocument,
   retryDocument,
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
@@ -54,6 +55,9 @@ export default function ReviewScreen() {
   const [elapsed, setElapsed] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [headerOpen, setHeaderOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportNote, setReportNote] = useState('');
+  const [reporting, setReporting] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem(VIEW_MODE_KEY)
@@ -171,6 +175,25 @@ export default function ReviewScreen() {
       Alert.alert(t('failed'), detail);
     } finally {
       setBusy(null);
+    }
+  }
+
+  /**
+   * Every defect so far reached us as a WhatsApp message that had to be
+   * reproduced from a description. This sends what the pipeline actually
+   * produced alongside the stored file, so it can become a test case.
+   */
+  async function sendReport() {
+    setReporting(true);
+    try {
+      const ack = await reportDocument(id, reportNote);
+      setReportOpen(false);
+      setReportNote('');
+      Alert.alert('Reported', ack.message);
+    } catch {
+      Alert.alert(t('errorGeneric'));
+    } finally {
+      setReporting(false);
     }
   }
 
@@ -349,7 +372,12 @@ export default function ReviewScreen() {
                 : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
             </Text>
           </View>
-          <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
+          <View style={{ alignItems: 'flex-end', gap: spacing.xs }}>
+            <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
+            <TouchableOpacity onPress={() => setReportOpen(true)} accessibilityRole="button">
+              <Text style={styles.reportLink}>⚑ Report a problem</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Integrity warnings are full sentences ("the invoice states 143 items
@@ -500,6 +528,34 @@ export default function ReviewScreen() {
           <Text style={styles.sentText}>✓ {t('pushed')}</Text>
         </View>
       )}
+
+      {/* Report-a-problem sheet */}
+      <Modal visible={reportOpen} animationType="slide" transparent onRequestClose={() => setReportOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setReportOpen(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>Report a problem</Text>
+            <TouchableOpacity onPress={() => setReportOpen(false)}>
+              <Text style={styles.modalDone}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.reportHelp}>
+            What looks wrong on this {doc.doc_type === 'invoice' ? 'bill' : 'prescription'}? We'll get
+            the document and the details we read, so we can fix it.
+          </Text>
+          <TextInput
+            style={styles.reportInput}
+            value={reportNote}
+            onChangeText={setReportNote}
+            placeholder="e.g. 143 items on the bill but the app shows 429"
+            placeholderTextColor={colors.textMuted}
+            multiline
+            numberOfLines={4}
+            textAlignVertical="top"
+          />
+          <Button title={reporting ? 'Sending…' : 'Send report'} onPress={sendReport} loading={reporting} />
+        </View>
+      </Modal>
 
       {/* Supplier / invoice fields — reachable from the summary line in table mode */}
       <Modal visible={headerOpen} animationType="slide" transparent onRequestClose={() => setHeaderOpen(false)}>
@@ -657,6 +713,13 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.sm },
   docType: { ...font.h1, color: colors.text },
   confidence: { ...font.body, color: colors.textSecondary, marginTop: spacing.xs },
+  reportLink: { ...font.caption, color: colors.textMuted, textDecorationLine: 'underline' },
+  reportHelp: { ...font.body, color: colors.textSecondary, marginBottom: spacing.md },
+  reportInput: {
+    minHeight: 110, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    padding: spacing.md, ...font.body, color: colors.text,
+    backgroundColor: colors.surface, marginBottom: spacing.lg,
+  },
   headerSummary: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
     backgroundColor: colors.surfaceAlt, borderRadius: radius.md,

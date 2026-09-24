@@ -63,3 +63,15 @@ export async function pushDocument(id: string): Promise<PushResult> {
   const res = await api.post(`/v1/documents/${id}/push`);
   return res.data as PushResult;
 }
+
+export interface ReportAck {
+  document_id: string;
+  reported: boolean;
+  message: string;
+}
+
+/** Tell us this extraction is wrong, with what the pipeline produced attached. */
+export async function reportDocument(id: string, note?: string): Promise<ReportAck> {
+  const res = await api.post(`/v1/documents/${id}/report`, { note: note || null });
+  return res.data as ReportAck;
+}
