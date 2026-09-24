@@ -47,9 +47,13 @@ def test_merge_medications_for_prescription():
     assert len(m["medications"]) == 2
 
 
-def test_process_multipage_pdf_merges_all_chunks(monkeypatch):
-    """A 12-page PDF with chunk size 4 => 3 chunks; mock returns 1 item each
-    => merged invoice has 3 line items."""
+def test_process_multipage_pdf_merges_chunks_then_dedupes(monkeypatch):
+    """A 12-page PDF with chunk size 4 => 3 chunks, each merged in.
+
+    The mock returns the SAME line item for every chunk, so this also pins the
+    invoice de-duplication rule: identical rows collapse to one and the collapse
+    is reported in meta rather than happening silently.
+    """
     monkeypatch.setattr(settings, "allow_mock_ocr", True)
     monkeypatch.setattr(settings, "ocr_pdf_chunk_pages", 4)
 
@@ -58,9 +62,11 @@ def test_process_multipage_pdf_merges_all_chunks(monkeypatch):
 
     assert result["doc_type"] == "invoice"
     assert result["meta"]["pages"] == 12
-    # Mock invoice yields 1 line item per chunk; 3 chunks => 3 items merged.
-    assert len(result["fields"]["line_items"]) == 3
-    assert result["meta"]["item_count"] == 3
+    # 3 chunks were merged (3 identical rows), then collapsed to 1.
+    assert result["meta"]["duplicates_removed"] == 2
+    assert len(result["fields"]["line_items"]) == 1
+    assert result["meta"]["item_count"] == 1
+    assert any("repeated line" in w for w in result["meta"]["warnings"])
 
 
 def test_small_pdf_single_pass(monkeypatch):

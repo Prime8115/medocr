@@ -9,6 +9,8 @@
  *   "medications[0].strength"     -> fields.medications[0].strength
  */
 
+import { StringKey, t } from '../i18n/strings';
+
 export type Leaf = { value: string | null; confidence?: number | null; [k: string]: unknown };
 export type Fields = Record<string, unknown>;
 
@@ -121,14 +123,33 @@ const INVOICE_SINGLE: Section[] = [
   },
 ];
 
-const LINE_FIELDS = (i: number): FieldSpec[] => [
+/**
+ * Label the rate with the column the supplier actually printed.
+ *
+ * MRP, PTR, PTS and the billed rate are different numbers; the backend records
+ * which one fed `rate` in `rate_source`, and we surface it so the pharmacist can
+ * see what the figure means instead of guessing per invoice.
+ */
+function rateLabel(fields: Fields, i: number): string {
+  const source = String(getLeaf(fields, `line_items[${i}].rate_source`)?.value ?? '').trim();
+  return source ? `Rate (${source})` : 'Rate';
+}
+
+const LINE_FIELDS = (i: number, fields: Fields): FieldSpec[] => [
   { path: `line_items[${i}].description`, label: 'Item' },
   { path: `line_items[${i}].batch_no`, label: 'Batch' },
   { path: `line_items[${i}].expiry`, label: 'Expiry' },
   { path: `line_items[${i}].quantity`, label: 'Qty' },
+  { path: `line_items[${i}].free_quantity`, label: 'Free qty' },
   { path: `line_items[${i}].mrp`, label: 'MRP' },
-  { path: `line_items[${i}].rate`, label: 'Rate' },
+  { path: `line_items[${i}].rate`, label: rateLabel(fields, i) },
+  { path: `line_items[${i}].amount`, label: 'Amount' },
 ];
+
+/** Section titles are stored as i18n keys; resolve them for display. */
+function translateTitle(section: Section): Section {
+  return { ...section, title: t(section.title as StringKey) };
+}
 
 /** Build the ordered sections to render for a payload's doc type. */
 export function buildSections(payload: ExtractionPayload): Section[] {
@@ -136,13 +157,13 @@ export function buildSections(payload: ExtractionPayload): Section[] {
   if (payload.doc_type === 'invoice') {
     const items = (fields.line_items as unknown[]) || [];
     return [
-      ...INVOICE_SINGLE,
-      ...items.map((_, i) => ({ title: `${'lineItems'} #${i + 1}`, fields: LINE_FIELDS(i) })),
+      ...INVOICE_SINGLE.map(translateTitle),
+      ...items.map((_, i) => ({ title: `${t('lineItems')} #${i + 1}`, fields: LINE_FIELDS(i, fields) })),
     ];
   }
   const meds = (fields.medications as unknown[]) || [];
   return [
-    ...PRESCRIPTION_SINGLE,
-    ...meds.map((_, i) => ({ title: `${'medications'} #${i + 1}`, fields: MED_FIELDS(i) })),
+    ...PRESCRIPTION_SINGLE.map(translateTitle),
+    ...meds.map((_, i) => ({ title: `${t('medications')} #${i + 1}`, fields: MED_FIELDS(i) })),
   ];
 }

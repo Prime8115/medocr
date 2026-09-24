@@ -32,10 +32,41 @@ dates as `normalized: "YYYY-MM-DD"`).
 
 ### Invoice `data`
 `supplier{name,gstin,address}`, `invoice{invoice_no,invoice_date,total_amount}`,
-`line_items[]{description,batch_no,expiry,quantity,mrp,rate,amount,hsn,gst_percent}`.
+`line_items[]{description,pack,batch_no,expiry,quantity,free_quantity,mrp,ptr,pts,`
+`rate,rate_source,discount_percent,amount,hsn,gst_percent}`.
+
+**Prices are not interchangeable.** An Indian pharma invoice prints several per
+line, so each has its own field:
+
+| Field | Meaning |
+|---|---|
+| `mrp` | Maximum Retail Price — what the customer pays |
+| `ptr` | Price To Retailer — what the pharmacy pays per unit |
+| `pts` | Price To Stockist |
+| `rate` | **The rate the line was billed at.** Always populated — this is the field to import. |
+| `rate_source` | Which column `rate` came from, as the supplier printed it: `"RATE"`, `"PTR"` or `"PTS"`. Carries `confidence: null` (it is a label, not a reading). |
+
+`quantity` is the billed quantity only; scheme/bonus goods are in
+`free_quantity` and must be added to stock separately.
+
+### Invoice integrity (`meta`)
+Every invoice is cross-checked before it can be approved. Read these if you
+reconcile on your side:
+
+| Key | Meaning |
+|---|---|
+| `copies_detected` | Printed copies found in one file (GST invoices are often Original/Duplicate/Triplicate). Only the first is extracted. |
+| `duplicates_removed` | Identical rows collapsed after extraction. |
+| `stated_item_count` | The item count the invoice prints about itself, when present. |
+| `line_items_total` | Sum of the line `amount` values. |
+| `total_reconciles` | `true` when `line_items_total` matches `invoice.total_amount` (tolerance: the greater of ₹5 or 2%), `false` when it does not, `null` when no total could be read. |
+
+Any mismatch also appears in plain language in `meta.warnings`.
 
 > **Versioning:** additive fields may appear within v1. Renames/removals bump
 > `payload_version`. Pin to the major version and ignore unknown fields.
+> `ptr`, `pts`, `pack`, `free_quantity`, `discount_percent` and `rate_source`
+> were added in this way; `rate` keeps its meaning and is still always set.
 
 ---
 

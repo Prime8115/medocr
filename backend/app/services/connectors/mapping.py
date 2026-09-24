@@ -31,9 +31,14 @@ FIELD_KEYS = {
         "document_id", "patient", "prescriber", "medication",
         "strength", "form", "frequency", "duration", "instructions",
     ],
+    # `rate` is the billed rate and is always populated; `rate_source` says which
+    # column it came from ("RATE", "PTR", "PTS"). ptr/pts/free_quantity/pack/
+    # discount_percent are additive - existing profiles are unchanged, but a
+    # custom `columns` config can now reference them.
     "invoice": [
         "document_id", "supplier", "invoice_no", "invoice_date", "description",
-        "batch_no", "expiry", "quantity", "mrp", "rate", "amount", "hsn", "gst_percent",
+        "pack", "batch_no", "expiry", "quantity", "free_quantity", "mrp", "ptr", "pts",
+        "rate", "rate_source", "discount_percent", "amount", "hsn", "gst_percent",
     ],
 }
 
@@ -62,7 +67,10 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
                 "invoice_no": invoice_no, "invoice_date": invoice_date,
                 "description": _v(item.get("description")), "batch_no": _v(item.get("batch_no")),
                 "expiry": _v(item.get("expiry")), "quantity": _v(item.get("quantity")),
-                "mrp": _v(item.get("mrp")), "rate": _v(item.get("rate")),
+                "free_quantity": _v(item.get("free_quantity")), "pack": _v(item.get("pack")),
+                "mrp": _v(item.get("mrp")), "ptr": _v(item.get("ptr")), "pts": _v(item.get("pts")),
+                "rate": _v(item.get("rate")), "rate_source": _v(item.get("rate_source")),
+                "discount_percent": _v(item.get("discount_percent")),
                 "amount": _v(item.get("amount")), "hsn": _v(item.get("hsn")),
                 "gst_percent": _v(item.get("gst_percent")),
             })

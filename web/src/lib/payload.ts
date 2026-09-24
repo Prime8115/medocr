@@ -83,19 +83,31 @@ const INVOICE_SINGLE: Section[] = [
   ] },
 ];
 
-const LINE_FIELDS = (i: number): FieldSpec[] => [
+/**
+ * Label the rate with the column the supplier actually printed. MRP, PTR, PTS
+ * and the billed rate are different numbers; `rate_source` records which one
+ * fed `rate`, so the reviewer can see what the figure means.
+ */
+function rateLabel(fields: Fields, i: number): string {
+  const source = String(getLeaf(fields, `line_items[${i}].rate_source`)?.value ?? '').trim();
+  return source ? `Rate (${source})` : 'Rate';
+}
+
+const LINE_FIELDS = (i: number, fields: Fields): FieldSpec[] => [
   { path: `line_items[${i}].description`, label: 'Item' },
   { path: `line_items[${i}].batch_no`, label: 'Batch' },
   { path: `line_items[${i}].expiry`, label: 'Expiry' },
   { path: `line_items[${i}].quantity`, label: 'Qty' },
+  { path: `line_items[${i}].free_quantity`, label: 'Free qty' },
   { path: `line_items[${i}].mrp`, label: 'MRP' },
-  { path: `line_items[${i}].rate`, label: 'Rate' },
+  { path: `line_items[${i}].rate`, label: rateLabel(fields, i) },
+  { path: `line_items[${i}].amount`, label: 'Amount' },
 ];
 
 export function buildSections(payload: ExtractionPayload, fields: Fields): Section[] {
   if (payload.doc_type === 'invoice') {
     const items = (fields.line_items as unknown[]) || [];
-    return [...INVOICE_SINGLE, ...items.map((_, i) => ({ title: `Line item #${i + 1}`, fields: LINE_FIELDS(i) }))];
+    return [...INVOICE_SINGLE, ...items.map((_, i) => ({ title: `Line item #${i + 1}`, fields: LINE_FIELDS(i, fields) }))];
   }
   const meds = (fields.medications as unknown[]) || [];
   return [...PRESCRIPTION_SINGLE, ...meds.map((_, i) => ({ title: `Medication #${i + 1}`, fields: MED_FIELDS(i) }))];

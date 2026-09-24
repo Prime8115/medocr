@@ -23,7 +23,7 @@ import {
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { buildSections, getLeaf, setLeafValue, ExtractionPayload, Fields, Section } from '@/src/lib/payload';
+import { buildSections, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Section } from '@/src/lib/payload';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
@@ -235,7 +235,15 @@ export default function ReviewScreen() {
     );
   }
 
-  const meta = payload?.meta as { warnings?: string[]; pages?: number; item_count?: number } | undefined;
+  const meta = payload?.meta as
+    | {
+        warnings?: string[];
+        pages?: number;
+        item_count?: number;
+        line_items_total?: string | null;
+        total_reconciles?: boolean | null;
+      }
+    | undefined;
   const warnings = meta?.warnings ?? [];
 
   const matchForIndex = (i: number): MatchItem | undefined =>
@@ -308,6 +316,19 @@ export default function ReviewScreen() {
                 ? `${itemSections.length} items${meta?.pages ? ` · ${meta.pages} pages` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
                 : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
             </Text>
+            {/* The trust signal: do the lines we read add up to the printed total? */}
+            {doc.doc_type === 'invoice' && meta?.line_items_total ? (
+              <Text
+                style={[
+                  styles.total,
+                  meta.total_reconciles === false && styles.totalMismatch,
+                  meta.total_reconciles === true && styles.totalOk,
+                ]}
+              >
+                {meta.total_reconciles === true ? '✓ ' : meta.total_reconciles === false ? '⚠ ' : ''}
+                Items total ₹{meta.line_items_total}
+              </Text>
+            ) : null}
           </View>
           <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
         </View>
@@ -431,6 +452,27 @@ export default function ReviewScreen() {
   );
 }
 
+// The fields worth showing on a collapsed row, in the order a pharmacist checks
+// them. Falls back to "whatever is populated" for any section without them.
+const SUMMARY_PREFERENCE = ['.quantity', '.rate', '.amount', '.strength', '.frequency', '.duration'];
+
+function summarise(section: Section, fields: Fields): string {
+  const labelled = (specs: FieldSpec[]) =>
+    specs
+      .map((f) => {
+        const v = getLeaf(fields, f.path)?.value;
+        return v ? `${f.label}: ${v}` : null;
+      })
+      .filter(Boolean) as string[];
+
+  const preferred = SUMMARY_PREFERENCE
+    .map((suffix) => section.fields.find((f) => f.path.endsWith(suffix)))
+    .filter(Boolean) as FieldSpec[];
+
+  const picked = labelled(preferred);
+  return (picked.length ? picked : labelled(section.fields.slice(1))).slice(0, 3).join('  ·  ');
+}
+
 /** Compact, read-only row for a line item / medication. Tap to edit. */
 function ItemRow({
   section,
@@ -444,16 +486,7 @@ function ItemRow({
   onPress: () => void;
 }) {
   const primary = getLeaf(fields, section.fields[0].path)?.value || '(unnamed)';
-  // Secondary summary from a couple of key fields (skip the primary).
-  const secondary = section.fields
-    .slice(1)
-    .map((f) => {
-      const v = getLeaf(fields, f.path)?.value;
-      return v ? `${f.label}: ${v}` : null;
-    })
-    .filter(Boolean)
-    .slice(0, 3)
-    .join('  ·  ');
+  const secondary = summarise(section, fields);
   const best = match?.best_score ?? null;
 
   return (
@@ -490,6 +523,9 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.sm },
   docType: { ...font.h1, color: colors.text },
   confidence: { ...font.body, color: colors.textSecondary, marginTop: spacing.xs },
+  total: { ...font.body, color: colors.textSecondary, marginTop: 2, fontWeight: '600' },
+  totalOk: { color: colors.success },
+  totalMismatch: { color: colors.warning },
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
   warnText: { ...font.body, color: colors.warning },
   listHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.sm, marginBottom: spacing.sm },
