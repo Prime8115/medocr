@@ -32,3 +32,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.log
+
+# Real customer invoices used as a local regression suite (never committed:
+# they carry supplier GSTINs, trade prices and margins).
+backend/tests/real_invoices/*.pdf

@@ -22,6 +22,8 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
+from app.services.ocr.pdf_table import extract_word_tables
+
 log = logging.getLogger(__name__)
 
 # field -> (keywords in PREFERENCE order, exclude keywords). Header cells are
@@ -38,23 +40,29 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "pack": (["packing", "pack"], []),
     # Free/scheme quantity is claimed BEFORE quantity so a "F.QTY" column can
     # never be mistaken for the billed quantity.
-    "free_quantity": (["freeqty", "schemeqty", "free", "fqty", "scheme", "bonus"], ["%", "value", "amount"]),
+    # "Fr. Qty." (Kanchan) normalises to "frqty", which matched nothing before.
+    "free_quantity": (["freeqty", "frqty", "schemeqty", "free", "fqty", "scheme", "bonus"], ["%", "value", "amount"]),
     "quantity": (["quantity", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
     "mrp": (["mrp"], ["%"]),
     "ptr": (["pricetoretailer", "retailerprice", "ptr"], ["%"]),
     "pts": (["pricetostockist", "stockistprice", "pts"], ["%"]),
-    # An explicit billed-rate column. Never matches MRP/PTR/PTS columns.
+    # An explicit billed-rate column. "NIR" (Net Invoice Rate) is tried first
+    # because Bharat prints it beside a bare CGST "Rate" column that would
+    # otherwise win. GST rate columns are excluded outright.
     "rate": (
-        ["billrate", "netrate", "purchaserate", "salerate", "unitprice", "prate", "rate"],
-        ["%", "mrp", "ptr", "pts"],
+        ["nir", "netinvoicerate", "billrate", "netrate", "purchaserate", "salerate",
+         "unitprice", "prate", "rate"],
+        ["%", "mrp", "ptr", "pts", "cgst", "sgst", "igst", "gst", "tax"],
     ),
     "discount_percent": (["disc%", "discount%", "discount", "disc"], ["amt", "amount", "value", "rs"]),
-    "amount": (["netamount", "netamt", "taxableamt", "taxablevalue", "amount", "value", "total"], ["%"]),
+    # The net/taxable column is what the bill actually sums; a plain "Amount"
+    # column (Kanchan) is the figure BEFORE the line discount.
+    "amount": (
+        ["taxableamount", "taxablevalue", "taxableamt", "netamount", "netamt", "netvalue",
+         "amount", "value", "total"],
+        ["%"],
+    ),
 }
-
-# Which price column feeds `rate` when the invoice has no explicit rate column,
-# in order of preference. PTR is what this pharmacy actually pays.
-_RATE_FALLBACKS = ("ptr", "pts")
 
 _COPY_MARKERS = (
     ("original", re.compile(r"\boriginal\b", re.I)),
@@ -63,6 +71,13 @@ _COPY_MARKERS = (
     ("quadruplicate", re.compile(r"\bquadruplicate\b", re.I)),
     ("office", re.compile(r"\boffice\s+copy\b", re.I)),
 )
+
+# India's highest GST slab. Anything above it is a misread cell, not a rate.
+_MAX_GST_PERCENT = 28.0
+
+# No real pharmacy line carries more units than this. A bigger number in the
+# quantity column means we picked up an invoice or IRN number from a footer.
+_MAX_LINE_QUANTITY = 1_000_000
 
 _SUMMARY_ROW = re.compile(r"\b(total|grand|net\s*amount|sub\s*total|subtotal|carried|c/f|b/f)\b", re.I)
 
@@ -79,12 +94,17 @@ def _clean(cell) -> str:
     return re.sub(r"\s+", " ", str(cell)).strip()
 
 
+# Suppliers name the batch column differently - Zydus "BATCH", JB "Batch
+# Number", Bharat "Lot No.". Demanding the literal word "batch" rejected Bharat.
+_BATCH_MARKERS = ("batch", "lotno", "lot")
+_ITEM_MARKERS = ("qty", "quantity", "productname", "product", "item", "description")
+
+
 def _find_header_row(table) -> Optional[int]:
-    """Row index of the column-header row (has batch + a qty/product marker)."""
+    """Row index of the column-header row (a batch/lot marker + a qty/product one)."""
     for i, row in enumerate(table):
-        norms = [_norm(c) for c in row]
-        joined = " ".join(norms)
-        if "batch" in joined and ("qty" in joined or "productname" in joined or "product" in joined or "item" in joined):
+        joined = " ".join(_norm(c) for c in row)
+        if any(b in joined for b in _BATCH_MARKERS) and any(m in joined for m in _ITEM_MARKERS):
             return i
     return None
 
@@ -123,11 +143,20 @@ def _header_text(header_row, idx: Optional[int]) -> str:
 
 
 def _gst_columns(header_row) -> List[int]:
-    """Indices of GST-percentage columns (CGST%/SGST%/IGST%/GST%) to sum."""
+    """Indices of GST-rate columns (CGST/SGST/IGST) whose percentage we sum.
+
+    Most invoices mark the rate with a "%". JB heads its pair "CGST Rate | Amt."
+    with no percent sign at all, so a rate column is also recognised by the word
+    "rate" - the cell's first number is the percentage either way. Without this
+    the invoice has no GST, and its tax-inclusive printed total can never be
+    reconciled against the taxable lines.
+    """
     out = []
     for idx, c in enumerate(header_row):
         h = _norm(c)
-        if ("gst" in h or "igst" in h) and "%" in str(c) and "amt" not in h:
+        if "gst" not in h:
+            continue
+        if "%" in str(c) or "rate" in h:
             out.append(idx)
     return out
 
@@ -179,6 +208,7 @@ def _copy_groups(labels: List[Optional[str]]) -> List[List[int]]:
 # Most specific first - "Net Payable" beats a bare "Total" printed higher up.
 _TOTAL_PATTERNS = [
     r"net\s*payable",
+    r"net\s*to\s*pay",
     r"grand\s*total",
     r"bill\s*amount",
     r"invoice\s*(?:total|amount|value)",
@@ -241,6 +271,40 @@ def _extract_header_meta(text: str) -> dict:
 
 
 # --------------------------------- row build ---------------------------------
+def _looks_like_prose(text: str) -> bool:
+    """True for a sentence fragment rather than a medicine name.
+
+    Terms-and-conditions text at the foot of a page can line up with the item
+    columns well enough to be read as a row ("by us do not contravene he..."),
+    and such a row can pick up a summary figure as its amount. A medicine name
+    is short, carries a strength or pack size, or is set in capitals; running
+    prose is several lowercase words with no digits in sight.
+    """
+    words = text.split()
+    if len(words) < 3 or any(ch.isdigit() for ch in text):
+        return False
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    lowercase = sum(1 for c in letters if c.islower())
+    return lowercase / len(letters) > 0.6
+
+
+
+def price_labels(cols: dict, header_row) -> dict:
+    """The supplier's own wording for each price column, e.g. {'pts': 'P.T.S.'}.
+
+    Shown to the pharmacist as `Rate (P.T.S.)`, so the number on screen is
+    traceable to a column on the paper.
+    """
+    out = {}
+    for field in ("rate", "ptr", "pts", "mrp"):
+        label = _header_text(header_row, cols.get(field))
+        if label:
+            out[field] = re.sub(r"\s+", " ", label).strip()
+    return out
+
+
 def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[dict]:
     def cell(field):
         idx = cols.get(field)
@@ -253,6 +317,8 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
         return None
     if _SUMMARY_ROW.search(desc):
         return None
+    if _looks_like_prose(desc):
+        return None
 
     item = {"description": _f(desc)}
     for field in ("batch_no", "expiry", "hsn", "pack"):
@@ -262,20 +328,10 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
         if cols.get(field) is not None:
             item[field] = _f(_num(cell(field)))
 
-    # `rate` is the connector contract and must always be populated. When the
-    # invoice has no explicit rate column, fall back to PTR then PTS - and say so.
-    rate_source = _header_text(header_row, cols.get("rate")) if cols.get("rate") is not None else ""
-    if not (item.get("rate") or {}).get("value"):
-        for fallback in _RATE_FALLBACKS:
-            candidate = (item.get(fallback) or {}).get("value")
-            if candidate:
-                item["rate"] = _f(candidate)
-                rate_source = _header_text(header_row, cols.get(fallback)) or fallback.upper()
-                break
-    if rate_source:
-        # confidence None: this is a label, not an extracted measurement, and it
-        # must not dilute the document's overall confidence score.
-        item["rate_source"] = _f(rate_source, None)
+    # `rate` is deliberately NOT guessed here. Which printed price column a bill
+    # is charged on varies by supplier and by who the buyer is, and no ordering
+    # of column names gets it right - invoice_checks.resolve_billed_rate decides
+    # it from amount / quantity once the whole invoice has been read.
 
     # GST% = sum of CGST%+SGST% (or IGST%) columns.
     gst_vals = []
@@ -283,14 +339,51 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
         if gi < len(row):
             n = _num(row[gi])
             if n:
-                gst_vals.append(float(n))
+                value = float(n)
+                # A merged "SGST % Amount" cell can hand us the tax AMOUNT
+                # instead of the rate; 665% GST then inflates the gross total
+                # sixty-fold. India's top GST slab is 28%.
+                if 0 <= value <= _MAX_GST_PERCENT:
+                    gst_vals.append(value)
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
+
+    # A footer line that slips past the text filters gives itself away here: its
+    # "quantity" is an IRN or invoice number a dozen digits long. Kanchan's IRN
+    # line was being kept as an item, and its amount - the invoice's own basic
+    # total - doubled the line sum.
+    qty_text = (item.get("quantity") or {}).get("value")
+    if qty_text:
+        try:
+            if abs(float(qty_text)) > _MAX_LINE_QUANTITY:
+                return None
+        except ValueError:
+            pass
 
     # Only keep rows that have at least a quantity or a batch.
     if item.get("quantity", {}).get("value") or item.get("batch_no", {}).get("value"):
         return item
     return None
+
+
+def _rows_from_tables(tables, labels: dict) -> List[dict]:
+    """Line items from whichever of these tables is the line-item table."""
+    out: List[dict] = []
+    for table in tables or []:
+        hi = _find_header_row(table)
+        if hi is None:
+            continue
+        header_row = table[hi]
+        cols = _map_columns(header_row)
+        if "description" not in cols or ("quantity" not in cols and "batch_no" not in cols):
+            continue  # not a line-item table we understand
+        gst_cols = _gst_columns(header_row)
+        labels.update(price_labels(cols, header_row))
+        for row in table[hi + 1:]:
+            item = _build_item(row, cols, header_row, gst_cols)
+            if item:
+                out.append(item)
+    return out
 
 
 def parse_invoice_pdf(data: bytes) -> Optional[dict]:
@@ -309,6 +402,7 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
         return None
 
     line_items: List[dict] = []
+    labels: dict = {}
     meta = None
     copies = 1
     stated_count = None
@@ -333,19 +427,15 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
                     continue
                 if meta is None:
                     meta = _extract_header_meta(page_texts[page_no])
-                for table in page.extract_tables() or []:
-                    hi = _find_header_row(table)
-                    if hi is None:
-                        continue
-                    header_row = table[hi]
-                    cols = _map_columns(header_row)
-                    if "description" not in cols or ("quantity" not in cols and "batch_no" not in cols):
-                        continue  # not a line-item table we understand
-                    gst_cols = _gst_columns(header_row)
-                    for row in table[hi + 1:]:
-                        item = _build_item(row, cols, header_row, gst_cols)
-                        if item:
-                            line_items.append(item)
+                # Ruled tables first - exact when the invoice draws them. If they
+                # yield nothing usable (Kanchan draws a box round its ADDRESS but
+                # not round its line items), rebuild the table from word
+                # positions instead. Judged on the outcome, not on whether some
+                # table was found: a detected table is not a line-item table.
+                page_items = _rows_from_tables(page.extract_tables() or [], labels)
+                if not page_items:
+                    page_items = _rows_from_tables(extract_word_tables(page), labels)
+                line_items.extend(page_items)
     except Exception as exc:  # noqa: BLE001 - any parsing failure -> fall back to AI
         log.warning("invoice_parser: deterministic parse failed (%s); falling back to AI", exc, exc_info=True)
         return None
@@ -358,5 +448,9 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
         fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
     fields["line_items"] = line_items
-    fields["_hints"] = {"copies_detected": copies, "stated_item_count": stated_count}
+    fields["_hints"] = {
+        "copies_detected": copies,
+        "stated_item_count": stated_count,
+        "price_labels": labels,
+    }
     return fields

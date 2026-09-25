@@ -18,6 +18,7 @@ from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.invoice_checks import (
     dedupe_line_items,
     reconcile_invoice,
+    resolve_billed_rate,
     validate_line_arithmetic,
 )
 from app.services.ocr.postprocess import postprocess_fields
@@ -216,6 +217,13 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 check_warnings.append(
                     f"{removed} repeated line(s) were removed. Please confirm the item count."
                 )
+
+    if resolved_type == "invoice":
+        # Decide which printed price column the bill was actually charged on,
+        # before the arithmetic check runs against it.
+        billed = resolve_billed_rate(fields.get("line_items") or [], hints.get("price_labels"))
+        if billed:
+            integrity["billed_rate_column"] = billed
 
     fields = postprocess_fields(resolved_type, fields)
 

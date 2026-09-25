@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "Expectations for the real supplier invoices a customer sent on 25 Sep 2026.",
+    "The PDFs themselves are gitignored - they carry supplier GSTINs, trade prices",
+    "and margins. Only structural facts live here: how many line items the invoice",
+    "has, how many printed copies the file contains, and which printed price column",
+    "the bill is actually charged on. No money figures are committed.",
+    "Drop the PDFs into this folder to run tests/test_real_invoices.py; without them",
+    "the suite skips."
+  ],
+  "invoices": [
+    {
+      "file": "Zydus PDF(1).pdf",
+      "why": "The original field complaint: 143 items displayed as 429, and the rate column showing PTR when the bill is charged on PTS.",
+      "pages": 33,
+      "copies_detected": 3,
+      "item_count": 143,
+      "billed_rate_column": "pts",
+      "rate_source_label": "PTS",
+      "total_reconciles": true,
+      "has_ruled_table": true
+    },
+    {
+      "file": "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf",
+      "why": "Prints Rate, PTR and MRP side by side, and draws no table rules at all.",
+      "pages": 3,
+      "copies_detected": 1,
+      "item_count": 42,
+      "billed_rate_column": "rate",
+      "rate_source_label": "Rate",
+      "total_reconciles": true,
+      "has_ruled_table": false
+    },
+    {
+      "file": "KANCHAN PHARMA PVT. LTD(PRECIA).pdf",
+      "why": "Prints M.R.P., P.T.S. and P.T.R.; billed on PTS less a line discount whose column is headed only '%'.",
+      "pages": 2,
+      "copies_detected": 1,
+      "item_count": 12,
+      "billed_rate_column": "pts",
+      "rate_source_label": "P.T.S.",
+      "total_reconciles": true,
+      "has_ruled_table": true
+    },
+    {
+      "file": "BHARAT SERUMS AND VACCINES LIMITED.pdf",
+      "why": "Bills on a column called NIR, heads its batch column 'Lot No.', and prints its grand total only in words.",
+      "pages": 3,
+      "copies_detected": 1,
+      "item_count": 7,
+      "billed_rate_column": "rate",
+      "rate_source_label": "NIR",
+      "total_reconciles": null,
+      "has_ruled_table": false
+    }
+  ]
+}

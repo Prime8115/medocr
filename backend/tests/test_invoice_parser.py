@@ -48,37 +48,48 @@ def test_map_columns():
     assert "rate" not in cols
 
 
-def test_explicit_rate_column_wins_over_ptr():
-    """The client's complaint: 'rate field available but displays PTR'."""
+def test_price_columns_are_read_into_their_own_fields():
+    """MRP, PTR and an explicit RATE are three different numbers, never merged."""
     cols = ip._map_columns(HEADER_WITH_RATE)
     assert cols["mrp"] == 3
     assert cols["ptr"] == 4
     assert cols["rate"] == 5            # RATE, even though PTR is printed first
 
     item = ip._build_item(ROW_WITH_RATE, cols, HEADER_WITH_RATE, [])
-    assert item["rate"]["value"] == "19.80"
-    assert item["ptr"]["value"] == "21.35"
     assert item["mrp"]["value"] == "30.50"
-    assert item["rate_source"]["value"] == "RATE"
+    assert item["ptr"]["value"] == "21.35"
+    assert item["rate"]["value"] == "19.80"
 
 
-def test_rate_falls_back_to_ptr_and_says_so():
+def test_parser_does_not_guess_which_price_was_billed():
+    """Zydus prints MRP/PTR/PTS and no rate column.
+
+    The parser must NOT copy one of them into `rate`: which price a bill is
+    charged on varies by supplier and by buyer, and no column-name ordering gets
+    it right. resolve_billed_rate decides it from amount / quantity instead.
+    """
     cols = ip._map_columns(HEADER)
     item = ip._build_item(ROW1, cols, HEADER, ip._gst_columns(HEADER))
     assert item["ptr"]["value"] == "77.79"
-    assert item["rate"]["value"] == "77.79"     # still populated for connectors
-    assert item["rate_source"]["value"] == "PTR"  # ...but honest about the source
-    # A label, not a measurement: it must not dilute overall confidence.
-    assert item["rate_source"]["confidence"] is None
+    assert "rate" not in item or item["rate"]["value"] is None
+    assert "rate_source" not in item
 
 
-def test_rate_falls_back_to_pts_when_that_is_all_there_is():
+def test_price_labels_report_the_suppliers_own_wording():
+    """So the app can show `Rate (P.T.S.)` rather than an unexplained number."""
+    header = ["ITEM NAME", "BATCH", "EXP", "M.R.P.", "P.T.S.", "P.T.R.", "QTY", "AMOUNT"]
+    labels = ip.price_labels(ip._map_columns(header), header)
+    assert labels["mrp"] == "M.R.P."
+    assert labels["pts"] == "P.T.S."
+    assert labels["ptr"] == "P.T.R."
+
+
+def test_pts_column_is_recognised():
     cols = ip._map_columns(HEADER_PTS)
     assert cols["pts"] == 4
     item = ip._build_item(ROW_PTS, cols, HEADER_PTS, [])
     assert item["pts"]["value"] == "98.40"
-    assert item["rate"]["value"] == "98.40"
-    assert item["rate_source"]["value"] == "PTS"
+    assert item["mrp"]["value"] == "130.00"
 
 
 def test_free_quantity_is_not_billed_quantity():

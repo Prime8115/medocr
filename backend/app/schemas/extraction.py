@@ -128,7 +128,13 @@ class ExtractionMeta(BaseModel):
     stated_item_count: Optional[int] = None
     # Sum of the line-item amounts, and whether it matches the printed total.
     line_items_total: Optional[str] = None
+    # The same sum with each line's GST added back - an Indian invoice's printed
+    # grand total is tax-inclusive, so this is usually the number that matches.
+    line_items_total_with_gst: Optional[str] = None
     total_reconciles: Optional[bool] = None
+    # Which printed price column the bill turned out to be charged on
+    # ("pts", "ptr", "rate", ...), decided from amount / quantity.
+    billed_rate_column: Optional[str] = None
 
 
 class ExtractionPayload(BaseModel):
