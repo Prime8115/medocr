@@ -44,14 +44,24 @@ def test_triplicate_invoice_is_read_once_not_three_times():
     assert len(set(descriptions)) == 40      # every row distinct
 
 
-def test_repeated_copies_without_markers_are_caught_by_dedupe():
-    """Harder case: the copies carry no Original/Duplicate wording at all."""
+def test_repeated_copies_without_markers_are_still_read_once():
+    """Harder case: the copies carry no Original/Duplicate wording at all.
+
+    Copies are exact repeats at a fixed period, so they are recognised by
+    comparing two pages rather than by reading every page and de-duplicating
+    afterwards. That means the duplicate pages are never parsed at all - which
+    is both correct and the reason a 33-page invoice went from 11s to 4s.
+    """
     result = _run(n_items=30, copies=3, label_copies=False, stated_count=False)
     meta = result["meta"]
 
     assert meta["item_count"] == 30
-    assert meta["duplicates_removed"] == 60
-    assert any("repeated line" in w for w in meta["warnings"])
+    assert meta["copies_detected"] == 3
+    # Nothing to collapse: the repeats were never read in.
+    assert meta["duplicates_removed"] == 0
+
+    descriptions = [i["description"]["value"] for i in result["fields"]["line_items"]]
+    assert len(set(descriptions)) == 30
 
 
 def test_single_copy_invoice_is_untouched():

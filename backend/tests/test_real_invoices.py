@@ -183,3 +183,62 @@ def test_parser_returns_hints_for_the_pipeline():
     labels = parsed["_hints"]["price_labels"]
     assert labels.get("pts") == "P.T.S."
     assert labels.get("ptr") == "P.T.R."
+
+
+# --------------------------------- performance ---------------------------------
+# A pharmacist is standing at the counter waiting for this. Generous enough not
+# to flake on a slow CI box, tight enough to catch a real regression: before the
+# page-reading was trimmed, the 33-page invoice took 11s.
+_BUDGET_SECONDS = {1: 3.0, 2: 3.0, 3: 4.0, 33: 8.0}
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_extraction_is_fast_enough_to_wait_for(case):
+    """Extraction must feel immediate, including for a triplicate invoice.
+
+    The slow part was never the table parsing (well under a second); it was
+    reading the text of every page in the file, including the two printed copies
+    we then discard.
+    """
+    import time
+
+    data = (HERE / case["file"]).read_bytes()
+    budget = _BUDGET_SECONDS.get(case["pages"], 8.0)
+
+    started = time.perf_counter()
+    process_document("perf", data, "application/pdf", doc_type="invoice")
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < budget, f"{case['file']} took {elapsed:.1f}s (budget {budget}s)"
+
+
+def test_duplicate_pages_are_never_parsed():
+    """The copies must be skipped, not read and then thrown away.
+
+    Zydus is 33 pages holding one 11-page invoice three times. If the page
+    budget ever regresses to reading all of them, this catches it.
+    """
+    case = next((c for c in CASES if c["copies_detected"] > 1), None)
+    if case is None:
+        pytest.skip("no multi-copy invoice present")
+
+    import io
+
+    import pdfplumber
+
+    read: list = []
+    original = pdfplumber.page.Page.extract_text
+
+    def counting(self, *a, **kw):
+        read.append(self.page_number)
+        return original(self, *a, **kw)
+
+    pdfplumber.page.Page.extract_text = counting
+    try:
+        parse_invoice_pdf((HERE / case["file"]).read_bytes())
+    finally:
+        pdfplumber.page.Page.extract_text = original
+
+    per_copy = case["pages"] // case["copies_detected"]
+    # One copy's pages, plus the couple sampled to detect the repeat.
+    assert len(set(read)) <= per_copy + 2, sorted(set(read))

@@ -184,6 +184,47 @@ def _copy_label(text: str) -> Optional[str]:
     return None
 
 
+_COPY_WORDS = re.compile(r"\b(original|duplicate|triplicate|quadruplicate)\b", re.I)
+
+
+def _page_signature(text: str) -> str:
+    """A page's content with the copy wording removed, for comparing copies."""
+    return re.sub(r"\s+", " ", _COPY_WORDS.sub("", text or "")).strip()
+
+
+def _detect_copies(pdf, max_copies: int = 4) -> int:
+    """How many times this invoice is printed in the file, read cheaply.
+
+    Reading every page's text just to find the copy markers was costing eight
+    seconds on a 33-page triplicate invoice - by far the slowest thing in the
+    upload. Copies are exact repeats at a fixed period, so comparing page 1 with
+    the page one period later settles it after reading two pages instead of all
+    of them.
+
+    Returns 1 when the file holds a single invoice.
+    """
+    total = len(pdf.pages)
+    if total < 2:
+        return 1
+    try:
+        first = _page_signature(pdf.pages[0].extract_text() or "")
+    except Exception:  # noqa: BLE001
+        return 1
+    if not first:
+        return 1
+
+    for copies in range(max_copies, 1, -1):
+        if total % copies:
+            continue
+        try:
+            candidate = _page_signature(pdf.pages[total // copies].extract_text() or "")
+        except Exception:  # noqa: BLE001
+            continue
+        if candidate and candidate == first:
+            return copies
+    return 1
+
+
 def _copy_groups(labels: List[Optional[str]]) -> List[List[int]]:
     """Split page indices into groups, one per printed copy.
 
@@ -412,6 +453,7 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
         return None
 
     line_items: List[dict] = []
+    page_items: Dict[int, List[dict]] = {}
     labels: dict = {}
     meta = None
     copies = 1
@@ -420,21 +462,29 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
 
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
-            page_texts = [(p.extract_text() or "") for p in pdf.pages]
+            total_pages = len(pdf.pages)
 
-            # Read only the first printed copy of the invoice.
-            groups = _copy_groups([_copy_label(t) for t in page_texts])
-            copies = len(groups)
-            wanted = set(groups[0]) if copies > 1 else set(range(len(pdf.pages)))
+            # Read only the first printed copy. Settled by comparing two pages
+            # rather than by reading every page's text, which was the single
+            # slowest step of an upload: eight seconds on a 33-page invoice.
+            copies = _detect_copies(pdf)
+            per_copy = total_pages // copies if copies > 1 else total_pages
+            wanted = list(range(per_copy))
             if copies > 1:
-                log.info("invoice_parser: %d printed copies detected; reading pages %s", copies, sorted(wanted))
+                log.info(
+                    "invoice_parser: %d printed copies detected; reading pages 1-%d of %d",
+                    copies, per_copy, total_pages,
+                )
 
-            full_text = "\n".join(page_texts[i] for i in sorted(wanted))
-            stated_count = _extract_item_count(full_text)
+            # Text is collected only for the pages we actually read. Their
+            # character layer has to be parsed for the tables anyway, so this
+            # costs almost nothing - whereas doing it for every page of a
+            # triplicate invoice meant paying for two copies we then discard.
+            page_texts: Dict[int, str] = {}
 
-            for page_no, page in enumerate(pdf.pages):
-                if page_no not in wanted:
-                    continue
+            for page_no in wanted:
+                page = pdf.pages[page_no]
+                page_texts[page_no] = page.extract_text() or ""
                 if meta is None:
                     meta = _extract_header_meta(page_texts[page_no])
                 # Two ways to find the table, and we keep whichever actually
@@ -452,10 +502,25 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
                 word_items = _rows_from_tables(extract_word_tables(page), word_labels)
                 if len(word_items) > len(ruled_items):
                     labels.update(word_labels)
-                    line_items.extend(word_items)
+                    page_items[page_no] = word_items
                 else:
                     labels.update(ruled_labels)
-                    line_items.extend(ruled_items)
+                    page_items[page_no] = ruled_items
+
+            # Safety net for copies the period check cannot see - copies of
+            # unequal length, or a page count that is not an exact multiple.
+            # The page texts are already in hand, so this costs nothing.
+            if copies == 1:
+                groups = _copy_groups([_copy_label(page_texts[i]) for i in wanted])
+                if len(groups) > 1:
+                    copies = len(groups)
+                    wanted = groups[0]
+                    log.info("invoice_parser: %d printed copies found by marker", copies)
+
+            for page_no in wanted:
+                line_items.extend(page_items.get(page_no, []))
+            full_text = "\n".join(page_texts[i] for i in wanted)
+            stated_count = _extract_item_count(full_text)
     except Exception as exc:  # noqa: BLE001 - any parsing failure -> fall back to AI
         log.warning("invoice_parser: deterministic parse failed (%s); falling back to AI", exc, exc_info=True)
         return None

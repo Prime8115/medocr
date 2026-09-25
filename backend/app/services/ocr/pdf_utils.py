@@ -23,15 +23,31 @@ def extract_text_pages(data: bytes) -> List[str]:
         return []
 
 
-def is_digital_pdf(data: bytes, min_chars_per_page: int = 200) -> bool:
+def extract_text_sample(data: bytes, pages: int = 3) -> List[str]:
+    """Embedded text of the first few pages only.
+
+    Whether a PDF is computer-generated or scanned is a property of the whole
+    document, so a sample settles it. Reading all 33 pages of a triplicate
+    invoice just to answer that question cost two seconds of every upload.
+    """
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        return [(p.extract_text() or "") for p in reader.pages[:pages]]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def is_digital_pdf(data: bytes, min_chars_per_page: int = 200, sample_pages: int = 3) -> bool:
     """True if the PDF has substantial embedded text (computer-generated), so we
     can extract text directly instead of sending page images to the vision model.
     Scanned/photographed PDFs return False and use the image pipeline."""
-    pages = extract_text_pages(data)
+    pages = extract_text_sample(data, sample_pages)
     if not pages:
         return False
     total = sum(len(t.strip()) for t in pages)
-    # Digital if the average page carries real text.
+    # Digital if the average sampled page carries real text.
     return total >= min_chars_per_page * max(1, len(pages)) // 2
 
 
