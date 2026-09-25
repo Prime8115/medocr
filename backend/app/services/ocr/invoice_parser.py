@@ -42,7 +42,7 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # expiry is the field a pharmacist actually needs, so it claims that column.
     "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp"]),
     "uom": (["uom", "unitofmeasure"], []),
-    "batch_no": (["batchno", "batch", "lotno", "lot"], []),
+    "batch_no": (["batchno", "batch", "lotno", "lot", "bno", "btno"], ["bill", "sr", "inv"]),
     # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
     # heads one column "Exp.date / Mfg.date" - excluding it lost every expiry.
     "expiry": (["expdate", "expiry", "exp"], []),
@@ -116,7 +116,9 @@ def _clean(cell) -> str:
 
 # Suppliers name the batch column differently - Zydus "BATCH", JB "Batch
 # Number", Bharat "Lot No.". Demanding the literal word "batch" rejected Bharat.
-_BATCH_MARKERS = ("batch", "lotno", "lot")
+# "B.No.", "Bt.No", "Batch#" and "Lot No" are all common headings for the same
+# column; demanding the literal word "batch" rejected whole invoices.
+_BATCH_MARKERS = ("batch", "lotno", "lot", "bno", "btno", "bat")
 _ITEM_MARKERS = ("qty", "quantity", "productname", "product", "item", "description")
 
 

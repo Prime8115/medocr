@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 # Words that mark a line as the column header of a line-item table.
 _HEADER_KEYWORDS = (
-    "batch", "lot", "qty", "quantity", "hsn", "mrp", "rate", "ptr", "pts",
+    "batch", "lot", "bno", "qty", "quantity", "hsn", "mrp", "rate", "ptr", "pts",
     "amount", "value", "exp", "expiry", "product", "description", "item",
     "pack", "free", "disc", "gst", "uom", "nir",
 )
