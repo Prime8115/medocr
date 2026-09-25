@@ -122,13 +122,20 @@ def test_totals_reconcile(case, results):
 
 @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
 def test_clean_invoice_raises_no_alarms(case, results):
-    """A bill that reconciles must not also cry wolf - the warning banner is
-    only worth anything if it stays quiet on good invoices."""
-    if case["total_reconciles"] is not True:
-        pytest.skip("this invoice legitimately warns")
+    """A bill that reconciles must not also cry wolf.
+
+    The warning banner is only worth anything if it stays quiet on good
+    invoices. Anything an invoice *should* warn about is declared in the
+    manifest - Bharat carries one free replacement line with no taxable value,
+    and saying so is correct - so any warning beyond those is a false alarm.
+    """
     meta = results[case["file"]]["meta"]
-    sentences = [w for w in meta["warnings"] if " " in w]
-    assert sentences == [], sentences
+    expected = case.get("expected_warnings", [])
+    unexpected = [
+        w for w in meta["warnings"]
+        if " " in w and not any(e in w for e in expected)
+    ]
+    assert unexpected == [], unexpected
 
 
 @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))

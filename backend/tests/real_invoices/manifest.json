@@ -18,18 +18,22 @@
       "billed_rate_column": "pts",
       "rate_source_label": "PTS",
       "total_reconciles": true,
-      "has_ruled_table": true
+      "has_ruled_table": true,
+      "reconciles_gst_inclusive": true,
+      "expected_warnings": []
     },
     {
       "file": "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf",
       "why": "Prints Rate, PTR and MRP side by side, and draws no table rules at all.",
       "pages": 3,
       "copies_detected": 1,
-      "item_count": 42,
+      "item_count": 43,
       "billed_rate_column": "rate",
       "rate_source_label": "Rate",
       "total_reconciles": true,
-      "has_ruled_table": false
+      "has_ruled_table": false,
+      "reconciles_gst_inclusive": true,
+      "expected_warnings": []
     },
     {
       "file": "KANCHAN PHARMA PVT. LTD(PRECIA).pdf",
@@ -40,18 +44,24 @@
       "billed_rate_column": "pts",
       "rate_source_label": "P.T.S.",
       "total_reconciles": true,
-      "has_ruled_table": true
+      "has_ruled_table": true,
+      "reconciles_gst_inclusive": true,
+      "expected_warnings": []
     },
     {
       "file": "BHARAT SERUMS AND VACCINES LIMITED.pdf",
-      "why": "Bills on a column called NIR, heads its batch column 'Lot No.', and prints its grand total only in words.",
+      "why": "Bills on a column called NIR, heads its batch column 'Lot No.', and prints its grand total only in words - with no spaces between them. One line is a free replacement with no taxable value, so a single warning about it is correct.",
       "pages": 3,
       "copies_detected": 1,
       "item_count": 7,
       "billed_rate_column": "rate",
       "rate_source_label": "NIR",
-      "total_reconciles": null,
-      "has_ruled_table": false
+      "total_reconciles": true,
+      "has_ruled_table": false,
+      "reconciles_gst_inclusive": true,
+      "expected_warnings": [
+        "have no amount"
+      ]
     }
   ]
 }

@@ -22,6 +22,7 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
+from app.services.ocr.amount_words import total_from_words
 from app.services.ocr.pdf_table import extract_word_tables
 
 log = logging.getLogger(__name__)
@@ -220,13 +221,17 @@ _MONEY = r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]{2,})"
 
 
 def _extract_total(text: str) -> Optional[str]:
-    """The invoice's printed total, preferring the most specific wording."""
+    """The invoice's printed total, preferring the most specific wording.
+
+    Falls back to the amount-in-words line, which for some suppliers (Bharat
+    Serums) is the only place the grand total appears at all.
+    """
     for pattern in _TOTAL_PATTERNS:
         matches = re.findall(pattern + r"\s*[:\-]?\s*" + _MONEY, text or "", re.I)
         if matches:
             # The last occurrence is the foot of the bill.
             return matches[-1].replace(",", "")
-    return None
+    return total_from_words(text)
 
 
 _ITEM_COUNT = re.compile(
@@ -315,10 +320,6 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
     desc = _clean(cell("description"))
     if not desc or len(desc) < 2:
         return None
-    if _SUMMARY_ROW.search(desc):
-        return None
-    if _looks_like_prose(desc):
-        return None
 
     item = {"description": _f(desc)}
     for field in ("batch_no", "expiry", "hsn", "pack"):
@@ -359,6 +360,15 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
                 return None
         except ValueError:
             pass
+
+    # Text tests on the description are a last resort, applied ONLY to a row
+    # with nothing to corroborate it. A batch number, an HSN code and an expiry
+    # date are hard evidence of a real purchase line, and they outweigh any
+    # guess made from wording: "Nano Leo Total Sachets Sale" is a real product
+    # that reads exactly like a totals row, and was being thrown away.
+    if not any((item.get(f) or {}).get("value") for f in ("batch_no", "hsn", "expiry")):
+        if _SUMMARY_ROW.search(desc) or _looks_like_prose(desc):
+            return None
 
     # Only keep rows that have at least a quantity or a batch.
     if item.get("quantity", {}).get("value") or item.get("batch_no", {}).get("value"):
@@ -427,15 +437,25 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
                     continue
                 if meta is None:
                     meta = _extract_header_meta(page_texts[page_no])
-                # Ruled tables first - exact when the invoice draws them. If they
-                # yield nothing usable (Kanchan draws a box round its ADDRESS but
-                # not round its line items), rebuild the table from word
-                # positions instead. Judged on the outcome, not on whether some
-                # table was found: a detected table is not a line-item table.
-                page_items = _rows_from_tables(page.extract_tables() or [], labels)
-                if not page_items:
-                    page_items = _rows_from_tables(extract_word_tables(page), labels)
-                line_items.extend(page_items)
+                # Two ways to find the table, and we keep whichever actually
+                # yields more line items.
+                #
+                # Ruled extraction is exact when the invoice draws its grid, so
+                # it wins ties. But a detected table is not necessarily the
+                # LINE-ITEM table: Kanchan draws a box round its address block
+                # that scans as one and hands back a row or two of nonsense.
+                # Judging on the outcome rather than on "did we find a table"
+                # is what keeps both layouts working.
+                ruled_labels: dict = {}
+                word_labels: dict = {}
+                ruled_items = _rows_from_tables(page.extract_tables() or [], ruled_labels)
+                word_items = _rows_from_tables(extract_word_tables(page), word_labels)
+                if len(word_items) > len(ruled_items):
+                    labels.update(word_labels)
+                    line_items.extend(word_items)
+                else:
+                    labels.update(ruled_labels)
+                    line_items.extend(ruled_items)
     except Exception as exc:  # noqa: BLE001 - any parsing failure -> fall back to AI
         log.warning("invoice_parser: deterministic parse failed (%s); falling back to AI", exc, exc_info=True)
         return None

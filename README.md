@@ -10,7 +10,7 @@ Built for pharmacy shopkeepers. Production-grade, tested end to end.
 
 | Path | What it is |
 |------|-----------|
-| `backend/` | FastAPI API — auth, OCR pipeline, connectors, Postgres. **236 tests.** |
+| `backend/` | FastAPI API — auth, OCR pipeline, connectors, Postgres. **251 tests.** |
 | `mobile/` | Expo/React Native Android app — capture, offline queue, review, send. **31 tests.** |
 | `web/` | React admin console — review queue, connector config, delivery logs. **31 tests.** |
 | `desktop-agent/` | Windows companion that writes data into legacy software. |
@@ -59,7 +59,7 @@ cd web && npm install && npm run dev
 ## Tests
 
 ```bash
-cd backend && pytest -q          # 236
+cd backend && pytest -q          # 251
 cd mobile  && npm test           # 31
 cd web     && npm test           # 31
 ```

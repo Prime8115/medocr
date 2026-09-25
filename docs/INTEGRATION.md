@@ -59,7 +59,8 @@ reconcile on your side:
 | `duplicates_removed` | Identical rows collapsed after extraction. |
 | `stated_item_count` | The item count the invoice prints about itself, when present. |
 | `line_items_total` | Sum of the line `amount` values. |
-| `total_reconciles` | `true` when `line_items_total` matches `invoice.total_amount` (tolerance: the greater of ₹5 or 2%), `false` when it does not, `null` when no total could be read. |
+| `total_reconciles` | `true` when the printed total matches either the taxable sum or that sum plus per-line GST (tolerance: the greater of ₹5 or 2%) — an Indian grand total is tax-inclusive while line amounts are taxable value. `false` when neither matches, `null` when no total could be read at all. |
+| `billed_rate_column` | Which printed price column the bill turned out to be charged on (`rate`, `ptr`, `pts`), decided from amount ÷ quantity rather than from the column's name. |
 
 Any mismatch also appears in plain language in `meta.warnings`.
 
