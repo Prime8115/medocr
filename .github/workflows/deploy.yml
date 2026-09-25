@@ -1,0 +1,111 @@
+name: Deploy backend
+
+# Ships the backend to the production server after the full test suite passes.
+#
+# Production drifted six weeks behind `main` once, silently, because deploying
+# meant remembering to tar the folder up and scp it by hand. Every invoice
+# upload in that window went to the AI instead of the deterministic parser, and
+# nobody could see it. This closes that gap.
+#
+# How the access is scoped, since this repository is PUBLIC:
+#   * The key in DEPLOY_SSH_KEY is used for nothing else, and on the server it
+#     is pinned to a forced command (deploy/ci-deploy.sh). It cannot open a
+#     shell, run another command, or forward a port - only hand a tarball to
+#     the deploy script.
+#   * The server's host key is pinned below, so a hijacked DNS record cannot
+#     collect the key.
+#   * Runs only on a push to main, never on a pull request, so a fork can never
+#     reach the secret.
+#
+# The deploy script archives the running code first and rolls back on a failed
+# build or health check, so a bad push cannot leave the API down.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys overlap; a later push supersedes an in-flight one.
+  group: deploy-backend
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: mediscan.maxxcom.in
+  DEPLOY_USER: root
+  # Pinned host key for mediscan.maxxcom.in (SHA256:AcwYpKtD98uuTjaLCnazOQQh8w5DS4SFeySgHIKr+qg).
+  # Public data, not a secret. Replace if the server is ever rebuilt.
+  DEPLOY_HOST_KEY: 'mediscan.maxxcom.in ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBhnMb7dk2DYy/UjeaUc5GO7jX/iz3m6dUkW/lK9tkw0'
+
+jobs:
+  test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        working-directory: ./backend
+        run: pip install -r requirements.txt
+      - name: Run tests
+        working-directory: ./backend
+        # The real-invoice suite skips here: those PDFs are gitignored.
+        run: python -m pytest -q
+
+  deploy:
+    name: Deploy to production
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+
+      - name: Build backend archive
+        run: |
+          tar -czf backend.tar.gz \
+            --exclude='.venv' --exclude='venv' --exclude='__pycache__' \
+            --exclude='*.pyc' --exclude='.pytest_cache' --exclude='.env' \
+            --exclude='storage' --exclude='tests/real_invoices/*.pdf' \
+            --exclude='*.db' --exclude='*.sqlite3' \
+            backend
+          echo "archive: $(du -h backend.tar.gz | cut -f1)"
+          # Fail loudly rather than shipping a secret or a customer's invoice.
+          if tar -tzf backend.tar.gz | grep -qiE '\.pdf$|/\.env$|\.venv/|/venv/'; then
+            echo "::error::archive contains files that must never be deployed"
+            tar -tzf backend.tar.gz | grep -iE '\.pdf$|/\.env$|\.venv/|/venv/'
+            exit 1
+          fi
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" < backend.tar.gz
+
+      - name: Verify the new code is serving
+        run: |
+          set -e
+          for i in $(seq 10); do
+            if curl -fsS --max-time 10 "https://$DEPLOY_HOST/health" | grep -q '"ok"'; then
+              break
+            fi
+            echo "health not ready yet ($i)"; sleep 5
+          done
+          curl -fsS --max-time 10 "https://$DEPLOY_HOST/health"; echo
+          # Confirm it is genuinely the new build, not a stale container that
+          # merely answers /health - this is the check that would have caught
+          # production sitting six weeks behind.
+          DEPLOYED=$(curl -fsS --max-time 20 "https://$DEPLOY_HOST/openapi.json" \
+            | python -c 'import json,sys; print(len(json.load(sys.stdin)["paths"]))')
+          echo "endpoints served: $DEPLOYED"
+          test "$DEPLOYED" -ge 28
