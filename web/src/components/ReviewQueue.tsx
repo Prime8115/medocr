@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { listDocuments, type DocumentDto } from '../api/documents';
 import { confidencePercent } from '../lib/payload';
+import ExtractionHealth from './ExtractionHealth';
 
 const STATUS_FILTERS = [undefined, 'needs_review', 'approved', 'pushed', 'failed'] as const;
 
@@ -45,6 +46,8 @@ export default function ReviewQueue() {
           <RefreshCw size={16} /> Refresh
         </button>
       </div>
+
+      <ExtractionHealth />
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         {STATUS_FILTERS.map((f) => (

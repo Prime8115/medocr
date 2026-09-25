@@ -35,21 +35,58 @@ describe('payload path helpers', () => {
   test('buildSections for prescription includes one card per medication', () => {
     const sections = buildSections(prescription);
     const titles = sections.map((s) => s.title);
-    expect(titles).toContain('patient');
-    expect(titles).toContain('prescriber');
-    expect(titles.some((tt) => tt.startsWith('medications #1'))).toBe(true);
+    // Titles are translated for display, not raw i18n keys.
+    expect(titles).toContain('Patient');
+    expect(titles).toContain('Prescriber');
+    expect(titles.some((tt) => tt.startsWith('Medications #1'))).toBe(true);
   });
 
+  const invoice: ExtractionPayload = {
+    doc_type: 'invoice',
+    fields: {
+      supplier: { name: { value: 'S' } },
+      invoice: { invoice_no: { value: '1' } },
+      line_items: [{ description: { value: 'X' } }, { description: { value: 'Y' } }],
+    },
+  };
+
   test('buildSections for invoice includes line items', () => {
-    const invoice: ExtractionPayload = {
+    const sections = buildSections(invoice);
+    expect(sections.filter((s) => s.title.startsWith('Line items'))).toHaveLength(2);
+    expect(sections.map((s) => s.title)).toContain('Invoice');
+  });
+
+  test('invoice header card exposes the total', () => {
+    const invoiceSection = buildSections(invoice).find((s) => s.title === 'Invoice');
+    expect(invoiceSection?.fields.map((f) => f.path)).toContain('invoice.total_amount');
+  });
+
+  test('line items expose amount and free quantity', () => {
+    const first = buildSections(invoice).find((s) => s.title.startsWith('Line items'));
+    const paths = first!.fields.map((f) => f.path);
+    expect(paths).toContain('line_items[0].amount');
+    expect(paths).toContain('line_items[0].free_quantity');
+    expect(paths).toContain('line_items[0].mrp');
+  });
+
+  test('rate is labelled with the column the supplier printed', () => {
+    const withPtr: ExtractionPayload = {
       doc_type: 'invoice',
       fields: {
-        supplier: { name: { value: 'S' } },
-        invoice: { invoice_no: { value: '1' } },
-        line_items: [{ description: { value: 'X' } }, { description: { value: 'Y' } }],
+        line_items: [
+          { description: { value: 'X' }, rate: { value: '77.79' }, rate_source: { value: 'PTR' } },
+          { description: { value: 'Y' }, rate: { value: '19.80' }, rate_source: { value: 'RATE' } },
+          { description: { value: 'Z' }, rate: { value: '5.00' } },
+        ],
       },
     };
-    const sections = buildSections(invoice);
-    expect(sections.filter((s) => s.title.startsWith('lineItems')).length).toBe(2);
+    const labelFor = (i: number) =>
+      buildSections(withPtr)
+        .find((s) => s.title === `Line items #${i + 1}`)!
+        .fields.find((f) => f.path === `line_items[${i}].rate`)!.label;
+
+    expect(labelFor(0)).toBe('Rate (PTR)');
+    expect(labelFor(1)).toBe('Rate (RATE)');
+    expect(labelFor(2)).toBe('Rate'); // no source recorded -> plain label
   });
 });

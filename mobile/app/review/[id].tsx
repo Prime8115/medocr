@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -19,17 +20,24 @@ import {
   getDocument,
   patchDocument,
   pushDocument,
+  reportDocument,
   retryDocument,
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { buildSections, getLeaf, setLeafValue, ExtractionPayload, Fields, Section } from '@/src/lib/payload';
+import { buildSections, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
+import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
+import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
 
 const POLL_MS = 2000;
 const MAX_AUTO_RETRIES = 3;
+
+/** Table vs cards is a working preference, so it outlives the screen. */
+const VIEW_MODE_KEY = 'review.viewMode';
+type ViewMode = 'table' | 'cards';
 
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -45,6 +53,24 @@ export default function ReviewScreen() {
   const [search, setSearch] = useState('');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [headerOpen, setHeaderOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportNote, setReportNote] = useState('');
+  const [reporting, setReporting] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(VIEW_MODE_KEY)
+      .then((saved) => {
+        if (saved === 'table' || saved === 'cards') setViewMode(saved);
+      })
+      .catch(() => {});
+  }, []);
+
+  const chooseViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    AsyncStorage.setItem(VIEW_MODE_KEY, mode).catch(() => {});
+  };
 
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -152,6 +178,25 @@ export default function ReviewScreen() {
     }
   }
 
+  /**
+   * Every defect so far reached us as a WhatsApp message that had to be
+   * reproduced from a description. This sends what the pipeline actually
+   * produced alongside the stored file, so it can become a test case.
+   */
+  async function sendReport() {
+    setReporting(true);
+    try {
+      const ack = await reportDocument(id, reportNote);
+      setReportOpen(false);
+      setReportNote('');
+      Alert.alert('Reported', ack.message);
+    } catch {
+      Alert.alert(t('errorGeneric'));
+    } finally {
+      setReporting(false);
+    }
+  }
+
   async function tryAgain() {
     setManualRetrying(true);
     setLoading(true);
@@ -235,7 +280,15 @@ export default function ReviewScreen() {
     );
   }
 
-  const meta = payload?.meta as { warnings?: string[]; pages?: number; item_count?: number } | undefined;
+  const meta = payload?.meta as
+    | {
+        warnings?: string[];
+        pages?: number;
+        item_count?: number;
+        line_items_total?: string | null;
+        total_reconciles?: boolean | null;
+      }
+    | undefined;
   const warnings = meta?.warnings ?? [];
 
   const matchForIndex = (i: number): MatchItem | undefined =>
@@ -263,6 +316,16 @@ export default function ReviewScreen() {
       return true;
     });
   const attentionCount = itemSections.filter((s, i) => needsAttention(s, i)).length;
+
+  // Table mode is for invoices only; a prescription's fields are prose, not columns.
+  const isInvoice = doc.doc_type === 'invoice';
+  const showTable = isInvoice && viewMode === 'table' && itemSections.length > 0;
+  const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
+  const tableRows: TableRow[] = filtered.map(({ section, i }) => ({
+    item: rawItems[i] ?? {},
+    index: i,
+    attention: needsAttention(section, i),
+  }));
 
   // Header sections (patient/supplier) + line-item title — scroll with the list.
   const listHeader = (
@@ -309,12 +372,67 @@ export default function ReviewScreen() {
                 : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
             </Text>
           </View>
-          <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
+          <View style={{ alignItems: 'flex-end', gap: spacing.xs }}>
+            <Badge label={doc.status.replace('_', ' ')} tone={doc.status === 'pushed' || doc.status === 'approved' ? 'success' : 'info'} />
+            <TouchableOpacity onPress={() => setReportOpen(true)} accessibilityRole="button">
+              <Text style={styles.reportLink}>⚑ Report a problem</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {warnings.length > 0 && (
-          <View style={styles.warnBanner}>
-            <Text style={styles.warnText}>{warnings[0]}</Text>
+        {/* Integrity warnings are full sentences ("the invoice states 143 items
+            but 429 were read"); low-confidence warnings are dotted field paths.
+            Show the sentences — they are the ones that change a decision. */}
+        {warnings.length > 0 &&
+          (() => {
+            const sentences = warnings.filter((w) => w.includes(' ')).slice(0, 2);
+            const shown = sentences.length > 0 ? sentences : [t('lowConfidence')];
+            return (
+              <View style={styles.warnBanner}>
+                {shown.map((w) => (
+                  <Text key={w} style={styles.warnText}>
+                    {w}
+                  </Text>
+                ))}
+              </View>
+            );
+          })()}
+
+        {/* In table mode the supplier/invoice fields live behind this line, so the
+            table gets the full height of the screen. */}
+        {showTable && (
+          <TouchableOpacity style={styles.headerSummary} onPress={() => setHeaderOpen(true)} activeOpacity={0.7}>
+            <Text style={styles.headerSummaryText} numberOfLines={1}>
+              {[
+                getLeaf(fields, 'supplier.name')?.value,
+                getLeaf(fields, 'invoice.invoice_no')?.value,
+                getLeaf(fields, 'invoice.invoice_date')?.value,
+              ]
+                .filter(Boolean)
+                .join('  ·  ') || 'Invoice details'}
+            </Text>
+            <Text style={styles.headerSummaryChevron}>›</Text>
+          </TouchableOpacity>
+        )}
+
+        {isInvoice && itemSections.length > 0 && (
+          <View style={styles.viewToggle}>
+            <TouchableOpacity
+              onPress={() => chooseViewMode('table')}
+              style={[styles.toggleBtn, viewMode === 'table' && styles.toggleBtnActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: viewMode === 'table' }}
+            >
+              <Text style={[styles.toggleText, viewMode === 'table' && styles.toggleTextActive]}>▤  Table</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => chooseViewMode('cards')}
+              style={[styles.toggleBtn, viewMode === 'cards' && styles.toggleBtnActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: viewMode === 'cards' }}
+            >
+              <Text style={[styles.toggleText, viewMode === 'cards' && styles.toggleTextActive]}>☰  Cards</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -343,24 +461,54 @@ export default function ReviewScreen() {
         )}
       </View>
 
-      <FlatList
-        data={filtered}
-        keyExtractor={({ section }) => section.title}
-        ListHeaderComponent={listHeader}
-        contentContainerStyle={styles.content}
-        initialNumToRender={14}
-        windowSize={11}
-        removeClippedSubviews
-        keyboardShouldPersistTaps="handled"
-        ListEmptyComponent={
-          itemSections.length > 0 ? (
-            <Text style={styles.noMatch}>No items match “{search}”.</Text>
-          ) : null
-        }
-        renderItem={({ item: { section, i } }) => (
-          <ItemRow section={section} fields={fields} match={matchForIndex(i)} onPress={() => setEditIndex(i)} />
-        )}
-      />
+      {showTable ? (
+        <InvoiceTable
+          fields={fields}
+          rows={tableRows}
+          onSelect={setEditIndex}
+          emptyText={itemSections.length > 0 ? `No items match “${search}”.` : undefined}
+        />
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={({ section }) => section.title}
+          ListHeaderComponent={listHeader}
+          contentContainerStyle={styles.content}
+          initialNumToRender={14}
+          windowSize={11}
+          removeClippedSubviews
+          keyboardShouldPersistTaps="handled"
+          ListEmptyComponent={
+            itemSections.length > 0 ? (
+              <Text style={styles.noMatch}>No items match “{search}”.</Text>
+            ) : null
+          }
+          renderItem={({ item: { section, i } }) => (
+            <ItemRow section={section} fields={fields} match={matchForIndex(i)} onPress={() => setEditIndex(i)} />
+          )}
+        />
+      )}
+
+      {/* The trust signal: do the lines we read add up to the total on the paper?
+          If they do, the pharmacist can approve without checking every line. */}
+      {isInvoice && itemSections.length > 0 && (
+        <View
+          style={[
+            styles.totalsBar,
+            meta?.total_reconciles === true && styles.totalsOk,
+            meta?.total_reconciles === false && styles.totalsMismatch,
+          ]}
+        >
+          <Text style={styles.totalsItems}>
+            {itemSections.length} items
+            {filtered.length !== itemSections.length ? ` · ${filtered.length} shown` : ''}
+          </Text>
+          <Text style={styles.totalsAmount}>
+            {meta?.total_reconciles === true ? '✓ ' : meta?.total_reconciles === false ? '⚠ ' : ''}
+            ₹{meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
+          </Text>
+        </View>
+      )}
 
       {/* Fixed bottom: actions — always reachable without scrolling */}
       {doc.status !== 'pushed' ? (
@@ -380,6 +528,69 @@ export default function ReviewScreen() {
           <Text style={styles.sentText}>✓ {t('pushed')}</Text>
         </View>
       )}
+
+      {/* Report-a-problem sheet */}
+      <Modal visible={reportOpen} animationType="slide" transparent onRequestClose={() => setReportOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setReportOpen(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>Report a problem</Text>
+            <TouchableOpacity onPress={() => setReportOpen(false)}>
+              <Text style={styles.modalDone}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.reportHelp}>
+            What looks wrong on this {doc.doc_type === 'invoice' ? 'bill' : 'prescription'}? We'll get
+            the document and the details we read, so we can fix it.
+          </Text>
+          <TextInput
+            style={styles.reportInput}
+            value={reportNote}
+            onChangeText={setReportNote}
+            placeholder="e.g. 143 items on the bill but the app shows 429"
+            placeholderTextColor={colors.textMuted}
+            multiline
+            numberOfLines={4}
+            textAlignVertical="top"
+          />
+          <Button title={reporting ? 'Sending…' : 'Send report'} onPress={sendReport} loading={reporting} />
+        </View>
+      </Modal>
+
+      {/* Supplier / invoice fields — reachable from the summary line in table mode */}
+      <Modal visible={headerOpen} animationType="slide" transparent onRequestClose={() => setHeaderOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setHeaderOpen(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>{t('invoiceDetails')}</Text>
+            <TouchableOpacity onPress={() => setHeaderOpen(false)}>
+              <Text style={styles.modalDone}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView>
+            {singleSections.map((section) => (
+              <View key={section.title}>
+                <SectionTitle>{section.title}</SectionTitle>
+                {section.fields.map((spec) => {
+                  const leaf = getLeaf(fields, spec.path);
+                  const conf = leaf?.confidence ?? null;
+                  return (
+                    <Field
+                      key={spec.path}
+                      label={spec.label}
+                      value={leaf?.value ?? ''}
+                      editable={editable}
+                      onChangeText={(v) => onChangeField(spec.path, v)}
+                      accentColor={confidenceColor(conf)}
+                      hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                    />
+                  );
+                })}
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
 
       {/* Edit-a-single-item modal */}
       <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => setEditIndex(null)}>
@@ -431,6 +642,27 @@ export default function ReviewScreen() {
   );
 }
 
+// The fields worth showing on a collapsed row, in the order a pharmacist checks
+// them. Falls back to "whatever is populated" for any section without them.
+const SUMMARY_PREFERENCE = ['.quantity', '.rate', '.amount', '.strength', '.frequency', '.duration'];
+
+function summarise(section: Section, fields: Fields): string {
+  const labelled = (specs: FieldSpec[]) =>
+    specs
+      .map((f) => {
+        const v = getLeaf(fields, f.path)?.value;
+        return v ? `${f.label}: ${v}` : null;
+      })
+      .filter(Boolean) as string[];
+
+  const preferred = SUMMARY_PREFERENCE
+    .map((suffix) => section.fields.find((f) => f.path.endsWith(suffix)))
+    .filter(Boolean) as FieldSpec[];
+
+  const picked = labelled(preferred);
+  return (picked.length ? picked : labelled(section.fields.slice(1))).slice(0, 3).join('  ·  ');
+}
+
 /** Compact, read-only row for a line item / medication. Tap to edit. */
 function ItemRow({
   section,
@@ -444,16 +676,7 @@ function ItemRow({
   onPress: () => void;
 }) {
   const primary = getLeaf(fields, section.fields[0].path)?.value || '(unnamed)';
-  // Secondary summary from a couple of key fields (skip the primary).
-  const secondary = section.fields
-    .slice(1)
-    .map((f) => {
-      const v = getLeaf(fields, f.path)?.value;
-      return v ? `${f.label}: ${v}` : null;
-    })
-    .filter(Boolean)
-    .slice(0, 3)
-    .join('  ·  ');
+  const secondary = summarise(section, fields);
   const best = match?.best_score ?? null;
 
   return (
@@ -490,6 +713,37 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing.sm },
   docType: { ...font.h1, color: colors.text },
   confidence: { ...font.body, color: colors.textSecondary, marginTop: spacing.xs },
+  reportLink: { ...font.caption, color: colors.textMuted, textDecorationLine: 'underline' },
+  reportHelp: { ...font.body, color: colors.textSecondary, marginBottom: spacing.md },
+  reportInput: {
+    minHeight: 110, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    padding: spacing.md, ...font.body, color: colors.text,
+    backgroundColor: colors.surface, marginBottom: spacing.lg,
+  },
+  headerSummary: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    backgroundColor: colors.surfaceAlt, borderRadius: radius.md,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginTop: spacing.sm,
+  },
+  headerSummaryText: { ...font.caption, color: colors.textSecondary, flex: 1 },
+  headerSummaryChevron: { ...font.h3, color: colors.textMuted },
+  viewToggle: {
+    flexDirection: 'row', gap: spacing.xs, marginTop: spacing.sm,
+    backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, padding: 3, alignSelf: 'flex-start',
+  },
+  toggleBtn: { paddingHorizontal: spacing.lg, paddingVertical: spacing.xs, borderRadius: radius.pill },
+  toggleBtnActive: { backgroundColor: colors.surface },
+  toggleText: { ...font.caption, color: colors.textSecondary },
+  toggleTextActive: { color: colors.primaryDark, fontWeight: '700' },
+  totalsBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceAlt, borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  totalsOk: { backgroundColor: colors.successTint },
+  totalsMismatch: { backgroundColor: colors.warningTint },
+  totalsItems: { ...font.caption, color: colors.textSecondary, fontWeight: '600' },
+  totalsAmount: { ...font.h3, color: colors.text },
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
   warnText: { ...font.body, color: colors.warning },
   listHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.sm, marginBottom: spacing.sm },

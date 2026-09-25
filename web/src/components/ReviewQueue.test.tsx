@@ -14,6 +14,9 @@ const docs: documentsApi.DocumentDto[] = [
 
 beforeEach(() => {
   vi.mocked(documentsApi.listDocuments).mockResolvedValue(docs);
+  // The queue also renders the extraction-health card; it must never block the
+  // queue, so an unavailable stats call is a valid state.
+  vi.mocked(documentsApi.getExtractionStats).mockRejectedValue(new Error('no stats'));
 });
 
 describe('ReviewQueue', () => {

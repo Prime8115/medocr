@@ -67,12 +67,34 @@ class InvoiceMeta(BaseModel):
 
 
 class InvoiceLineItem(BaseModel):
+    """One purchase line.
+
+    Indian distributor invoices carry several DIFFERENT prices per line and they
+    are not interchangeable, so each gets its own field:
+
+      mrp   - Maximum Retail Price (what the customer pays)
+      ptr   - Price To Retailer    (what this pharmacy pays, per unit)
+      pts   - Price To Stockist    (what the stockist pays, per unit)
+      rate  - the rate the line was actually BILLED at
+
+    `rate` is always populated (it is the connector contract) but `rate_source`
+    records which column it came from - the supplier's own header text, e.g.
+    "RATE", "PTR" or "PTS" - so the pharmacist can see what the number means
+    instead of guessing.
+    """
+
     description: Field = Field()
     batch_no: Field = Field()
     expiry: Field = Field()
+    pack: Field = Field()
     quantity: Field = Field()
+    free_quantity: Field = Field()
     mrp: Field = Field()
+    ptr: Field = Field()
+    pts: Field = Field()
     rate: Field = Field()
+    rate_source: Field = Field()
+    discount_percent: Field = Field()
     amount: Field = Field()
     hsn: Field = Field()
     gst_percent: Field = Field()
@@ -96,6 +118,23 @@ class ExtractionMeta(BaseModel):
     pipeline: Optional[str] = None
     processed_at: Optional[float] = None
     warnings: List[str] = []
+    # --- invoice integrity (see services/ocr/invoice_checks.py) ---
+    # How many printed copies of the same invoice were found in the PDF
+    # (GST invoices are commonly printed Original/Duplicate/Triplicate).
+    copies_detected: Optional[int] = None
+    # Identical line rows collapsed after extraction.
+    duplicates_removed: int = 0
+    # Item count printed on the invoice itself, when it states one.
+    stated_item_count: Optional[int] = None
+    # Sum of the line-item amounts, and whether it matches the printed total.
+    line_items_total: Optional[str] = None
+    # The same sum with each line's GST added back - an Indian invoice's printed
+    # grand total is tax-inclusive, so this is usually the number that matches.
+    line_items_total_with_gst: Optional[str] = None
+    total_reconciles: Optional[bool] = None
+    # Which printed price column the bill turned out to be charged on
+    # ("pts", "ptr", "rate", ...), decided from amount / quantity.
+    billed_rate_column: Optional[str] = None
 
 
 class ExtractionPayload(BaseModel):

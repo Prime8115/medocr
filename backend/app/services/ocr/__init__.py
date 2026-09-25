@@ -3,6 +3,7 @@
 `process_document` returns a full versioned ExtractionPayload dict, or raises
 `OCRError` on any failure. It NEVER returns fabricated data.
 """
+import logging
 import time
 
 from app.config import settings
@@ -14,6 +15,12 @@ from app.schemas.extraction import (
     validate_fields,
 )
 from app.services.ocr.base import OCRError, OCRProvider
+from app.services.ocr.invoice_checks import (
+    dedupe_line_items,
+    reconcile_invoice,
+    resolve_billed_rate,
+    validate_line_arithmetic,
+)
 from app.services.ocr.postprocess import postprocess_fields
 from app.services.ocr.pdf_utils import (
     extract_text_pages,
@@ -23,6 +30,8 @@ from app.services.ocr.pdf_utils import (
 )
 
 __all__ = ["process_document", "get_provider", "OCRError"]
+
+log = logging.getLogger(__name__)
 
 # List keys per doc type that accumulate across PDF page-chunks.
 _LIST_KEY = {"invoice": "line_items", "prescription": "medications"}
@@ -176,16 +185,67 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     return merged, failed_pages, total_pages
 
 
-def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0):
+def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None):
+    """Post-process, run integrity checks, and wrap the result.
+
+    Invoice integrity (de-duplication, arithmetic, totals reconciliation) runs
+    here rather than inside a single parser, so that BOTH the deterministic PDF
+    parser and the AI pipeline are held to the same standard.
+    """
+    hints = hints or {}
+    integrity = {"duplicates_removed": 0, "copies_detected": hints.get("copies_detected")}
+    check_warnings = []
+
+    if resolved_type == "invoice":
+        items = fields.get("line_items") or []
+        before = len(items)
+        items, removed = dedupe_line_items(items)
+        fields["line_items"] = items
+        integrity["duplicates_removed"] = removed
+        if removed:
+            log.info(
+                "invoice integrity: collapsed %d duplicate line(s) of %d (pipeline=%s)",
+                removed, before, pipeline,
+            )
+            copies = integrity.get("copies_detected")
+            if copies and copies > 1:
+                check_warnings.append(
+                    f"This PDF contains {copies} printed copies of the same invoice. "
+                    f"Showing {len(items)} items once ({removed} repeated rows removed)."
+                )
+            else:
+                check_warnings.append(
+                    f"{removed} repeated line(s) were removed. Please confirm the item count."
+                )
+
+    if resolved_type == "invoice":
+        # Decide which printed price column the bill was actually charged on,
+        # before the arithmetic check runs against it.
+        billed = resolve_billed_rate(fields.get("line_items") or [], hints.get("price_labels"))
+        if billed:
+            integrity["billed_rate_column"] = billed
+
     fields = postprocess_fields(resolved_type, fields)
+
+    if resolved_type == "invoice":
+        flagged = validate_line_arithmetic(fields.get("line_items") or [])
+        if flagged:
+            check_warnings.append(
+                f"{flagged} line(s) where quantity x rate does not match the amount - marked for checking."
+            )
+        report = reconcile_invoice(fields, hints.get("stated_item_count"))
+        check_warnings.extend(report.pop("warnings", []))
+        integrity.update(report)
+
     list_key = _LIST_KEY.get(resolved_type)
     item_count = len(fields.get(list_key, []) or []) if list_key else 0
-    warnings = collect_low_confidence(fields, settings.low_confidence_threshold)
+    warnings = check_warnings + collect_low_confidence(fields, settings.low_confidence_threshold)
     if failed_pages:
         warnings.insert(0, f"{failed_pages} of {pages} page(s) could not be read; review may be incomplete.")
     meta = ExtractionMeta(
         overall_confidence=_overall_confidence(fields),
         language="en", pipeline=pipeline, processed_at=time.time(), warnings=warnings,
+        **{k: v for k, v in integrity.items() if v is not None},
     ).model_dump()
     meta["pages"] = pages
     meta["item_count"] = item_count
@@ -204,10 +264,18 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
 
                 parsed = parse_invoice_pdf(file_bytes)
                 if parsed and len(parsed.get("line_items", [])) >= 3:
+                    hints = parsed.pop("_hints", {})
                     fields = validate_fields("invoice", parsed)
-                    return _finalize("invoice", fields, "pdf_parser", page_count(file_bytes))
-        except Exception:  # noqa: BLE001 - any failure -> fall back to the AI pipeline
-            pass
+                    return _finalize(
+                        "invoice", fields, "pdf_parser", page_count(file_bytes), hints=hints
+                    )
+        except Exception as exc:  # noqa: BLE001 - any failure -> fall back to the AI pipeline
+            # Never silent: a Tier-1 regression is invisible otherwise, because
+            # the AI fallback still returns a plausible-looking result.
+            log.warning(
+                "tier1 pdf_parser failed for document %s (%s); falling back to AI",
+                document_id, exc, exc_info=True,
+            )
 
     # --- Tier 2: AI vision/text pipeline (images, scanned PDFs, non-invoice PDFs) ---
     provider = get_provider()

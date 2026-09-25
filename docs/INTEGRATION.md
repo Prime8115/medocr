@@ -32,10 +32,72 @@ dates as `normalized: "YYYY-MM-DD"`).
 
 ### Invoice `data`
 `supplier{name,gstin,address}`, `invoice{invoice_no,invoice_date,total_amount}`,
-`line_items[]{description,batch_no,expiry,quantity,mrp,rate,amount,hsn,gst_percent}`.
+`line_items[]{description,pack,batch_no,expiry,quantity,free_quantity,mrp,ptr,pts,`
+`rate,rate_source,discount_percent,amount,hsn,gst_percent}`.
+
+**Prices are not interchangeable.** An Indian pharma invoice prints several per
+line, so each has its own field:
+
+| Field | Meaning |
+|---|---|
+| `mrp` | Maximum Retail Price — what the customer pays |
+| `ptr` | Price To Retailer — what the pharmacy pays per unit |
+| `pts` | Price To Stockist |
+| `rate` | **The rate the line was billed at.** Always populated — this is the field to import. |
+| `rate_source` | Which column `rate` came from, as the supplier printed it: `"RATE"`, `"PTR"` or `"PTS"`. Carries `confidence: null` (it is a label, not a reading). |
+
+`quantity` is the billed quantity only; scheme/bonus goods are in
+`free_quantity` and must be added to stock separately.
+
+### Invoice integrity (`meta`)
+Every invoice is cross-checked before it can be approved. Read these if you
+reconcile on your side:
+
+| Key | Meaning |
+|---|---|
+| `copies_detected` | Printed copies found in one file (GST invoices are often Original/Duplicate/Triplicate). Only the first is extracted. |
+| `duplicates_removed` | Identical rows collapsed after extraction. |
+| `stated_item_count` | The item count the invoice prints about itself, when present. |
+| `line_items_total` | Sum of the line `amount` values. |
+| `total_reconciles` | `true` when the printed total matches either the taxable sum or that sum plus per-line GST (tolerance: the greater of ₹5 or 2%) — an Indian grand total is tax-inclusive while line amounts are taxable value. `false` when neither matches, `null` when no total could be read at all. |
+| `billed_rate_column` | Which printed price column the bill turned out to be charged on (`rate`, `ptr`, `pts`), decided from amount ÷ quantity rather than from the column's name. |
+
+Any mismatch also appears in plain language in `meta.warnings`.
 
 > **Versioning:** additive fields may appear within v1. Renames/removals bump
 > `payload_version`. Pin to the major version and ignore unknown fields.
+> `ptr`, `pts`, `pack`, `free_quantity`, `discount_percent` and `rate_source`
+> were added in this way; `rate` keeps its meaning and is still always set.
+
+---
+
+## Export profiles
+
+`profile` picks a ready-made column layout; `columns` overrides it entirely.
+
+| Profile | Use it for |
+|---|---|
+| `generic` | A stable, minimal column set. **Its shape never changes** — safe to import against. |
+| `detailed` | Everything we extract: pack, free qty, MRP, PTR, PTS, rate + rate source, discount, HSN, GST. |
+| `marg` / `vyapar` / `tally` | Matched to those products' import layouts. |
+
+**If your shop receives scheme goods (10+2), use `detailed` or add
+`free_quantity` to a custom `columns` list.** `generic` carries only the billed
+quantity, so scheme units would never reach your stock.
+
+---
+
+## Monitoring
+
+`GET /v1/documents/stats?days=30` returns extraction health for your shop:
+counts by status / doc type / pipeline, and for invoices the share that
+reconcile against their printed total, the share handled by the exact PDF
+parser rather than the AI fallback, duplicate rows removed, and multi-copy PDFs
+seen. `warnings` carries plain-language flags worth acting on.
+
+`POST /v1/documents/{id}/report` with `{"note": "..."}` flags an extraction as
+wrong. The note is stored with what the pipeline produced and the stored file
+reference, so the case can be reproduced exactly.
 
 ---
 

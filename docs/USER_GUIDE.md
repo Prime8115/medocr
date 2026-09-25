@@ -25,6 +25,29 @@ A one-page guide for the counter. No technical knowledge needed.
   and typing.
 - Tap **Save** to keep your changes.
 
+### Checking a purchase bill
+- A bill opens as a **table**, the same way it is printed. Switch between
+  **▤ Table** and **☰ Cards** at the top; the app remembers your choice.
+- Swipe the table sideways to see batch, expiry, MRP and the rest. **Tap any row**
+  to open it and edit.
+- **Look at the bar along the bottom first.** It shows the item count and what
+  the lines add up to:
+  - **✓ green** — the lines match the total printed on your bill. You can approve
+    without checking every line.
+  - **⚠ orange** — they do not match. Something needs a look before you approve.
+- The **Rate** column says where the number came from — `Rate (PTR)` means the
+  bill had no separate rate column, so the PTR was used. MRP and Free qty have
+  their own columns; scheme goods are never counted as billed quantity.
+- Some suppliers print the same bill two or three times in one PDF (Original,
+  Duplicate, Triplicate). The app reads it **once** and tells you in an orange
+  message at the top when it has done so.
+
+### Something still wrong?
+Tap **⚑ Report a problem** at the top of the document and say what you see
+(e.g. "143 items on the bill but the app shows 429"). The bill and everything the
+app read from it are sent along, so it can be fixed properly — you don't need to
+explain it twice.
+
 ## Send it on
 - **Approve** — marks the document as checked and correct.
 - **Approve & Send** — checks it *and* sends it to your billing/inventory

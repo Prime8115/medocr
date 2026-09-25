@@ -62,3 +62,43 @@ export async function pushDocument(id: string): Promise<PushResult> {
   const res = await api.post(`/v1/documents/${id}/push`);
   return res.data as PushResult;
 }
+
+export interface ReportAck {
+  document_id: string;
+  reported: boolean;
+  message: string;
+}
+
+/** Tell us this extraction is wrong, with what the pipeline produced attached. */
+export async function reportDocument(id: string, note?: string): Promise<ReportAck> {
+  const res = await api.post(`/v1/documents/${id}/report`, { note: note || null });
+  return res.data as ReportAck;
+}
+
+export interface ExtractionStats {
+  documents: number;
+  window_days: number;
+  by_status: Record<string, number>;
+  by_doc_type: Record<string, number>;
+  by_pipeline: Record<string, number>;
+  pages_failed_documents: number;
+  reported_by_users: number;
+  warnings: string[];
+  invoices: {
+    total: number;
+    tier1_parser: number;
+    tier1_parser_pct: number | null;
+    reconciled: number;
+    reconciled_pct: number | null;
+    total_mismatch: number;
+    total_unreadable: number;
+    with_duplicates_removed: number;
+    duplicate_rows_removed: number;
+    multi_copy_pdfs: number;
+  };
+}
+
+export async function getExtractionStats(days = 30): Promise<ExtractionStats> {
+  const res = await api.get('/v1/documents/stats', { params: { days } });
+  return res.data as ExtractionStats;
+}

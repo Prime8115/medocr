@@ -31,9 +31,14 @@ FIELD_KEYS = {
         "document_id", "patient", "prescriber", "medication",
         "strength", "form", "frequency", "duration", "instructions",
     ],
+    # `rate` is the billed rate and is always populated; `rate_source` says which
+    # column it came from ("RATE", "PTR", "PTS"). ptr/pts/free_quantity/pack/
+    # discount_percent are additive - existing profiles are unchanged, but a
+    # custom `columns` config can now reference them.
     "invoice": [
         "document_id", "supplier", "invoice_no", "invoice_date", "description",
-        "batch_no", "expiry", "quantity", "mrp", "rate", "amount", "hsn", "gst_percent",
+        "pack", "batch_no", "expiry", "quantity", "free_quantity", "mrp", "ptr", "pts",
+        "rate", "rate_source", "discount_percent", "amount", "hsn", "gst_percent",
     ],
 }
 
@@ -62,7 +67,10 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
                 "invoice_no": invoice_no, "invoice_date": invoice_date,
                 "description": _v(item.get("description")), "batch_no": _v(item.get("batch_no")),
                 "expiry": _v(item.get("expiry")), "quantity": _v(item.get("quantity")),
-                "mrp": _v(item.get("mrp")), "rate": _v(item.get("rate")),
+                "free_quantity": _v(item.get("free_quantity")), "pack": _v(item.get("pack")),
+                "mrp": _v(item.get("mrp")), "ptr": _v(item.get("ptr")), "pts": _v(item.get("pts")),
+                "rate": _v(item.get("rate")), "rate_source": _v(item.get("rate_source")),
+                "discount_percent": _v(item.get("discount_percent")),
                 "amount": _v(item.get("amount")), "hsn": _v(item.get("hsn")),
                 "gst_percent": _v(item.get("gst_percent")),
             })
@@ -104,6 +112,43 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "Strength", "field": "strength"},
             {"header": "Frequency", "field": "frequency"},
             {"header": "Duration", "field": "duration"},
+        ],
+    },
+    # Everything we extract, for shops whose software can take it. Scheme goods
+    # (free_quantity) are the reason this exists: a shop that receives 10+2 and
+    # imports only the billed 10 has wrong stock from day one. Kept as a separate
+    # profile rather than added to "generic", because changing the column shape
+    # of a profile a shop already imports would break their import.
+    "detailed": {
+        "invoice": [
+            {"header": "Supplier", "field": "supplier"},
+            {"header": "Invoice No", "field": "invoice_no"},
+            {"header": "Invoice Date", "field": "invoice_date"},
+            {"header": "Item", "field": "description"},
+            {"header": "Pack", "field": "pack"},
+            {"header": "Batch", "field": "batch_no"},
+            {"header": "Expiry", "field": "expiry"},
+            {"header": "Qty", "field": "quantity"},
+            {"header": "Free Qty", "field": "free_quantity"},
+            {"header": "MRP", "field": "mrp"},
+            {"header": "PTR", "field": "ptr"},
+            {"header": "PTS", "field": "pts"},
+            {"header": "Rate", "field": "rate"},
+            {"header": "Rate Source", "field": "rate_source"},
+            {"header": "Disc%", "field": "discount_percent"},
+            {"header": "Amount", "field": "amount"},
+            {"header": "HSN", "field": "hsn"},
+            {"header": "GST%", "field": "gst_percent"},
+        ],
+        "prescription": [
+            {"header": "Patient", "field": "patient"},
+            {"header": "Doctor", "field": "prescriber"},
+            {"header": "Medicine", "field": "medication"},
+            {"header": "Strength", "field": "strength"},
+            {"header": "Form", "field": "form"},
+            {"header": "Frequency", "field": "frequency"},
+            {"header": "Duration", "field": "duration"},
+            {"header": "Instructions", "field": "instructions"},
         ],
     },
     "marg": {  # Marg ERP purchase import (item-wise)

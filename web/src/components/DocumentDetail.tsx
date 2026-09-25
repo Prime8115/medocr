@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, Save, Send } from 'lucide-react';
+import { ArrowLeft, Check, Flag, Save, Send } from 'lucide-react';
 
 import {
   approveDocument,
   getDocument,
   patchDocument,
   pushDocument,
+  reportDocument,
   type DocumentDto,
   type ExtractionPayload,
 } from '../api/documents';
 import { buildSections, confidencePercent, getLeaf, isLowConfidence, setLeafValue } from '../lib/payload';
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
+import InvoiceTable, { type TableRow } from './InvoiceTable';
+import { formatMoney } from '../lib/table';
+import type { Leaf } from '../api/documents';
 
 type Fields = Record<string, unknown>;
 
@@ -33,6 +37,8 @@ export default function DocumentDetail() {
   const [inv, setInv] = useState<DocMatch | null>(null);
   const [editItem, setEditItem] = useState<number | null>(null);
   const [itemSearch, setItemSearch] = useState('');
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportNote, setReportNote] = useState('');
 
   const apply = useCallback((d: DocumentDto) => {
     setDoc(d);
@@ -94,6 +100,25 @@ export default function DocumentDetail() {
     }
   }
 
+  /**
+   * Every defect so far arrived as a message that had to be reproduced from a
+   * description. This records what the pipeline actually produced next to the
+   * stored file, so the report can become a test fixture.
+   */
+  async function report() {
+    setBusy('report');
+    try {
+      const ack = await reportDocument(id, reportNote);
+      setReportOpen(false);
+      setReportNote('');
+      setToast({ text: ack.message, ok: true });
+    } catch {
+      setToast({ text: 'Could not send the report', ok: false });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (loading) return <div className="text-muted">Loading…</div>;
   if (!doc) return <div style={{ color: 'var(--danger)' }}>Document not found.</div>;
 
@@ -102,8 +127,44 @@ export default function DocumentDetail() {
   const sections = payload ? buildSections(payload, fields) : [];
   const singleSections = sections.filter((s) => !/#\d+$/.test(s.title));
   const itemSections = sections.filter((s) => /#\d+$/.test(s.title));
-  const meta = payload?.meta as { pages?: number } | undefined;
+  const meta = payload?.meta as
+    | {
+        pages?: number;
+        warnings?: string[];
+        line_items_total?: string | null;
+        total_reconciles?: boolean | null;
+        copies_detected?: number | null;
+        duplicates_removed?: number;
+      }
+    | undefined;
   const matchFor = (i: number): MatchItem | undefined => (inv?.connected ? inv.items[i] : undefined);
+
+  const isInvoice = doc.doc_type === 'invoice';
+  const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
+
+  const needsAttention = (i: number): boolean => {
+    const section = itemSections[i];
+    if (section?.fields.some((f) => isLowConfidence(getLeaf(fields, f.path)?.confidence ?? null))) return true;
+    if (inv?.connected) {
+      const mi = inv.items[i];
+      if (!mi || mi.candidates.length === 0 || mi.best_score < 70) return true;
+    }
+    return false;
+  };
+
+  const query = itemSearch.trim().toLowerCase();
+  const tableRows: TableRow[] = itemSections
+    .map((_, i) => i)
+    .filter((i) => {
+      if (!query) return true;
+      return String(rawItems[i]?.description?.value ?? '').toLowerCase().includes(query);
+    })
+    .map((i) => ({
+      item: rawItems[i] ?? {},
+      index: i,
+      attention: needsAttention(i),
+      matchScore: matchFor(i)?.candidates?.length ? matchFor(i)!.best_score : null,
+    }));
 
   return (
     <div style={{ maxWidth: 820 }}>
@@ -116,7 +177,16 @@ export default function DocumentDetail() {
           <h1 style={{ textTransform: 'capitalize' }}>{doc.doc_type}</h1>
           <div className="text-muted" style={{ fontFamily: 'monospace' }}>{doc.id} · {confidencePercent(doc.overall_confidence)}</div>
         </div>
-        <span className={`badge badge-${doc.status}`}>{doc.status.replace('_', ' ')}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          <span className={`badge badge-${doc.status}`}>{doc.status.replace('_', ' ')}</span>
+          <button
+            className="btn-secondary"
+            onClick={() => setReportOpen(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+          >
+            <Flag size={14} /> Report a problem
+          </button>
+        </div>
       </div>
 
       {doc.status === 'failed' && (
@@ -126,11 +196,25 @@ export default function DocumentDetail() {
         </div>
       )}
 
-      {(payload?.meta?.warnings?.length ?? 0) > 0 && (
-        <div className="glass-card" style={{ borderColor: 'rgba(245,158,11,0.4)', marginBottom: 16 }}>
-          <span style={{ color: 'var(--warning)' }}>Some fields have low confidence — please verify the highlighted ones.</span>
-        </div>
-      )}
+      {/* Integrity warnings are full sentences ("the invoice states 143 items but
+          429 were read"); low-confidence warnings are dotted field paths. Show
+          the sentences verbatim — they are the ones that change a decision. */}
+      {(() => {
+        const all = meta?.warnings ?? [];
+        const sentences = all.filter((w) => w.includes(' '));
+        if (all.length === 0) return null;
+        return (
+          <div className="glass-card" style={{ borderColor: 'rgba(245,158,11,0.4)', marginBottom: 16 }}>
+            {sentences.length > 0 ? (
+              sentences.map((w) => (
+                <div key={w} style={{ color: 'var(--warning)', marginBottom: 4 }}>{w}</div>
+              ))
+            ) : (
+              <span style={{ color: 'var(--warning)' }}>Some fields have low confidence — please verify the highlighted ones.</span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Header sections (patient/prescriber or supplier/invoice) — editable inline */}
       {singleSections.map((section) => (
@@ -179,46 +263,89 @@ export default function DocumentDetail() {
               {inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}
             </span>
           </div>
-          <div style={{ maxHeight: 520, overflowY: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 14 }}>
-              <thead>
-                <tr style={{ color: 'var(--text-secondary)', position: 'sticky', top: 0, background: '#131722' }}>
-                  <th style={{ padding: '10px 20px' }}>{itemSections[0].fields[0].label}</th>
-                  {itemSections[0].fields.slice(1, 4).map((f) => (
-                    <th key={f.path} style={{ padding: '10px 12px' }}>{f.label}</th>
-                  ))}
-                  {inv?.connected && <th style={{ padding: '10px 12px' }}>Match</th>}
-                  <th style={{ padding: '10px 12px' }} />
-                </tr>
-              </thead>
-              <tbody>
-                {itemSections.map((section, i) => {
-                  const primary = getLeaf(fields, section.fields[0].path)?.value || '—';
-                  if (itemSearch && !String(primary).toLowerCase().includes(itemSearch.toLowerCase())) return null;
-                  const mi = matchFor(i);
-                  return (
-                    <tr key={section.title} className="data-row" onClick={() => setEditItem(i)} style={{ borderTop: '1px solid var(--border-glass)', cursor: 'pointer' }}>
-                      <td style={{ padding: '10px 20px' }}>{primary}</td>
-                      {section.fields.slice(1, 4).map((f) => (
-                        <td key={f.path} style={{ padding: '10px 12px' }} className="text-muted">
-                          {getLeaf(fields, f.path)?.value ?? '—'}
-                        </td>
-                      ))}
-                      {inv?.connected && (
-                        <td style={{ padding: '10px 12px' }}>
-                          {mi && mi.candidates.length > 0 ? (
-                            <span className={`badge ${mi.best_score >= 85 ? 'badge-approved' : 'badge-processing'}`}>{Math.round(mi.best_score)}%</span>
-                          ) : (
-                            <span className="text-muted">—</span>
-                          )}
-                        </td>
-                      )}
-                      <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>edit ›</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          {isInvoice ? (
+            <InvoiceTable fields={fields} rows={tableRows} onSelect={setEditItem} showMatch={!!inv?.connected} />
+          ) : (
+            <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 14 }}>
+                <thead>
+                  <tr style={{ color: 'var(--text-secondary)', position: 'sticky', top: 0, background: '#131722' }}>
+                    <th style={{ padding: '10px 20px' }}>{itemSections[0].fields[0].label}</th>
+                    {itemSections[0].fields.slice(1, 4).map((f) => (
+                      <th key={f.path} style={{ padding: '10px 12px' }}>{f.label}</th>
+                    ))}
+                    <th style={{ padding: '10px 12px' }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {itemSections.map((section, i) => {
+                    const primary = getLeaf(fields, section.fields[0].path)?.value || '—';
+                    if (itemSearch && !String(primary).toLowerCase().includes(itemSearch.toLowerCase())) return null;
+                    return (
+                      <tr key={section.title} className="data-row" onClick={() => setEditItem(i)} style={{ borderTop: '1px solid var(--border-glass)', cursor: 'pointer' }}>
+                        <td style={{ padding: '10px 20px' }}>{primary}</td>
+                        {section.fields.slice(1, 4).map((f) => (
+                          <td key={f.path} style={{ padding: '10px 12px' }} className="text-muted">
+                            {getLeaf(fields, f.path)?.value ?? '—'}
+                          </td>
+                        ))}
+                        <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>edit ›</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* The trust signal: do the lines we read add up to the total on the paper? */}
+          {isInvoice && (
+            <div
+              style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '12px 20px', borderTop: '1px solid var(--border-glass)',
+                background:
+                  meta?.total_reconciles === true ? 'rgba(34,197,94,0.10)'
+                  : meta?.total_reconciles === false ? 'rgba(245,158,11,0.12)'
+                  : undefined,
+              }}
+            >
+              <span className="text-muted" style={{ fontSize: 13 }}>
+                {itemSections.length} items
+                {tableRows.length !== itemSections.length ? ` · ${tableRows.length} shown` : ''}
+                {meta?.copies_detected && meta.copies_detected > 1 ? ` · ${meta.copies_detected} printed copies, read once` : ''}
+              </span>
+              <strong style={{ fontSize: 16, fontVariantNumeric: 'tabular-nums' }}>
+                {meta?.total_reconciles === true ? '✓ ' : meta?.total_reconciles === false ? '⚠ ' : ''}
+                ₹{meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
+              </strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Report-a-problem modal */}
+      {reportOpen && (
+        <div onClick={() => setReportOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+          <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ width: 520, maxWidth: '90vw', padding: 24 }}>
+            <h3 style={{ marginTop: 0 }}>Report a problem</h3>
+            <p className="text-muted" style={{ fontSize: 14 }}>
+              What looks wrong on this {doc.doc_type === 'invoice' ? 'bill' : 'prescription'}? The document and
+              everything we read from it are attached automatically.
+            </p>
+            <textarea
+              className="field-input"
+              style={{ width: '100%', minHeight: 110, resize: 'vertical', borderLeftWidth: 1 }}
+              placeholder="e.g. 143 items on the bill but the app shows 429"
+              value={reportNote}
+              onChange={(e) => setReportNote(e.target.value)}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button className="btn-secondary" onClick={() => setReportOpen(false)}>Cancel</button>
+              <button className="btn-primary" onClick={report} disabled={busy === 'report'}>
+                {busy === 'report' ? 'Sending…' : 'Send report'}
+              </button>
+            </div>
           </div>
         </div>
       )}

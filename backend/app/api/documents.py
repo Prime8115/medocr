@@ -1,8 +1,10 @@
 """Document endpoints — DB-backed, authenticated, shop-scoped, with a real
 lifecycle state machine and human-correction (PATCH) support.
 """
+import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import (
@@ -26,16 +28,25 @@ from app.models.document import Document
 from app.models.inventory import InventoryItem
 from app.models.user import User
 from app.schemas.connector import DeliveryOut
-from app.schemas.document import DocumentOut, DocumentResponse, DocumentUpdate
+from app.schemas.document import (
+    DocumentOut,
+    DocumentReport,
+    DocumentReportAck,
+    DocumentResponse,
+    DocumentUpdate,
+)
 from app.schemas.extraction import validate_fields
 from app.services import lifecycle
 from app.services.connectors import service as connector_service
 from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
 
 router = APIRouter()
+
+log = logging.getLogger(__name__)
 
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 ALLOWED_DOC_TYPES = {"prescription", "invoice"}
@@ -194,6 +205,39 @@ def list_documents(
     return q.order_by(Document.created_at.desc()).offset(offset).limit(limit).all()
 
 
+@router.get("/stats")
+def extraction_stats(
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """How the extraction pipeline is doing for this shop, over a window.
+
+    Declared before `/{document_id}` so the literal path wins the route match.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    docs = (
+        db.query(Document)
+        .filter(Document.shop_id == user.shop_id, Document.created_at >= since)
+        .all()
+    )
+    reported = {
+        row.target
+        for row in db.query(AuditLog)
+        .filter(
+            AuditLog.shop_id == user.shop_id,
+            AuditLog.action == "document.reported",
+            AuditLog.created_at >= since,
+        )
+        .all()
+        if row.target
+    }
+    health = extraction_health(docs, reported)
+    health["window_days"] = days
+    health["warnings"] = health_warnings(health)
+    return health
+
+
 def _get_owned_document(document_id: str, db: Session, user: User) -> Document:
     doc = (
         db.query(Document)
@@ -237,6 +281,52 @@ def update_document(
     db.commit()
     db.refresh(doc)
     return doc
+
+
+@router.post("/{document_id}/report", response_model=DocumentReportAck)
+def report_document(
+    document_id: str,
+    body: DocumentReport,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """A user telling us this extraction is wrong.
+
+    Every field complaint so far arrived over WhatsApp and had to be reproduced
+    from a description. This records what the pipeline actually produced next to
+    the stored file, so a report can be turned straight into a test fixture.
+    """
+    doc = _get_owned_document(document_id, db, user)
+    meta = (doc.payload or {}).get("meta") or {}
+    fields = (doc.payload or {}).get("fields") or {}
+    note = (body.note or "").strip()[:2000] or None
+
+    detail = {
+        "note": note,
+        "doc_type": doc.doc_type,
+        "status": doc.status,
+        "image_ref": doc.image_ref,
+        "pipeline": meta.get("pipeline"),
+        "pages": meta.get("pages"),
+        "item_count": meta.get("item_count"),
+        "copies_detected": meta.get("copies_detected"),
+        "duplicates_removed": meta.get("duplicates_removed"),
+        "stated_item_count": meta.get("stated_item_count"),
+        "line_items_total": meta.get("line_items_total"),
+        "total_reconciles": meta.get("total_reconciles"),
+        "printed_total": ((fields.get("invoice") or {}).get("total_amount") or {}).get("value"),
+        "overall_confidence": doc.overall_confidence,
+    }
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.reported",
+                    target=doc.id, detail=detail))
+    db.commit()
+
+    # Loud on purpose: this is the signal we were missing.
+    log.warning("document reported as wrong: %s detail=%s", doc.id, detail)
+    return DocumentReportAck(
+        document_id=doc.id,
+        message="Thanks - we've logged this invoice for review.",
+    )
 
 
 @router.post("/{document_id}/approve", response_model=DocumentOut)
