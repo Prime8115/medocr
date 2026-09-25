@@ -36,9 +36,13 @@ FIELD_KEYS = {
     # discount_percent are additive - existing profiles are unchanged, but a
     # custom `columns` config can now reference them.
     "invoice": [
-        "document_id", "supplier", "invoice_no", "invoice_date", "description",
-        "pack", "batch_no", "expiry", "quantity", "free_quantity", "mrp", "ptr", "pts",
-        "rate", "rate_source", "discount_percent", "amount", "hsn", "gst_percent",
+        "document_id", "supplier", "supplier_gstin", "invoice_no", "invoice_date",
+        "description", "product_code", "manufacturer", "pack", "uom", "batch_no",
+        "expiry", "mfg_date", "quantity", "free_quantity", "total_quantity",
+        "mrp", "ptr", "pts", "rate", "rate_source", "discount_percent",
+        "discount_amount", "scheme_percent", "amount", "free_supply", "hsn",
+        "gst_percent", "cgst_percent", "cgst_amount", "sgst_percent", "sgst_amount",
+        "igst_percent", "igst_amount",
     ],
 }
 
@@ -58,6 +62,7 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
 
     if doc_type == "invoice":
         supplier = _v((data.get("supplier") or {}).get("name"))
+        supplier_gstin = _v((data.get("supplier") or {}).get("gstin"))
         inv = data.get("invoice") or {}
         invoice_no = _v(inv.get("invoice_no"))
         invoice_date = _v(inv.get("invoice_date"))
@@ -73,6 +78,27 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
                 "discount_percent": _v(item.get("discount_percent")),
                 "amount": _v(item.get("amount")), "hsn": _v(item.get("hsn")),
                 "gst_percent": _v(item.get("gst_percent")),
+                "supplier_gstin": supplier_gstin,
+                "product_code": _v(item.get("product_code")),
+                "manufacturer": _v(item.get("manufacturer")),
+                "uom": _v(item.get("uom")), "mfg_date": _v(item.get("mfg_date")),
+                "total_quantity": _v(item.get("total_quantity")),
+                "discount_amount": _v(item.get("discount_amount")),
+                "scheme_percent": _v(item.get("scheme_percent")),
+                "free_supply": _v(item.get("free_supply")),
+                "cgst_percent": _v(item.get("cgst_percent")),
+                "cgst_amount": _v(item.get("cgst_amount")),
+                "sgst_percent": _v(item.get("sgst_percent")),
+                "sgst_amount": _v(item.get("sgst_amount")),
+                "igst_percent": _v(item.get("igst_percent")),
+                "igst_amount": _v(item.get("igst_amount")),
+                # Columns we had no name for, flattened as "Heading: value" so a
+                # layout we have never seen still reaches the shop's software.
+                "extra_columns": "; ".join(
+                    f"{e.get('label')}: {e.get('value')}"
+                    for e in (item.get("extras") or [])
+                    if e.get("label") and e.get("value")
+                ),
             })
     else:  # prescription
         patient = _v((data.get("patient") or {}).get("name"))
@@ -139,6 +165,22 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "Amount", "field": "amount"},
             {"header": "HSN", "field": "hsn"},
             {"header": "GST%", "field": "gst_percent"},
+            {"header": "Product Code", "field": "product_code"},
+            {"header": "Manufacturer", "field": "manufacturer"},
+            {"header": "UOM", "field": "uom"},
+            {"header": "Mfg Date", "field": "mfg_date"},
+            {"header": "Total Qty", "field": "total_quantity"},
+            {"header": "Disc Amt", "field": "discount_amount"},
+            {"header": "Scheme%", "field": "scheme_percent"},
+            {"header": "Free Supply", "field": "free_supply"},
+            {"header": "CGST%", "field": "cgst_percent"},
+            {"header": "CGST Amt", "field": "cgst_amount"},
+            {"header": "SGST%", "field": "sgst_percent"},
+            {"header": "SGST Amt", "field": "sgst_amount"},
+            {"header": "IGST%", "field": "igst_percent"},
+            {"header": "IGST Amt", "field": "igst_amount"},
+            {"header": "Supplier GSTIN", "field": "supplier_gstin"},
+            {"header": "Other Columns", "field": "extra_columns"},
         ],
         "prescription": [
             {"header": "Patient", "field": "patient"},

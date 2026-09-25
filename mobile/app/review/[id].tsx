@@ -25,7 +25,7 @@ import {
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { buildSections, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
+import { buildSections, extraColumns, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
@@ -620,6 +620,19 @@ export default function ReviewScreen() {
                     />
                   );
                 })}
+                {/* Columns this supplier prints that we have no name for. Read-only:
+                    they are shown so nothing on the bill is invisible. */}
+                {extraColumns(fields, editIndex).length > 0 && (
+                  <View style={styles.invBox}>
+                    <Text style={styles.invLabel}>Also on this invoice</Text>
+                    {extraColumns(fields, editIndex).map((e) => (
+                      <View key={e.label} style={styles.invRow}>
+                        <Text style={styles.invName}>{e.label}</Text>
+                        <Text style={styles.invMeta}>{e.value}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
                 {matchForIndex(editIndex)?.candidates?.length ? (
                   <View style={styles.invBox}>
                     <Text style={styles.invLabel}>In your inventory</Text>

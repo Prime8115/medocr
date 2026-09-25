@@ -119,3 +119,16 @@ export function confidencePercent(c: number | null | undefined): string {
 export function isLowConfidence(c: number | null | undefined, threshold = 0.6): boolean {
   return c != null && c < threshold;
 }
+
+/** Columns the supplier printed that we have no name for. Shown in the row
+ *  detail so a layout we have never seen is still visible, never dropped. */
+export interface ExtraColumn { label: string; value: string }
+
+export function extraColumns(fields: Fields, index: number): ExtraColumn[] {
+  const raw = getLeaf(fields, `line_items[${index}].extras`) as unknown;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((e) => e as { label?: string; value?: string })
+    .filter((e) => e && e.label && e.value)
+    .map((e) => ({ label: String(e.label), value: String(e.value) }));
+}

@@ -66,6 +66,19 @@ class InvoiceMeta(BaseModel):
     total_amount: Field = Field()
 
 
+class ExtraField(BaseModel):
+    """A column we have no name for, kept verbatim with its printed heading.
+
+    Suppliers print columns we have never seen - a scheme percentage, a
+    case/loose marker, a manufacturer code. Dropping them silently loses real
+    information off the bill, so anything unrecognised lands here instead.
+    """
+
+    label: Optional[str] = None
+    value: Optional[str] = None
+    confidence: Optional[float] = None
+
+
 class InvoiceLineItem(BaseModel):
     """One purchase line.
 
@@ -84,20 +97,39 @@ class InvoiceLineItem(BaseModel):
     """
 
     description: Field = Field()
+    product_code: Field = Field()
+    manufacturer: Field = Field()
     batch_no: Field = Field()
     expiry: Field = Field()
+    mfg_date: Field = Field()
     pack: Field = Field()
+    uom: Field = Field()
     quantity: Field = Field()
     free_quantity: Field = Field()
+    total_quantity: Field = Field()
     mrp: Field = Field()
     ptr: Field = Field()
     pts: Field = Field()
     rate: Field = Field()
     rate_source: Field = Field()
     discount_percent: Field = Field()
+    discount_amount: Field = Field()
+    scheme_percent: Field = Field()
     amount: Field = Field()
     hsn: Field = Field()
     gst_percent: Field = Field()
+    cgst_percent: Field = Field()
+    cgst_amount: Field = Field()
+    sgst_percent: Field = Field()
+    sgst_amount: Field = Field()
+    igst_percent: Field = Field()
+    igst_amount: Field = Field()
+    # True when the supplier billed this line at zero - a free or replacement
+    # supply, which prints a blank amount rather than a missing one.
+    free_supply: Field = Field()
+    # Every column we did not recognise, kept with the supplier's own heading so
+    # a layout we have never seen before is captured rather than discarded.
+    extras: List[ExtraField] = []
 
 
 class InvoiceFields(BaseModel):
@@ -135,6 +167,8 @@ class ExtractionMeta(BaseModel):
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None
+    # Lines the supplier billed at zero (free/replacement supply).
+    free_supply_lines: int = 0
 
 
 class ExtractionPayload(BaseModel):

@@ -34,7 +34,13 @@ def extract_text_sample(data: bytes, pages: int = 3) -> List[str]:
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(data))
-        return [(p.extract_text() or "") for p in reader.pages[:pages]]
+        sample = list(reader.pages[:pages])
+        # Include the last page too: a file whose opening pages are scanned
+        # covers or images would otherwise be judged non-digital on its worst
+        # pages and pushed to the AI unnecessarily.
+        if len(reader.pages) > pages:
+            sample.append(reader.pages[-1])
+        return [(p.extract_text() or "") for p in sample]
     except Exception:  # noqa: BLE001
         return []
 

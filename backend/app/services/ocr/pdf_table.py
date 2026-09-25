@@ -49,6 +49,13 @@ _NUMERIC = re.compile(r"^-?[\d,]+\.?\d*$")
 
 # Vertical tolerance when deciding two words share a line, in points.
 _LINE_TOLERANCE = 3.5
+# How close two glyphs must be before they count as one word. pdfplumber's
+# default of 3 is too loose for invoices that carry no space characters at all -
+# Bharat's product names arrived as "AntiD150mcg/1mlPFS**". At 1.5 the same line
+# reads "AntiD 150mcg/1ml PFS **", which is what the paper says and what
+# inventory matching needs.
+WORD_TOLERANCE = 1.5
+
 # Horizontal gap below which two header words belong to the same column.
 # Tuned on real invoices: JB prints "Mfg Cd." and "Total Qty.EA" 6pt apart, so
 # anything looser welds the manufacturer code onto the quantity.
@@ -186,7 +193,9 @@ def _is_record_start(cells: List[str], numeric_columns: Sequence[int]) -> bool:
 def extract_word_tables(page) -> List[List[List[str]]]:
     """Rebuild line-item tables from word positions. Same shape as extract_tables()."""
     try:
-        words = page.extract_words(keep_blank_chars=False, use_text_flow=False)
+        words = page.extract_words(
+            keep_blank_chars=False, use_text_flow=False, x_tolerance=WORD_TOLERANCE
+        )
     except Exception as exc:  # noqa: BLE001 - a page we cannot read is not fatal
         log.debug("pdf_table: extract_words failed (%s)", exc)
         return []

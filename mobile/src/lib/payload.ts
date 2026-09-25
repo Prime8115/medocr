@@ -167,3 +167,16 @@ export function buildSections(payload: ExtractionPayload): Section[] {
     ...meds.map((_, i) => ({ title: `${t('medications')} #${i + 1}`, fields: MED_FIELDS(i) })),
   ];
 }
+
+/** Columns the supplier printed that we have no name for. Shown in the row
+ *  detail so a layout we have never seen is still visible, never dropped. */
+export interface ExtraColumn { label: string; value: string }
+
+export function extraColumns(fields: Fields, index: number): ExtraColumn[] {
+  const raw = getLeaf(fields, `line_items[${index}].extras`) as unknown;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((e) => e as { label?: string; value?: string })
+    .filter((e) => e && e.label && e.value)
+    .map((e) => ({ label: String(e.label), value: String(e.value) }));
+}

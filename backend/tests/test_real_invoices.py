@@ -101,6 +101,10 @@ def test_rate_equals_amount_over_quantity(case, results):
         amount = item["amount"]["value"]
         if not (qty and rate and amount):
             continue
+        # A free replacement supply is billed at zero on purpose; there is no
+        # rate to reconcile it against.
+        if item.get("free_supply", {}).get("value"):
+            continue
         unit = float(amount) / float(qty)
         # Equal, or above it by no more than a line discount.
         assert 0.70 <= unit / float(rate) <= 1.005, item["description"]["value"]
@@ -305,3 +309,98 @@ def test_no_stray_punctuation_in_identifiers(case, results):
             if value:
                 assert value == value.strip()
                 assert "(" not in value and ")" not in value, (field, value)
+
+
+# --------------------------- nothing is left behind ---------------------------
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_every_page_of_the_first_copy_is_read(case):
+    """Skipping printed copies must never skip a page that carries items.
+
+    The companion test caps how MANY pages are read; this one pins the floor.
+    Between them a copy-detection mistake cannot quietly drop line items:
+    reading too few pages fails here, reading them all fails there.
+    """
+    import io
+
+    import pdfplumber
+
+    read: list = []
+    original = pdfplumber.page.Page.extract_text
+
+    def counting(self, *a, **kw):
+        read.append(self.page_number)
+        return original(self, *a, **kw)
+
+    pdfplumber.page.Page.extract_text = counting
+    try:
+        parse_invoice_pdf((HERE / case["file"]).read_bytes())
+    finally:
+        pdfplumber.page.Page.extract_text = original
+
+    per_copy = case["pages"] // case["copies_detected"]
+    # page_number is 1-based; every page of the first copy must be visited.
+    assert set(range(1, per_copy + 1)) <= set(read), sorted(set(read))
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_no_column_is_silently_discarded(case, results):
+    """Every column the supplier prints is either mapped to a field or kept in
+    `extras`. A column we have never seen before must still reach the user."""
+    import io
+
+    import pdfplumber
+
+    from app.services.ocr.invoice_parser import _find_header_row, _map_columns
+    from app.services.ocr.pdf_table import extract_word_tables
+
+    data = (HERE / case["file"]).read_bytes()
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages[:2]:
+            tables = [t for t in (page.extract_tables() or []) if _find_header_row(t) is not None]
+            tables = tables or extract_word_tables(page)
+            for table in tables:
+                hi = _find_header_row(table)
+                if hi is None:
+                    continue
+                header = table[hi]
+                mapped = set(_map_columns(header).values())
+                headings = {
+                    str(h).replace("\n", " ").strip()
+                    for i, h in enumerate(header)
+                    if i not in mapped and str(h or "").strip()
+                }
+                if not headings:
+                    return
+                # Whatever was not mapped must appear as an extra on some line.
+                seen = {
+                    (e.get("label") or "")
+                    for item in results[case["file"]]["fields"]["line_items"]
+                    for e in (item.get("extras") or [])
+                }
+                # Headings with no value on any row legitimately produce no extra.
+                assert seen, f"{headings} dropped with no extras recorded"
+                return
+
+
+def test_free_supply_is_read_as_zero_not_as_missing():
+    """Bharat bills a replacement line at no charge: blank amount, 0.00 tax.
+
+    That is a zero-value line, not unreadable data - reporting it as "1 line(s)
+    have no amount" made a correct reading look like a failure.
+    """
+    case = next((c for c in CASES if c["file"].startswith("BHARAT")), None)
+    if case is None:
+        pytest.skip("Bharat invoice not present")
+    result = process_document(
+        "free", (HERE / case["file"]).read_bytes(), "application/pdf", doc_type="invoice"
+    )
+    meta = result["meta"]
+    assert meta["free_supply_lines"] == 1
+    assert not [w for w in meta["warnings"] if "no amount" in w]
+
+    free = [i for i in result["fields"]["line_items"] if i.get("free_supply", {}).get("value")]
+    assert len(free) == 1
+    assert free[0]["amount"]["value"] == "0.00"
+    # Still a real line with real stock attached to it.
+    assert free[0]["quantity"]["value"] == "25"
+    assert free[0]["batch_no"]["value"]

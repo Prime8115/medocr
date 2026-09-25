@@ -17,6 +17,7 @@ from app.schemas.extraction import (
 from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.invoice_checks import (
     dedupe_line_items,
+    mark_free_supplies,
     reconcile_invoice,
     resolve_billed_rate,
     validate_line_arithmetic,
@@ -219,6 +220,10 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 )
 
     if resolved_type == "invoice":
+        # A line the supplier billed at zero reads as zero, not as a gap.
+        free = mark_free_supplies(fields.get("line_items") or [])
+        if free:
+            integrity["free_supply_lines"] = free
         # Decide which printed price column the bill was actually charged on,
         # before the arithmetic check runs against it.
         billed = resolve_billed_rate(fields.get("line_items") or [], hints.get("price_labels"))
@@ -266,9 +271,31 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                 if parsed and len(parsed.get("line_items", [])) >= 3:
                     hints = parsed.pop("_hints", {})
                     fields = validate_fields("invoice", parsed)
-                    return _finalize(
+                    result = _finalize(
                         "invoice", fields, "pdf_parser", page_count(file_bytes), hints=hints
                     )
+                    # Safety net for the page-skipping: if we judged this file to
+                    # hold repeated copies and the lines then do NOT add up to the
+                    # printed total, the judgement may have been wrong and real
+                    # pages skipped. Read every page and keep whichever result
+                    # reconciles. Costs time only on an invoice already suspect.
+                    meta = result["meta"]
+                    if (meta.get("copies_detected") or 1) > 1 and meta.get("total_reconciles") is False:
+                        log.warning(
+                            "document %s: %d copies assumed but the total does not "
+                            "reconcile - re-reading every page",
+                            document_id, meta["copies_detected"],
+                        )
+                        retry = parse_invoice_pdf(file_bytes, read_every_page=True)
+                        if retry and len(retry.get("line_items", [])) >= 3:
+                            retry_hints = retry.pop("_hints", {})
+                            retry_result = _finalize(
+                                "invoice", validate_fields("invoice", retry), "pdf_parser",
+                                page_count(file_bytes), hints=retry_hints,
+                            )
+                            if retry_result["meta"].get("total_reconciles") is True:
+                                return retry_result
+                    return result
         except Exception as exc:  # noqa: BLE001 - any failure -> fall back to the AI pipeline
             # Never silent: a Tier-1 regression is invisible otherwise, because
             # the AI fallback still returns a plausible-looking result.

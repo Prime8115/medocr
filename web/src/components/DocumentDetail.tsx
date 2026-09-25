@@ -11,7 +11,7 @@ import {
   type DocumentDto,
   type ExtractionPayload,
 } from '../api/documents';
-import { buildSections, confidencePercent, getLeaf, isLowConfidence, setLeafValue } from '../lib/payload';
+import { buildSections, confidencePercent, extraColumns, getLeaf, isLowConfidence, setLeafValue } from '../lib/payload';
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import { formatMoney } from '../lib/table';
@@ -371,6 +371,19 @@ export default function DocumentDetail() {
                 );
               })}
             </div>
+            {extraColumns(fields, editItem).length > 0 && (
+              <div style={{ marginTop: 16, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
+                <div className="text-muted" style={{ fontSize: 12, textTransform: 'uppercase', marginBottom: 8 }}>
+                  Also on this invoice
+                </div>
+                {extraColumns(fields, editItem).map((e) => (
+                  <div key={e.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                    <span className="text-muted">{e.label}</span>
+                    <span>{e.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {matchFor(editItem)?.candidates?.length ? (
               <div style={{ marginTop: 16, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
                 <div className="text-muted" style={{ fontSize: 12, textTransform: 'uppercase', marginBottom: 8 }}>In your inventory</div>

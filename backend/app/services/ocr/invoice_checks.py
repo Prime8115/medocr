@@ -213,6 +213,33 @@ def resolve_billed_rate(items: List[dict], labels: Optional[dict] = None) -> Opt
     return winner
 
 
+def mark_free_supplies(items: List[dict]) -> int:
+    """Read a zero-rated line as zero, not as missing data.
+
+    Bharat bills a replacement stock line at no charge: the taxable value is
+    printed blank, with 0.00 CGST and 0.00 SGST beside it. We read that exactly
+    right and then reported it as "1 line(s) have no amount" - an error message
+    for a line the invoice deliberately leaves empty. The tax columns are the
+    evidence: blank amount plus zero tax is a free supply, so the amount is
+    0.00. A blank amount with NO tax figures to corroborate it stays unknown and
+    still warns, because then we genuinely could not read it.
+
+    Returns how many lines were recognised as free supplies.
+    """
+    marked = 0
+    for item in items:
+        if _v(item.get("amount")):
+            continue
+        taxes = [_num(item.get(k)) for k in ("cgst_amount", "sgst_amount", "igst_amount")]
+        known = [t for t in taxes if t is not None]
+        if not known or any(t != 0 for t in known):
+            continue
+        item["amount"] = {"value": "0.00", "confidence": 1.0}
+        item["free_supply"] = {"value": "true", "confidence": None}
+        marked += 1
+    return marked
+
+
 def _gross_total(items: List[dict]) -> Optional[float]:
     """Sum of line amounts with each line's own GST added back.
 

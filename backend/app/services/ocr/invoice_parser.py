@@ -23,7 +23,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from app.services.ocr.amount_words import total_from_words
-from app.services.ocr.pdf_table import extract_word_tables
+from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,12 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
         ["hsn", "code", "qty", "rate", "amount"],
     ),
     "hsn": (["hsncode", "hsn"], []),
+    "product_code": (["productcode", "prdcode", "itemcode", "prodcode", "code"], ["hsn"]),
+    "manufacturer": (["mfgname", "manufacturername", "manufacturer", "mfgco", "company"], ["code", "date", "cd"]),
+    # Excludes "exp": Bharat heads one column "Exp.date / Mfg.date", and the
+    # expiry is the field a pharmacist actually needs, so it claims that column.
+    "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp"]),
+    "uom": (["uom", "unitofmeasure"], []),
     "batch_no": (["batchno", "batch", "lotno", "lot"], []),
     # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
     # heads one column "Exp.date / Mfg.date" - excluding it lost every expiry.
@@ -58,6 +64,17 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
         ["%", "mrp", "ptr", "pts", "cgst", "sgst", "igst", "gst", "tax"],
     ),
     "discount_percent": (["disc%", "discount%", "discount", "disc"], ["amt", "amount", "value", "rs"]),
+    "discount_amount": (["discamt", "discountamt", "discountamount"], ["%"]),
+    "scheme_percent": (["sch%", "scheme%", "schemediscount"], ["amt", "qty"]),
+    "total_quantity": (["totalqty", "totqty", "netqty"], ["%", "free"]),
+    # Tax columns are captured per head so the amounts reach the accounts, and so
+    # a zero-rated line can be told apart from an unreadable one.
+    "cgst_percent": (["cgst%", "cgstrate"], ["amt", "amount"]),
+    "cgst_amount": (["cgstamt", "cgstamount"], ["%", "rate"]),
+    "sgst_percent": (["sgst%", "sgstrate", "utgst%"], ["amt", "amount"]),
+    "sgst_amount": (["sgstamt", "sgstamount", "utgstamt"], ["%", "rate"]),
+    "igst_percent": (["igst%", "igstrate"], ["amt", "amount"]),
+    "igst_amount": (["igstamt", "igstamount"], ["%", "rate"]),
     # The net/taxable column is what the bill actually sums; a plain "Amount"
     # column (Kanchan) is the figure BEFORE the line discount.
     "amount": (
@@ -379,7 +396,9 @@ def supplier_region_lines(page) -> List[Tuple[float, str]]:
       a few lines of each other.
     """
     try:
-        words = page.extract_words(keep_blank_chars=False, extra_attrs=["size"])
+        words = page.extract_words(
+            keep_blank_chars=False, extra_attrs=["size"], x_tolerance=WORD_TOLERANCE
+        )
     except Exception:  # noqa: BLE001
         return []
     if not words:
@@ -479,6 +498,16 @@ def _extract_header_meta(
 
 
 # --------------------------------- row build ---------------------------------
+# Columns read as text, and as numbers. Kept beside _COLS so adding a column
+# there is a one-line change here rather than a silently dropped field.
+_TEXT_FIELDS = ("batch_no", "expiry", "mfg_date", "hsn", "pack", "uom",
+                "product_code", "manufacturer")
+_NUMERIC_FIELDS = ("quantity", "free_quantity", "total_quantity", "mrp", "ptr", "pts",
+                   "rate", "discount_percent", "discount_amount", "scheme_percent",
+                   "cgst_percent", "cgst_amount", "sgst_percent", "sgst_amount",
+                   "igst_percent", "igst_amount", "amount")
+
+
 def _strip_stray(text: str) -> str:
     """Drop tokens carrying no characters, e.g. the "()" that trails a product
     name into the batch column and turned "TMET6" into "() TMET6"."""
@@ -532,12 +561,28 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
         return None
 
     item = {"description": _f(desc)}
-    for field in ("batch_no", "expiry", "hsn", "pack"):
+    for field in _TEXT_FIELDS:
         if cols.get(field) is not None:
             item[field] = _f(_strip_stray(_clean(cell(field))))
-    for field in ("quantity", "free_quantity", "mrp", "ptr", "pts", "rate", "discount_percent", "amount"):
+    for field in _NUMERIC_FIELDS:
         if cols.get(field) is not None:
             item[field] = _f(_num(cell(field)))
+
+    # Anything the mapping did not claim is kept verbatim under the supplier's
+    # own heading. A column we have never seen before - a scheme percentage, a
+    # case/loose marker, a manufacturer code - is real information off the bill,
+    # and it used to be discarded without trace.
+    claimed = set(cols.values()) | set(gst_cols)
+    extras = []
+    for idx, heading in enumerate(header_row):
+        if idx in claimed or idx >= len(row):
+            continue
+        label = _strip_stray(_clean(heading))
+        value = _strip_stray(_clean(row[idx]))
+        if label and value:
+            extras.append({"label": label, "value": value, "confidence": 1.0})
+    if extras:
+        item["extras"] = extras
 
     # `rate` is deliberately NOT guessed here. Which printed price column a bill
     # is charged on varies by supplier and by who the buyer is, and no ordering
@@ -606,7 +651,7 @@ def _rows_from_tables(tables, labels: dict) -> List[dict]:
     return out
 
 
-def parse_invoice_pdf(data: bytes) -> Optional[dict]:
+def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[dict]:
     """Return an invoice `fields` dict parsed deterministically, or None if the
     table can't be recognised (caller then falls back to the AI pipeline).
 
@@ -636,7 +681,7 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
             # Read only the first printed copy. Settled by comparing two pages
             # rather than by reading every page's text, which was the single
             # slowest step of an upload: eight seconds on a 33-page invoice.
-            copies = _detect_copies(pdf)
+            copies = 1 if read_every_page else _detect_copies(pdf)
             per_copy = total_pages // copies if copies > 1 else total_pages
             wanted = list(range(per_copy))
             if copies > 1:
@@ -653,7 +698,9 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
 
             for page_no in wanted:
                 page = pdf.pages[page_no]
-                page_texts[page_no] = page.extract_text() or ""
+                # Same tolerance as the table reader, so header fields do not
+                # arrive run together on PDFs that carry no space characters.
+                page_texts[page_no] = page.extract_text(x_tolerance=WORD_TOLERANCE) or ""
                 if meta is None:
                     meta = _extract_header_meta(
                         page_texts[page_no], supplier_region_lines(page)
