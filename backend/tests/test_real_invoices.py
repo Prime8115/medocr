@@ -242,3 +242,66 @@ def test_duplicate_pages_are_never_parsed():
     per_copy = case["pages"] // case["copies_detected"]
     # One copy's pages, plus the couple sampled to detect the repeat.
     assert len(set(read)) <= per_copy + 2, sorted(set(read))
+
+
+# ------------------------------ header fields ------------------------------
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_supplier_is_the_vendor_not_the_customer(case, results):
+    """An invoice prints the vendor and the customer in the same header.
+
+    Flattened to text those columns interleave, and "the first line that looks
+    like a company" picked the BUYER - JB Chemicals was being filed under its
+    own customer's name, which would send every purchase to the wrong vendor.
+    """
+    supplier = results[case["file"]]["fields"]["supplier"]
+    assert supplier["name"]["value"] == case["supplier_name"]
+    # The customer on all four of these invoices is Eastern Agencies.
+    assert "EASTERN" not in (supplier["name"]["value"] or "").upper()
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_supplier_gstin_is_the_suppliers_own(case, results):
+    """Spelled "GSTIN No :", "GSTin:" and "GS Tin :" across these four, so the
+    statutory shape is matched rather than the label - and it must come from the
+    supplier's block, never the buyer's."""
+    supplier = results[case["file"]]["fields"]["supplier"]
+    assert supplier["gstin"]["value"] == case["supplier_gstin"]
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_invoice_number_and_date(case, results):
+    invoice = results[case["file"]]["fields"]["invoice"]
+    assert invoice["invoice_no"]["value"] == case["invoice_no"]
+    assert invoice["invoice_date"]["value"] == case["invoice_date"]
+    # Post-processing turns it into an ISO date for the connectors.
+    assert invoice["invoice_date"]["normalized"], "date did not normalise"
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_every_line_has_the_fields_a_pharmacist_needs(case, results):
+    """Batch, expiry, quantity, rate, amount and GST on every single line.
+
+    Bharat heads one column "Exp.date / Mfg.date"; excluding anything mentioning
+    "mfg" silently dropped the expiry from every line of that invoice.
+    """
+    items = results[case["file"]]["fields"]["line_items"]
+    assert items
+    for item in items:
+        for field in ("description", "batch_no", "expiry", "quantity", "rate", "gst_percent"):
+            assert item[field]["value"], f"{field} missing on {item['description']['value']!r}"
+        # Amount is absent only on a free replacement line, which the invoice
+        # itself leaves blank - the manifest declares that case.
+        if not item["amount"]["value"]:
+            assert case.get("expected_warnings"), item["description"]["value"]
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_no_stray_punctuation_in_identifiers(case, results):
+    """A product name spilling into the next column left batch numbers like
+    "() TMET6"."""
+    for item in results[case["file"]]["fields"]["line_items"]:
+        for field in ("batch_no", "hsn"):
+            value = item[field]["value"]
+            if value:
+                assert value == value.strip()
+                assert "(" not in value and ")" not in value, (field, value)

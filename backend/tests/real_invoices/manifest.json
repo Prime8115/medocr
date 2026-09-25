@@ -20,7 +20,11 @@
       "total_reconciles": true,
       "has_ruled_table": true,
       "reconciles_gst_inclusive": true,
-      "expected_warnings": []
+      "expected_warnings": [],
+      "supplier_name": "Zydus Healthcare Limited",
+      "supplier_gstin": "27AAACG1895Q1ZY",
+      "invoice_no": "2299707688",
+      "invoice_date": "30.06.2025"
     },
     {
       "file": "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf",
@@ -33,7 +37,11 @@
       "total_reconciles": true,
       "has_ruled_table": false,
       "reconciles_gst_inclusive": true,
-      "expected_warnings": []
+      "expected_warnings": [],
+      "supplier_name": "J.B.CHEMICALS & PHARMA LTD MUMBAI",
+      "supplier_gstin": "27AAACJ1482G1ZP",
+      "invoice_no": "1253709366",
+      "invoice_date": "10.09.2025"
     },
     {
       "file": "KANCHAN PHARMA PVT. LTD(PRECIA).pdf",
@@ -46,7 +54,11 @@
       "total_reconciles": true,
       "has_ruled_table": true,
       "reconciles_gst_inclusive": true,
-      "expected_warnings": []
+      "expected_warnings": [],
+      "supplier_name": "KANCHAN PHARMA PVT.LTD",
+      "supplier_gstin": "27AABCK6444J1ZC",
+      "invoice_no": "MUMSI/0138/25-26",
+      "invoice_date": "10/07/2025"
     },
     {
       "file": "BHARAT SERUMS AND VACCINES LIMITED.pdf",
@@ -61,7 +73,11 @@
       "reconciles_gst_inclusive": true,
       "expected_warnings": [
         "have no amount"
-      ]
+      ],
+      "supplier_name": "BHARAT SERUMS AND VACCINES LIMITED",
+      "supplier_gstin": "27AAACA5081C1Z3",
+      "invoice_no": "9017115014",
+      "invoice_date": "21.08.2025"
     }
   ]
 }

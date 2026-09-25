@@ -37,7 +37,9 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     ),
     "hsn": (["hsncode", "hsn"], []),
     "batch_no": (["batchno", "batch", "lotno", "lot"], []),
-    "expiry": (["expdate", "expiry", "exp"], ["mfg", "mfd"]),
+    # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
+    # heads one column "Exp.date / Mfg.date" - excluding it lost every expiry.
+    "expiry": (["expdate", "expiry", "exp"], []),
     "pack": (["packing", "pack"], []),
     # Free/scheme quantity is claimed BEFORE quantity so a "F.QTY" column can
     # never be mistaken for the billed quantity.
@@ -294,20 +296,180 @@ def _extract_item_count(text: str) -> Optional[int]:
     return count if 0 < count < 5000 else None
 
 
-def _extract_header_meta(text: str) -> dict:
-    """Best-effort supplier + invoice number/date/total from the page text."""
-    supplier = None
-    for line in (text or "").splitlines():
-        s = line.strip()
-        if re.search(r"\b(LIMITED|LTD|PVT|PRIVATE|DISTRIBUTOR|PHARMA|HEALTHCARE|ENTERPRISE|AGENC)", s, re.I):
-            # Trim trailing document-type words that share the line.
-            supplier = re.split(r"\b(TAX\s*INVOICE|INVOICE|ORIGINAL|DUPLICATE|CREDIT\s*NOTE)\b", s, flags=re.I)[0].strip(" -|")
-            break
-    inv_no = re.search(r"invoice\s*no\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", text or "", re.I)
-    inv_dt = re.search(r"invoice\s*no.*?dt\.?\s*[:\-]?\s*([0-9][0-9./\-]{6,})", text or "", re.I)
-    gstin = re.search(r"GSTIN\s*[:\-]?\s*([0-9A-Z]{15})", text or "", re.I)
+# Where the BUYER's details start. Everything to the left of this belongs to the
+# supplier - the two are side-by-side columns that flatten into interleaved text.
+_BUYER_HEADING = re.compile(r"\b(bill(?:ed)?\s*to|ship\s*to|sold\s*to|buyer|consignee|customer)\b", re.I)
+
+_COMPANY = re.compile(
+    r"\b(LIMITED|LTD|PVT|PRIVATE|DISTRIBUTOR|PHARMA|HEALTHCARE|ENTERPRISE|AGENC|LABORATOR|"
+    r"INDUSTRIES|REMEDIES|BIOTECH|LIFESCIENCE|LOGISTICS|MARKETING|TRADERS)\b",
+    re.I,
+)
+# "C.A. of X" / "C&F of X" names the principal a carrying agent acts for. The
+# invoicing party - the one whose GSTIN is on the bill, and the one the pharmacy
+# actually buys from - is the agent itself, printed separately.
+_AGENT_OF = re.compile(r"^\s*(c\.?\s*a\.?|c\s*&\s*f|c\.?f\.?a\.?|agent|stockist)\s*(of|for)\b", re.I)
+
+_DOC_WORDS = re.compile(r"\b(TAX\s*INVOICE|INVOICE|ORIGINAL|DUPLICATE|TRIPLICATE|CREDIT\s*NOTE)\b", re.I)
+# Lines that are details about a party, not part of its address.
+_NOT_ADDRESS = re.compile(
+    r"(gs\s*t\s*in|gstin|pan\s*no|pan\s*:|d\.?l\.?\s*no|drug\s*lic|food\s*lic|fssai|cin|"
+    r"e-?mail|phone|mob\b|tel\b|invoice|state\s*code|pos\s*:|c\.?\s*person|"
+    r"\boriginal\b|\bduplicate\b|\btriplicate\b)",
+    re.I,
+)
+# Where a party's name stops and its registration details begin.
+_DETAIL_LABEL = re.compile(
+    r"(gs\s*t\s*in|gstin|pan\s*no|pan\s*:|cin\s*[.:]|d\.?l\.?\s*no|drug\s*lic|food\s*lic|"
+    r"fssai|e-?mail|phone|mob\b|tel\b|invoice\s*(?:no|date))",
+    re.I,
+)
+
+# The statutory GSTIN shape: 2-digit state, 5-letter PAN prefix, 4 digits,
+# letter, then two more. Matching the shape itself survives the many spellings
+# of the label - "GSTIN No :", "GSTin:", "GS Tin :".
+_GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]{2})\b")
+_GSTIN = re.compile(r"\bG\s*S\s*T\s*(?:IN|No)?\.?\s*(?:no\.?)?\s*[:\-]?\s*([0-9A-Z]{15})\b", re.I)
+_INVOICE_NO = re.compile(r"\binvoice\s*(?:no|num(?:ber)?|#)\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", re.I)
+_DATE_VALUE = r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}|\d{4}-\d{2}-\d{2})"
+_INVOICE_DATE = [
+    re.compile(r"\binvoice\s*date\s*[:\-]?\s*" + _DATE_VALUE, re.I),
+    re.compile(r"\binvoice\s*no.*?\bdt\.?\s*[:\-]?\s*" + _DATE_VALUE, re.I),
+    re.compile(r"\bdated?\s*[:\-]\s*" + _DATE_VALUE, re.I),
+    re.compile(r"\bdate\s*[:\-]\s*" + _DATE_VALUE, re.I),
+]
+
+
+def _buyer_boundary(words, page_height: float) -> Optional[float]:
+    """The x where the buyer's column starts, if the page has one."""
+    limit = page_height * 0.45
+    boundary = None
+    for i, word in enumerate(words):
+        top = float(word["top"])
+        if top > limit:
+            continue
+        # The window must START with the heading and stay on one line. A sliding
+        # window that merely CONTAINS it matched across a line break - the
+        # supplier's PAN followed by the buyer's "Bill to" on the next line -
+        # and anchored the column boundary to the supplier's own text, cutting
+        # its name in half.
+        window = [w for w in words[i:i + 3] if abs(float(w["top"]) - top) <= 3.5]
+        phrase = " ".join(str(w["text"]) for w in window)
+        if _BUYER_HEADING.match(phrase):
+            x0 = float(word["x0"])
+            boundary = x0 if boundary is None else min(boundary, x0)
+    # A heading hard against the left edge leaves nothing safe to cut.
+    return boundary if boundary and boundary >= 40 else None
+
+
+def supplier_region_lines(page) -> List[Tuple[float, str]]:
+    """(font size, text) per line of the supplier's own block.
+
+    Two signals separate the vendor from the customer, because an invoice prints
+    both in the same header:
+
+    * **Position.** The buyer's details sit in their own column. Flattened to
+      text the columns interleave, and "the first line that looks like a
+      company" then picks up the BUYER - JB Chemicals was being filed under its
+      own customer's name, which would send every purchase to the wrong vendor.
+      So everything right of the "Bill to / Ship to" heading is cut away.
+    * **Size.** The supplier prints its own name larger than anything else in
+      the header, which settles which of several company names is the vendor -
+      Kanchan lists itself, the principal it acts for, and the customer, within
+      a few lines of each other.
+    """
+    try:
+        words = page.extract_words(keep_blank_chars=False, extra_attrs=["size"])
+    except Exception:  # noqa: BLE001
+        return []
+    if not words:
+        return []
+
+    boundary = _buyer_boundary(words, float(page.height))
+    if boundary is not None:
+        words = [w for w in words if float(w["x1"]) <= boundary - 2]
+
+    limit = float(page.height) * 0.30
+    top = [w for w in words if float(w["top"]) <= limit]
+    if not top:
+        return []
+    from app.services.ocr.pdf_table import _visual_lines
+
+    out: List[Tuple[float, str]] = []
+    for _, row in _visual_lines(top):
+        size = max((float(w.get("size") or 0) for w in row), default=0.0)
+        out.append((size, " ".join(str(w["text"]) for w in row)))
+    return out
+
+
+def _clean_name(line: str) -> str:
+    """A party's name, with the document type and any registration details cut off."""
+    name = _DOC_WORDS.split(line)[0]
+    name = _DETAIL_LABEL.split(name)[0]
+    return re.sub(r"\s+", " ", name).strip(" -|:,.")
+
+
+def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
+    """(name, address) from the supplier's block, biggest company name first."""
+    candidates = [
+        (size, i, _clean_name(text))
+        for i, (size, text) in enumerate(lines)
+        if _COMPANY.search(text) and not _BUYER_HEADING.search(text)
+    ]
+    candidates = [c for c in candidates if len(c[2]) >= 4]
+    if not candidates:
+        return None, None
+
+    # A party named only as "C.A. of <principal>" is last resort; otherwise the
+    # largest print wins, and ties go to whichever is printed first.
+    size, index, name = max(
+        candidates, key=lambda c: (0 if _AGENT_OF.match(c[2]) else 1, c[0], -c[1])
+    )
+
+    address_parts = []
+    for _, text in lines[index + 1:index + 6]:
+        if _NOT_ADDRESS.search(text) or _COMPANY.search(text):
+            continue
+        cleaned = re.sub(r"\s+", " ", text).strip()
+        if cleaned:
+            address_parts.append(cleaned)
+    address = ", ".join(address_parts).strip(" ,") or None
+    return name, address
+
+
+def _extract_header_meta(
+    text: str,
+    supplier_lines: Optional[List[Tuple[float, str]]] = None,
+) -> dict:
+    """Supplier and invoice details from the page text.
+
+    The supplier's own block is isolated first - by x position where the buyer's
+    details sit in a neighbouring column, and by font size among the company
+    names at the top. Without that, "the first line that looks like a company"
+    picks up the CUSTOMER, which would file every purchase under the wrong
+    vendor. Invoice number, date and total are read from the whole page, where
+    they sit in their own column.
+    """
+    lines = supplier_lines or []
+    own = "\n".join(t for _, t in lines)
+    name, address = _supplier_details(lines)
+    if name is None:
+        name, address = _supplier_details([(0.0, ln) for ln in (text or "").splitlines()])
+
+    gstin = (
+        _GSTIN_SHAPE.search(own or "")
+        or _GSTIN.search(own or "")
+        or _GSTIN_SHAPE.search(text or "")
+        or _GSTIN.search(text or "")
+    )
+    inv_no = _INVOICE_NO.search(text or "")
+    inv_dt = next((m for m in (p.search(text or "") for p in _INVOICE_DATE) if m), None)
     return {
-        "supplier": {"name": _f(supplier), "gstin": _f(gstin.group(1) if gstin else None), "address": _f(None)},
+        "supplier": {
+            "name": _f(name),
+            "gstin": _f(gstin.group(1).upper() if gstin else None),
+            "address": _f(address),
+        },
         "invoice": {
             "invoice_no": _f(inv_no.group(1) if inv_no else None),
             "invoice_date": _f(inv_dt.group(1) if inv_dt else None),
@@ -317,6 +479,13 @@ def _extract_header_meta(text: str) -> dict:
 
 
 # --------------------------------- row build ---------------------------------
+def _strip_stray(text: str) -> str:
+    """Drop tokens carrying no characters, e.g. the "()" that trails a product
+    name into the batch column and turned "TMET6" into "() TMET6"."""
+    tokens = [t for t in (text or "").split() if re.search(r"[A-Za-z0-9]", t)]
+    return " ".join(tokens)
+
+
 def _looks_like_prose(text: str) -> bool:
     """True for a sentence fragment rather than a medicine name.
 
@@ -365,7 +534,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
     item = {"description": _f(desc)}
     for field in ("batch_no", "expiry", "hsn", "pack"):
         if cols.get(field) is not None:
-            item[field] = _f(_clean(cell(field)))
+            item[field] = _f(_strip_stray(_clean(cell(field))))
     for field in ("quantity", "free_quantity", "mrp", "ptr", "pts", "rate", "discount_percent", "amount"):
         if cols.get(field) is not None:
             item[field] = _f(_num(cell(field)))
@@ -486,7 +655,9 @@ def parse_invoice_pdf(data: bytes) -> Optional[dict]:
                 page = pdf.pages[page_no]
                 page_texts[page_no] = page.extract_text() or ""
                 if meta is None:
-                    meta = _extract_header_meta(page_texts[page_no])
+                    meta = _extract_header_meta(
+                        page_texts[page_no], supplier_region_lines(page)
+                    )
                 # Two ways to find the table, and we keep whichever actually
                 # yields more line items.
                 #
