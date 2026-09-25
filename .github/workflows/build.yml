@@ -12,6 +12,12 @@ name: Build Android APK
 # `API_URL` (Settings → Secrets and variables → Actions → Variables) to provide a
 # default for tag builds.
 
+# Runner, action and runtime versions are pinned deliberately:
+#   * ubuntu-24.04 rather than ubuntu-latest - "latest" silently becomes Ubuntu
+#     26 on 19 Oct 2026, and a build machine should change when we choose.
+#   * Node 22: Node 20 reached end of life in April 2026.
+#   * Python 3.12 to match backend/Dockerfile (python:3.12-slim), so CI tests
+#     the interpreter production actually runs.
 on:
   workflow_dispatch:
     inputs:
@@ -25,22 +31,22 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       EXPO_PUBLIC_API_URL: ${{ github.event.inputs.api_url || vars.API_URL || 'https://mediscan.maxxcom.in' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: mobile/package-lock.json
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -61,7 +67,7 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mediscan-apk
           path: mobile/android/app/build/outputs/apk/release/app-release.apk
