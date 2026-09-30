@@ -55,15 +55,61 @@ class PrescriptionFields(BaseModel):
 
 # ------------------------------- Invoice --------------------------------
 class Supplier(BaseModel):
+    """The party that issued the invoice - the vendor.
+
+    Exported as the client's Customer* fields: on a purchase import this is the
+    party master the shop's software needs, and it is the party whose drug
+    licence numbers the invoice prints.
+    """
+
     name: Field = Field()
     gstin: Field = Field()
+    address: Field = Field()
+    pan: Field = Field()
+    email: Field = Field()
+    # Pharma invoices print two or three drug licence numbers, sometimes with
+    # their own validity dates.
+    dl_no_1: Field = Field()
+    dl_date_1: Field = Field()
+    dl_no_2: Field = Field()
+    dl_date_2: Field = Field()
+    dl_no_3: Field = Field()
+    dl_date_3: Field = Field()
+
+
+class Party(BaseModel):
+    """A Bill-to or Ship-to party - normally the buying pharmacy or its branch."""
+
+    name: Field = Field()
+    gstin: Field = Field()
+    pan: Field = Field()
     address: Field = Field()
 
 
 class InvoiceMeta(BaseModel):
     invoice_no: Field = Field()
     invoice_date: Field = Field()
+    # The final payable amount printed at the foot of the bill.
     total_amount: Field = Field()
+    due_date: Field = Field()
+
+    # --- statutory / transport references a pharmacy has to keep ---
+    irn: Field = Field()
+    eway_bill_no: Field = Field()
+    lr_no: Field = Field()
+    lr_date: Field = Field()
+    transport: Field = Field()
+    po_no: Field = Field()
+    po_date: Field = Field()
+
+    # --- invoice-level money. Printed on some invoices; otherwise summed from
+    # the lines, so the figures always reach the shop's accounts. ---
+    total_taxable_amount: Field = Field()
+    total_discount_amount: Field = Field()
+    total_cgst_amount: Field = Field()
+    total_sgst_amount: Field = Field()
+    total_igst_amount: Field = Field()
+    total_utgst_amount: Field = Field()
 
 
 class ExtraField(BaseModel):
@@ -127,6 +173,23 @@ class InvoiceLineItem(BaseModel):
     # True when the supplier billed this line at zero - a free or replacement
     # supply, which prints a blank amount rather than a missing one.
     free_supply: Field = Field()
+
+    # --- the remaining money columns Indian pharma invoices print per line ---
+    # gross before discount/tax, and net after - both are printed, and they are
+    # not the same number as the taxable value.
+    gross_amount: Field = Field()
+    net_amount: Field = Field()
+    # Scheme (free-goods offer): the percentage, its description, and its value.
+    scheme: Field = Field()
+    scheme_value: Field = Field()
+    # Cash discount and window/wholesale-profit discount, each a % and an amount.
+    cd_percent: Field = Field()
+    cd_amount: Field = Field()
+    wp_percent: Field = Field()
+    wp_amount: Field = Field()
+    # Union-territory GST, used in place of SGST in UT supplies.
+    utgst_percent: Field = Field()
+    utgst_amount: Field = Field()
     # Every column we did not recognise, kept with the supplier's own heading so
     # a layout we have never seen before is captured rather than discarded.
     extras: List[ExtraField] = []
@@ -134,6 +197,8 @@ class InvoiceLineItem(BaseModel):
 
 class InvoiceFields(BaseModel):
     supplier: Supplier = Supplier()
+    bill_to: Party = Party()
+    ship_to: Party = Party()
     invoice: InvoiceMeta = InvoiceMeta()
     line_items: List[InvoiceLineItem] = []
 

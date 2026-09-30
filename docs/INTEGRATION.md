@@ -80,10 +80,31 @@ Any mismatch also appears in plain language in `meta.warnings`.
 | `generic` | A stable, minimal column set. **Its shape never changes** — safe to import against. |
 | `detailed` | Everything we extract: pack, free qty, MRP, PTR, PTS, rate + rate source, discount, HSN, GST. |
 | `marg` / `vyapar` / `tally` | Matched to those products' import layouts. |
+| `client_full` | 67 columns: 33 invoice-header fields repeated on every row, then 34 line fields, under an integrating client's own names (`CustomerName`, `BillToGSTINNO`, `SCGSTAmount`, ...). In this profile **`Customer*` means the SUPPLIER** - on a purchase import that is the party master your software needs, and the party whose drug licence numbers the invoice prints. Your own details are on `BillTo*` / `ShipTo*`. |
 
 **If your shop receives scheme goods (10+2), use `detailed` or add
 `free_quantity` to a custom `columns` list.** `generic` carries only the billed
 quantity, so scheme units would never reach your stock.
+
+---
+
+## The same columns over the API
+
+A webhook connector normally receives the nested `data` above. Set a `profile`
+(or your own `columns`) on the connector and the payload additionally carries:
+
+```json
+{
+  "data":        { "...": "the full nested extraction, unchanged" },
+  "row_columns": ["CustomerName", "InvoiceNo", "...", "SchemeValue"],
+  "rows":        [ { "CustomerName": "ACME PHARMA LTD", "ProductName": "MED 1", "...": "..." } ]
+}
+```
+
+One object per line item, keyed by that profile's column names, with the
+invoice-level fields repeated on each row - the same values the CSV export
+produces, so a shop reconciling one against the other cannot see two answers.
+`data` is untouched, so existing integrations keep working.
 
 ---
 

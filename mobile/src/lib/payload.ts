@@ -111,6 +111,8 @@ const INVOICE_SINGLE: Section[] = [
     fields: [
       { path: 'supplier.name', label: 'Supplier' },
       { path: 'supplier.gstin', label: 'GSTIN' },
+    { path: 'supplier.pan', label: 'PAN' },
+    { path: 'supplier.dl_no_1', label: 'Drug licence' },
     ],
   },
   {
@@ -119,6 +121,16 @@ const INVOICE_SINGLE: Section[] = [
       { path: 'invoice.invoice_no', label: 'Invoice no' },
       { path: 'invoice.invoice_date', label: 'Date' },
       { path: 'invoice.total_amount', label: 'Total' },
+    { path: 'invoice.due_date', label: 'Due date' },
+    { path: 'invoice.total_taxable_amount', label: 'Taxable total' },
+    { path: 'invoice.total_cgst_amount', label: 'CGST total' },
+    { path: 'invoice.total_sgst_amount', label: 'SGST total' },
+    { path: 'invoice.total_igst_amount', label: 'IGST total' },
+    { path: 'invoice.eway_bill_no', label: 'E-way bill' },
+    { path: 'invoice.irn', label: 'IRN' },
+    { path: 'invoice.lr_no', label: 'LR no' },
+    { path: 'invoice.transport', label: 'Transport' },
+    { path: 'invoice.po_no', label: 'PO no' },
     ],
   },
 ];

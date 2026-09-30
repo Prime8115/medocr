@@ -23,6 +23,15 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from app.services.ocr.amount_words import total_from_words
+from app.services.ocr.invoice_header import (
+    extract_references,
+    extract_totals,
+    normalised_party_key,
+    party_details,
+    party_regions,
+    sum_line_totals,
+    supplier_extras,
+)
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables
 
 log = logging.getLogger(__name__)
@@ -65,6 +74,16 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     ),
     "discount_percent": (["disc%", "discount%", "discount", "disc"], ["amt", "amount", "value", "rs"]),
     "discount_amount": (["discamt", "discountamt", "discountamount"], ["%"]),
+    "cd_percent": (["cd%", "cashdisc%", "cashdiscount%"], ["amt", "amount", "rs"]),
+    "cd_amount": (["cdamt", "cdamount", "cashdiscamt", "cashdiscountamt"], ["%"]),
+    "wp_percent": (["wp%", "wpdisc%"], ["amt", "amount"]),
+    "wp_amount": (["wpamt", "wpamount", "wpvalue"], ["%"]),
+    "scheme": (["schemedesc", "schemedescription", "schemename", "scheme"], ["%", "qty", "amt", "value"]),
+    "scheme_value": (["schemevalue", "schemeamt", "schemeamount"], ["%"]),
+    "gross_amount": (["grossamount", "grossamt", "grossvalue"], ["%"]),
+    "net_amount": (["netamount", "netamt", "netvalue"], ["%"]),
+    "utgst_percent": (["utgst%", "utgstrate"], ["amt", "amount"]),
+    "utgst_amount": (["utgstamt", "utgstamount"], ["%", "rate"]),
     "scheme_percent": (["sch%", "scheme%", "schemediscount"], ["amt", "qty"]),
     "total_quantity": (["totalqty", "totqty", "netqty"], ["%", "free"]),
     # Tax columns are captured per head so the amounts reach the accounts, and so
@@ -77,10 +96,12 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "igst_amount": (["igstamt", "igstamount"], ["%", "rate"]),
     # The net/taxable column is what the bill actually sums; a plain "Amount"
     # column (Kanchan) is the figure BEFORE the line discount.
+    # The taxable value - what GST is charged on, and what the lines are summed
+    # against. `net_amount` and `gross_amount` are separate columns above, so
+    # they are no longer allowed to stand in for this one.
     "amount": (
-        ["taxableamount", "taxablevalue", "taxableamt", "netamount", "netamt", "netvalue",
-         "amount", "value", "total"],
-        ["%"],
+        ["taxableamount", "taxablevalue", "taxableamt", "amount", "value", "total"],
+        ["%", "gross", "net"],
     ),
 }
 
@@ -347,7 +368,7 @@ _DETAIL_LABEL = re.compile(
 # The statutory GSTIN shape: 2-digit state, 5-letter PAN prefix, 4 digits,
 # letter, then two more. Matching the shape itself survives the many spellings
 # of the label - "GSTIN No :", "GSTin:", "GS Tin :".
-_GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]{2})\b")
+_GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][A-Z0-9])\b")
 _GSTIN = re.compile(r"\bG\s*S\s*T\s*(?:IN|No)?\.?\s*(?:no\.?)?\s*[:\-]?\s*([0-9A-Z]{15})\b", re.I)
 _INVOICE_NO = re.compile(r"\binvoice\s*(?:no|num(?:ber)?|#)\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", re.I)
 _DATE_VALUE = r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}|\d{4}-\d{2}-\d{2})"
@@ -461,6 +482,7 @@ def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
 def _extract_header_meta(
     text: str,
     supplier_lines: Optional[List[Tuple[float, str]]] = None,
+    parties: Optional[dict] = None,
 ) -> dict:
     """Supplier and invoice details from the page text.
 
@@ -485,16 +507,54 @@ def _extract_header_meta(
     )
     inv_no = _INVOICE_NO.search(text or "")
     inv_dt = next((m for m in (p.search(text or "") for p in _INVOICE_DATE) if m), None)
+
+    supplier = {
+        "name": _f(name),
+        "gstin": _f(gstin.group(1).upper() if gstin else None),
+        "address": _f(address),
+    }
+    # PAN, e-mail and drug licences come from the supplier's own block, so the
+    # buyer's equivalents cannot be mistaken for the vendor's.
+    for key, value in supplier_extras(own or text).items():
+        supplier[key] = _f(value)
+
+    # Bill-to and Ship-to, each read from its own column.
+    regions = parties or {}
+    party_fields = {}
+    for key in ("bill_to", "ship_to"):
+        detail = party_details(regions.get(key, ""))
+        party_fields[key] = {k: _f(v) for k, v in detail.items()}
+
+    # Bill-to and Ship-to are usually the same company, and several suppliers
+    # print its GSTIN or PAN only once. Share a value between them when the names
+    # agree, rather than leaving a required field blank.
+    bill, ship = party_fields.get("bill_to", {}), party_fields.get("ship_to", {})
+    # Compared on a normalised key: the two blocks are the same company even
+    # when one wrapped as "PVT LTD" and the other as "PVT. LTD.".
+    bill_key = normalised_party_key(bill.get("name", {}).get("value"))
+    ship_key = normalised_party_key(ship.get("name", {}).get("value"))
+    same = bool(bill_key) and bool(ship_key) and (
+        bill_key == ship_key or bill_key.startswith(ship_key) or ship_key.startswith(bill_key)
+    )
+    if same:
+        for key in ("gstin", "pan"):
+            here, there = bill.get(key, {}).get("value"), ship.get(key, {}).get("value")
+            if here and not there:
+                ship[key] = _f(here)
+            elif there and not here:
+                bill[key] = _f(there)
+
+    references = extract_references(text)
+    totals = extract_totals(text)
     return {
-        "supplier": {
-            "name": _f(name),
-            "gstin": _f(gstin.group(1).upper() if gstin else None),
-            "address": _f(address),
-        },
+        **party_fields,
+        "supplier": supplier,
         "invoice": {
             "invoice_no": _f(inv_no.group(1) if inv_no else None),
             "invoice_date": _f(inv_dt.group(1) if inv_dt else None),
             "total_amount": _f(_extract_total(text)),
+            **{k: _f(v) for k, v in references.items()},
+            **{k: _f(v) for k, v in totals.items()},
         },
     }
 
@@ -503,11 +563,13 @@ def _extract_header_meta(
 # Columns read as text, and as numbers. Kept beside _COLS so adding a column
 # there is a one-line change here rather than a silently dropped field.
 _TEXT_FIELDS = ("batch_no", "expiry", "mfg_date", "hsn", "pack", "uom",
-                "product_code", "manufacturer")
+                "product_code", "manufacturer", "scheme")
 _NUMERIC_FIELDS = ("quantity", "free_quantity", "total_quantity", "mrp", "ptr", "pts",
                    "rate", "discount_percent", "discount_amount", "scheme_percent",
+                   "scheme_value", "cd_percent", "cd_amount", "wp_percent", "wp_amount",
                    "cgst_percent", "cgst_amount", "sgst_percent", "sgst_amount",
-                   "igst_percent", "igst_amount", "amount")
+                   "igst_percent", "igst_amount", "utgst_percent", "utgst_amount",
+                   "gross_amount", "net_amount", "amount")
 
 
 def _strip_stray(text: str) -> str:
@@ -591,20 +653,46 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
     # of column names gets it right - invoice_checks.resolve_billed_rate decides
     # it from amount / quantity once the whole invoice has been read.
 
-    # GST% = sum of CGST%+SGST% (or IGST%) columns.
+    # GST% = sum of CGST%+SGST% (or IGST%) columns, and each head's own rate and
+    # amount where the invoice separates them.
+    #
+    # Several suppliers merge the pair into one cell - JB heads a column
+    # "CGST Rate | Amt." and prints "6.00 1396.02" under it. Read as a single
+    # number that is either a 665% tax rate or a lost amount, so a merged cell is
+    # split: the first number is the rate, the second is the tax.
     gst_vals = []
     for gi in gst_cols:
-        if gi < len(row):
-            n = _num(row[gi])
-            if n:
-                value = float(n)
-                # A merged "SGST % Amount" cell can hand us the tax AMOUNT
-                # instead of the rate; 665% GST then inflates the gross total
-                # sixty-fold. India's top GST slab is 28%.
-                if 0 <= value <= _MAX_GST_PERCENT:
-                    gst_vals.append(value)
+        if gi >= len(row):
+            continue
+        numbers = [float(n.replace(",", "")) for n in _NUM.findall(str(row[gi] or ""))]
+        if not numbers:
+            continue
+        rate = next((n for n in numbers if 0 <= n <= _MAX_GST_PERCENT), None)
+        if rate is None:
+            continue
+        gst_vals.append(rate)
+
+        head = _norm(header_row[gi]) if gi < len(header_row) else ""
+        which = "igst" if "igst" in head else "sgst" if ("sgst" in head or "utgst" in head) else "cgst"
+        if not (item.get(f"{which}_percent") or {}).get("value"):
+            item[f"{which}_percent"] = _f(f"{rate:g}")
+        amounts = [n for n in numbers if n is not rate]
+        if amounts and not (item.get(f"{which}_amount") or {}).get("value"):
+            item[f"{which}_amount"] = _f(f"{amounts[-1]:.2f}")
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
+
+    # `amount` is the line value everything reconciles against. Many invoices
+    # print only one value column and head it "Net Amount" or "Gross Amount";
+    # now that those have fields of their own they no longer feed `amount`, so
+    # fall back to them when no taxable column was printed. Without this such an
+    # invoice has nothing to add up and cannot be reconciled at all.
+    if not (item.get("amount") or {}).get("value"):
+        for alternative in ("net_amount", "gross_amount"):
+            value = (item.get(alternative) or {}).get("value")
+            if value:
+                item["amount"] = _f(value)
+                break
 
     # A footer line that slips past the text filters gives itself away here: its
     # "quantity" is an IRN or invoice number a dozen digits long. Kanchan's IRN
@@ -705,7 +793,9 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                 page_texts[page_no] = page.extract_text(x_tolerance=WORD_TOLERANCE) or ""
                 if meta is None:
                     meta = _extract_header_meta(
-                        page_texts[page_no], supplier_region_lines(page)
+                        page_texts[page_no],
+                        supplier_region_lines(page),
+                        party_regions(page, WORD_TOLERANCE),
                     )
                 # Two ways to find the table, and we keep whichever actually
                 # yields more line items.
@@ -752,6 +842,13 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     # A total printed only on the last page won't be in the first page's text.
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
         fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+    # Any invoice-level total the bill did not print is summed from the lines,
+    # so the tax split always reaches the shop's accounts.
+    invoice_meta = fields.setdefault("invoice", {})
+    for key, value in sum_line_totals(line_items).items():
+        if not (invoice_meta.get(key) or {}).get("value"):
+            invoice_meta[key] = _f(value)
+
     fields["line_items"] = line_items
     fields["_hints"] = {
         "copies_detected": copies,

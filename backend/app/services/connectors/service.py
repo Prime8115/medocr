@@ -23,7 +23,6 @@ def push_document(db: Session, document: Document, connector_overrides: Optional
     Idempotent: a connector already delivered (success) or queued (pending) for
     this document is skipped. Previously failed deliveries are retried.
     """
-    payload = build_push_payload(document)
     connectors = (
         db.query(Connector)
         .filter(Connector.shop_id == document.shop_id, Connector.enabled.is_(True))
@@ -32,6 +31,9 @@ def push_document(db: Session, document: Document, connector_overrides: Optional
 
     deliveries: List[PushDelivery] = []
     for model in connectors:
+        # Built per connector: each may ask for its own column profile, and the
+        # payload then also carries the flat rows under those names.
+        payload = build_push_payload(document, model.config or {})
         key = _idempotency_key(document.id, model.id)
         existing = (
             db.query(PushDelivery)

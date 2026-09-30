@@ -61,13 +61,39 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
 
     if doc_type == "invoice":
-        supplier = _v((data.get("supplier") or {}).get("name"))
-        supplier_gstin = _v((data.get("supplier") or {}).get("gstin"))
+        sup = data.get("supplier") or {}
+        bill_to = data.get("bill_to") or {}
+        ship_to = data.get("ship_to") or {}
         inv = data.get("invoice") or {}
+        supplier = _v(sup.get("name"))
+        supplier_gstin = _v(sup.get("gstin"))
+        # Header values repeat on every row: a flat CSV has no place else to put
+        # them, and the importer reads them from the first line.
+        header = {
+            "supplier_pan": _v(sup.get("pan")),
+            "supplier_email": _v(sup.get("email")),
+            "supplier_address": _v(sup.get("address")),
+            "bill_to_name": _v(bill_to.get("name")),
+            "bill_to_gstin": _v(bill_to.get("gstin")),
+            "bill_to_pan": _v(bill_to.get("pan")),
+            "ship_to_name": _v(ship_to.get("name")),
+            "ship_to_gstin": _v(ship_to.get("gstin")),
+            "ship_to_pan": _v(ship_to.get("pan")),
+        }
+        for i in (1, 2, 3):
+            header[f"dl_no_{i}"] = _v(sup.get(f"dl_no_{i}"))
+            header[f"dl_date_{i}"] = _v(sup.get(f"dl_date_{i}"))
+        for key in ("due_date", "irn", "eway_bill_no", "lr_no", "lr_date", "transport",
+                    "po_no", "po_date", "total_taxable_amount", "total_discount_amount",
+                    "total_cgst_amount", "total_sgst_amount", "total_igst_amount",
+                    "total_utgst_amount"):
+            header[key] = _v(inv.get(key))
+        header["final_amount"] = _v(inv.get("total_amount"))
         invoice_no = _v(inv.get("invoice_no"))
         invoice_date = _v(inv.get("invoice_date"))
         for item in data.get("line_items", []) or []:
             rows.append({
+                **header,
                 "document_id": doc_id, "supplier": supplier,
                 "invoice_no": invoice_no, "invoice_date": invoice_date,
                 "description": _v(item.get("description")), "batch_no": _v(item.get("batch_no")),
@@ -92,6 +118,16 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
                 "sgst_amount": _v(item.get("sgst_amount")),
                 "igst_percent": _v(item.get("igst_percent")),
                 "igst_amount": _v(item.get("igst_amount")),
+                "utgst_percent": _v(item.get("utgst_percent")),
+                "utgst_amount": _v(item.get("utgst_amount")),
+                "gross_amount": _v(item.get("gross_amount")),
+                "net_amount": _v(item.get("net_amount")),
+                "scheme": _v(item.get("scheme")),
+                "scheme_value": _v(item.get("scheme_value")),
+                "cd_percent": _v(item.get("cd_percent")),
+                "cd_amount": _v(item.get("cd_amount")),
+                "wp_percent": _v(item.get("wp_percent")),
+                "wp_amount": _v(item.get("wp_amount")),
                 # Columns we had no name for, flattened as "Heading: value" so a
                 # layout we have never seen still reaches the shop's software.
                 "extra_columns": "; ".join(
@@ -191,6 +227,82 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "Frequency", "field": "frequency"},
             {"header": "Duration", "field": "duration"},
             {"header": "Instructions", "field": "instructions"},
+        ],
+    },
+    # The exact column set an integrating client asked for (33 header fields
+    # repeated on every row, then 35 line fields), under their own names. Their
+    # "Customer*" fields mean the SUPPLIER - on a purchase import that is the
+    # party master the shop's software needs, and the party whose drug licence
+    # numbers the invoice prints. HSN appears twice because their list does.
+    "client_full": {
+        "invoice": [
+            {"header": "CustomerName", "field": "supplier"},
+            {"header": "InvoiceNo", "field": "invoice_no"},
+            {"header": "InvoiceDate", "field": "invoice_date"},
+            {"header": "FinalAmount", "field": "final_amount"},
+            {"header": "BillToName", "field": "bill_to_name"},
+            {"header": "ShipToName", "field": "ship_to_name"},
+            {"header": "CustomerGSTINNO", "field": "supplier_gstin"},
+            {"header": "BillToGSTINNO", "field": "bill_to_gstin"},
+            {"header": "ShipToGSTINNO", "field": "ship_to_gstin"},
+            {"header": "TotalIGSTAmount", "field": "total_igst_amount"},
+            {"header": "TotalCGSTAmount", "field": "total_cgst_amount"},
+            {"header": "TotalSGSTAmount", "field": "total_sgst_amount"},
+            {"header": "TotalUTGSTAmount", "field": "total_utgst_amount"},
+            {"header": "LRNO", "field": "lr_no"},
+            {"header": "LRDate", "field": "lr_date"},
+            {"header": "CustomerDLNo1", "field": "dl_no_1"},
+            {"header": "CustomerDLDate1", "field": "dl_date_1"},
+            {"header": "CustomerDLNo2", "field": "dl_no_2"},
+            {"header": "CustomerDLDate2", "field": "dl_date_2"},
+            {"header": "CustomerDLNo3", "field": "dl_no_3"},
+            {"header": "CustomerDLDate3", "field": "dl_date_3"},
+            {"header": "TotalDiscountAmount", "field": "total_discount_amount"},
+            {"header": "TotalTaxableAmount", "field": "total_taxable_amount"},
+            {"header": "CustomerPANNO", "field": "supplier_pan"},
+            {"header": "Transport", "field": "transport"},
+            {"header": "BillToPanNo", "field": "bill_to_pan"},
+            {"header": "ShipToPanNo", "field": "ship_to_pan"},
+            {"header": "Email", "field": "supplier_email"},
+            {"header": "EwaybillNo", "field": "eway_bill_no"},
+            {"header": "IRNNO", "field": "irn"},
+            {"header": "PONO", "field": "po_no"},
+            {"header": "PODATE", "field": "po_date"},
+            {"header": "DueDate", "field": "due_date"},
+            {"header": "ProductCode", "field": "product_code"},
+            {"header": "ProductName", "field": "description"},
+            {"header": "HSN", "field": "hsn"},
+            {"header": "Qty", "field": "quantity"},
+            {"header": "FreeQty", "field": "free_quantity"},
+            {"header": "HsnCode", "field": "hsn"},
+            {"header": "BatchNo", "field": "batch_no"},
+            {"header": "ExpDate", "field": "expiry"},
+            {"header": "MRP", "field": "mrp"},
+            {"header": "PTR", "field": "ptr"},
+            {"header": "PTS", "field": "pts"},
+            {"header": "Rate", "field": "rate"},
+            {"header": "SGST%", "field": "sgst_percent"},
+            {"header": "CGST%", "field": "cgst_percent"},
+            {"header": "IGST%", "field": "igst_percent"},
+            {"header": "UTGST%", "field": "utgst_percent"},
+            {"header": "GrossAmount", "field": "gross_amount"},
+            {"header": "TaxableAmount", "field": "amount"},
+            {"header": "Scheme%", "field": "scheme_percent"},
+            {"header": "Scheme", "field": "scheme"},
+            {"header": "CD%", "field": "cd_percent"},
+            {"header": "CDAmount", "field": "cd_amount"},
+            {"header": "WP%", "field": "wp_percent"},
+            {"header": "WPAmount", "field": "wp_amount"},
+            {"header": "IGSTAmount", "field": "igst_amount"},
+            {"header": "CGSTAmount", "field": "cgst_amount"},
+            {"header": "SCGSTAmount", "field": "sgst_amount"},
+            {"header": "UTGSTAmount", "field": "utgst_amount"},
+            {"header": "UOM", "field": "uom"},
+            {"header": "MfgDate", "field": "mfg_date"},
+            {"header": "NetAmount", "field": "net_amount"},
+            {"header": "MfgName", "field": "manufacturer"},
+            {"header": "Pack", "field": "pack"},
+            {"header": "SchemeValue", "field": "scheme_value"},
         ],
     },
     "marg": {  # Marg ERP purchase import (item-wise)
