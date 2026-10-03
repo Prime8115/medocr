@@ -80,8 +80,25 @@ def compact_schema(model_cls) -> dict:
 
 
 def _is_schema_rejection(exc: OCRError) -> bool:
+    """Gemini refused a request that carried a response schema.
+
+    It does not always say so: production showed the invoice extraction failing
+    on every attempt with nothing but "400 INVALID_ARGUMENT. Request contains an
+    invalid argument." - while the very same text, sent with the (smaller)
+    prescription schema, was read fine. A bare INVALID_ARGUMENT on a schema'd
+    request is therefore treated as the schema being refused, and the request
+    is retried once without it. A bad key or model reads differently ("API key
+    not valid", "not found") and is not retried.
+    """
     msg = str(exc).lower()
-    return exc.kind == "rejected" and ("schema" in msg or "too many states" in msg)
+    if exc.kind != "rejected":
+        return False
+    return (
+        "schema" in msg
+        or "too many states" in msg
+        or "invalid_argument" in msg
+        or "invalid argument" in msg
+    )
 
 
 class GeminiProvider(OCRProvider):
