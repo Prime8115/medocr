@@ -272,6 +272,9 @@ class ExtractionMeta(BaseModel):
     # grand total is tax-inclusive, so this is usually the number that matches.
     line_items_total_with_gst: Optional[str] = None
     total_reconciles: Optional[bool] = None
+    # How the lines reach the printed total when they do, e.g.
+    # "lines - bill discount + bill tax" - so a reviewer can see why it matched.
+    total_reconciled_by: Optional[str] = None
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None

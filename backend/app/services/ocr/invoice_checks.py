@@ -258,6 +258,54 @@ def _gross_total(items: List[dict]) -> Optional[float]:
     return round(total, 2) if seen else None
 
 
+def _bill_tax(invoice: dict) -> Optional[float]:
+    """The tax the bill states at its foot: the combined GST figure, or else the
+    sum of whichever heads it prints (CGST, SGST, IGST, UTGST)."""
+    total = _num(invoice.get("total_gst_amount"))
+    if total is not None:
+        return total
+    heads = [_num(invoice.get(k)) for k in (
+        "total_cgst_amount", "total_sgst_amount", "total_igst_amount", "total_utgst_amount",
+    )]
+    heads = [h for h in heads if h is not None]
+    return round(sum(heads), 2) if heads else None
+
+
+def _expected_totals(line_total: float, gross_total: Optional[float], invoice: dict) -> List[Tuple[str, float]]:
+    """Every way the printed grand total can be built FROM THE LINES.
+
+    An Indian invoice reaches its grand total from the line amounts through
+    adjustments printed at its foot: GST on the taxable value, and often a
+    trade or cash discount on the whole bill, applied BEFORE the tax. MSV
+    Lifesciences: 15,909.00 in lines, less 10% trade discount (1,590.90),
+    plus CGST 357.96 and SGST 357.96, rounded = 15,034.00. Comparing the lines
+    with the total alone reported every such bill as wrong.
+
+    Each candidate starts from the line sum, never from the bill's own summary
+    figures alone - matching the total from those would hide exactly the
+    missing or misread line this check exists to catch.
+    """
+    candidates = [("lines", line_total)]
+    if gross_total is not None:
+        candidates.append(("lines + per-line GST", gross_total))
+
+    discount = _num(invoice.get("total_discount_amount"))
+    discount = abs(discount) if discount else None   # printed as "(-)1,590.90" or "1,590.90"
+    tax = _bill_tax(invoice)
+
+    if discount:
+        net = line_total - discount
+        candidates.append(("lines - bill discount", net))
+        if gross_total is not None and line_total:
+            # Per-line GST, on lines reduced by the bill discount pro rata.
+            candidates.append(("lines - bill discount + per-line GST", gross_total * net / line_total))
+    if tax is not None:
+        candidates.append(("lines + bill tax", line_total + tax))
+        if discount:
+            candidates.append(("lines - bill discount + bill tax", line_total - discount + tax))
+    return [(name, round(value, 2)) for name, value in candidates]
+
+
 def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> dict:
     """Cross-check the extracted lines against the invoice's own totals.
 
@@ -274,25 +322,21 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
 
     warnings: List[str] = []
     reconciles: Optional[bool] = None
+    reconciled_by: Optional[str] = None
 
     if line_total is not None and printed_total:
-        # An Indian invoice prints a GST-INCLUSIVE grand total, while each line's
-        # amount is its taxable value. Comparing the two directly reports a ~12%
-        # shortfall on a perfectly good invoice - a false alarm on almost every
-        # bill, which would make the one signal a pharmacist relies on worthless.
-        # So a bill reconciles if the printed total matches either the taxable
-        # sum or that sum plus the per-line GST.
-        bases = [("taxable", line_total)]
-        if gross_total is not None:
-            bases.append(("with GST", gross_total))
+        candidates = _expected_totals(line_total, gross_total, invoice)
         tolerance = max(_TOTAL_TOLERANCE_ABS, printed_total * _TOTAL_TOLERANCE_PCT)
-        matched = next((name for name, value in bases if abs(value - printed_total) <= tolerance), None)
-        reconciles = matched is not None
-        if not reconciles:
-            best = min(bases, key=lambda b: abs(b[1] - printed_total))
+        # The closest candidate decides, so the one reported is the real build-up.
+        best_name, best_value = min(candidates, key=lambda c: abs(c[1] - printed_total))
+        reconciles = abs(best_value - printed_total) <= tolerance
+        if reconciles:
+            reconciled_by = best_name
+        else:
             warnings.append(
-                f"Line items add up to {_fmt(best[1])} but the invoice total reads "
-                f"{_fmt(printed_total)}. Please check the items before approving."
+                f"Line items add up to {_fmt(line_total)}, which does not reach the invoice "
+                f"total of {_fmt(printed_total)} even after the discount and tax it states. "
+                "Please check the items before approving."
             )
     elif printed_total is None:
         warnings.append("Invoice total could not be read - please enter it before approving.")
@@ -310,6 +354,7 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
         "line_items_total": _fmt(line_total) if line_total is not None else None,
         "line_items_total_with_gst": _fmt(gross_total) if gross_total is not None else None,
         "total_reconciles": reconciles,
+        "total_reconciled_by": reconciled_by,
         "stated_item_count": stated_item_count,
         "warnings": warnings,
     }
