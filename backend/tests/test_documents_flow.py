@@ -309,3 +309,52 @@ def test_retrying_keeps_a_type_the_user_chose(client, monkeypatch):
     client.post(f"/v1/documents/{doc_id}/retry", headers=headers)
 
     assert seen == ["prescription", "prescription"]
+
+
+def _failed_doc(client, monkeypatch, headers, cause):
+    from app.api import documents as documents_api
+    from app.services.ocr import OCRError
+
+    def refuse(*_a, **_k):
+        raise OCRError(cause, kind="rejected")
+
+    monkeypatch.setattr(documents_api, "process_document", refuse)
+    return _submit(client, headers).json()["document_id"]
+
+
+def test_the_owner_can_read_why_a_scan_failed(client, monkeypatch):
+    headers = register_and_login(client)
+    cause = "Could not read the document: Invalid invoice fields: quantity"
+    doc_id = _failed_doc(client, monkeypatch, headers, cause)
+
+    r = client.get(f"/v1/documents/{doc_id}/diagnostics", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failed"
+    assert body["requested_doc_type"] is None
+    assert body["failures"][0]["cause"] == cause
+    # ...while the document itself still shows only the plain message.
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert "Invalid" not in doc["error"]
+
+
+def test_diagnostics_are_owner_only(client, db_session, monkeypatch):
+    from app.models.user import User
+
+    headers = register_and_login(client)
+    doc_id = _failed_doc(client, monkeypatch, headers, "x")
+    db = db_session()
+    try:
+        db.query(User).update({User.role: "staff"})
+        db.commit()
+    finally:
+        db.close()
+    assert client.get(f"/v1/documents/{doc_id}/diagnostics", headers=headers).status_code == 403
+
+
+def test_diagnostics_never_cross_shops(client, monkeypatch):
+    headers_a = register_and_login(client)
+    doc_id = _failed_doc(client, monkeypatch, headers_a, "secret cause")
+    headers_b = register_and_login(client, email="b@shop.com", shop="Shop B")
+    r = client.get(f"/v1/documents/{doc_id}/diagnostics", headers=headers_b)
+    assert r.status_code == 404
