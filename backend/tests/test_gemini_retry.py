@@ -223,3 +223,31 @@ def test_compact_schema_drops_what_does_not_constrain_output():
     leaf = gem.compact_schema(model)["$defs"]["Field"]
     assert leaf["required"] == ["value", "confidence"]
     assert leaf["properties"]["value"] == {"type": ["string", "null"]}
+
+
+class GenericInvalidArgument(Exception):
+    code = 400
+
+    def __str__(self):
+        # Exactly what production recorded for the MSV Lifesciences invoice.
+        return (
+            "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': "
+            "'Request contains an invalid argument.', 'status': 'INVALID_ARGUMENT'}}"
+        )
+
+
+def test_a_bare_invalid_argument_on_a_schema_request_retries_without_it(monkeypatch):
+    payload = json.dumps({"invoice": {"invoice_no": {"value": "M-544", "confidence": 0.9}}})
+    p = _provider(monkeypatch, [GenericInvalidArgument(), payload], retries=2)
+    out = p.extract(b"text", "text/plain", "invoice")
+    assert out["invoice"]["invoice_no"]["value"] == "M-544"
+    first, second = p._client.models.configs
+    assert first.response_json_schema is not None
+    assert second.response_json_schema is None
+
+
+def test_a_bad_key_is_not_retried_without_the_schema(monkeypatch):
+    p = _provider(monkeypatch, [BadRequest("API key not valid. Please pass a valid API key.")], retries=2)
+    with pytest.raises(OCRError):
+        p.extract(b"text", "text/plain", "invoice")
+    assert len(p._client.models.calls) == 1
