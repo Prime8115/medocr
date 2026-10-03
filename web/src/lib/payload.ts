@@ -176,6 +176,25 @@ const LINE_FIELDS = (i: number, fields: Fields): FieldSpec[] => {
   ];
 };
 
+/**
+ * A blank line item appended to the invoice; returns the new fields and its
+ * index. For a document sent for manual entry - or a line the reading missed.
+ */
+export function addLineItem(fields: Fields): { fields: Fields; index: number } {
+  const clone: Fields = structuredClone(fields);
+  const items = ((clone.line_items as unknown[]) || []).slice();
+  items.push({ description: { value: '', confidence: 1 } });
+  clone.line_items = items as Fields[keyof Fields];
+  return { fields: clone, index: items.length - 1 };
+}
+
+/** The invoice without line item `index`. */
+export function removeLineItem(fields: Fields, index: number): Fields {
+  const clone: Fields = structuredClone(fields);
+  clone.line_items = ((clone.line_items as unknown[]) || []).filter((_, i) => i !== index) as Fields[keyof Fields];
+  return clone;
+}
+
 export function buildSections(payload: ExtractionPayload, fields: Fields): Section[] {
   if (payload.doc_type === 'invoice') {
     const items = (fields.line_items as unknown[]) || [];

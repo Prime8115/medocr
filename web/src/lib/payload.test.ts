@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { buildSections, getLeaf, setLeafValue, type Fields } from './payload';
+import { addLineItem, buildSections, getLeaf, removeLineItem, setLeafValue, type Fields } from './payload';
 import type { ExtractionPayload } from '../api/documents';
 
 const prescription: ExtractionPayload = {
@@ -89,5 +89,21 @@ describe('every required invoice field is always shown', () => {
     ]) {
       expect(paths).toContain(`line_items[0].${key}`);
     }
+  });
+});
+
+describe('adding and removing line items by hand', () => {
+  test('adds a blank row to an invoice with none, ready to fill', () => {
+    const { fields, index } = addLineItem({} as Fields);
+    expect(index).toBe(0);
+    const typed = setLeafValue(fields, 'line_items[0].description', 'Glimedose MP2');
+    expect(getLeaf(typed, 'line_items[0].description')?.value).toBe('Glimedose MP2');
+  });
+
+  test('removes exactly the chosen row, leaving the original untouched', () => {
+    const base = { line_items: [{ description: { value: 'A' } }, { description: { value: 'B' } }] } as unknown as Fields;
+    const left = removeLineItem(base, 0);
+    expect(getLeaf(left, 'line_items[0].description')?.value).toBe('B');
+    expect((base.line_items as unknown[]).length).toBe(2);
   });
 });

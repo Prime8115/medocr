@@ -61,6 +61,27 @@ export function setLeafValue(fields: Fields, path: string, value: string): Field
   return clone;
 }
 
+/**
+ * A blank line item appended to the invoice; returns the new fields and its
+ * index. For a document sent for manual entry - or a line the reading missed -
+ * the pharmacist types it in. The backend fills every other field in, blank.
+ */
+export function addLineItem(fields: Fields): { fields: Fields; index: number } {
+  const clone = structuredCloneSafe(fields);
+  const items = ((clone.line_items as unknown[]) || []).slice();
+  items.push({ description: { value: '', confidence: 1 } });
+  clone.line_items = items as Fields[keyof Fields];
+  return { fields: clone, index: items.length - 1 };
+}
+
+/** The invoice without line item `index`. */
+export function removeLineItem(fields: Fields, index: number): Fields {
+  const clone = structuredCloneSafe(fields);
+  const items = ((clone.line_items as unknown[]) || []).filter((_, i) => i !== index);
+  clone.line_items = items as Fields[keyof Fields];
+  return clone;
+}
+
 function structuredCloneSafe<T>(obj: T): T {
   // structuredClone exists in Hermes/modern RN; fall back to JSON clone.
   const g = globalThis as { structuredClone?: <U>(o: U) => U };

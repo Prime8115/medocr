@@ -1,4 +1,4 @@
-import { buildSections, getLeaf, setLeafValue, ExtractionPayload } from '../src/lib/payload';
+import { addLineItem, buildSections, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, Fields } from '../src/lib/payload';
 
 const prescription: ExtractionPayload = {
   doc_type: 'prescription',
@@ -129,5 +129,41 @@ describe('every required invoice field is always shown', () => {
     expect(line.fields.slice(0, 1).map((f) => f.path)).toEqual(['line_items[0].description']);
     const keys = line.fields.map((f) => f.path.split('.').pop());
     expect(keys.indexOf('amount')).toBeLessThan(keys.indexOf('hsn'));
+  });
+});
+
+// A document sent for manual entry arrives with no line items; the pharmacist
+// types them in. Also how a line the reading missed is added.
+describe('adding and removing line items by hand', () => {
+  const base = { line_items: [{ description: { value: 'A', confidence: 1 } }] } as unknown as Fields;
+
+  test('adds a blank row at the end and says where', () => {
+    const { fields, index } = addLineItem(base);
+    expect(index).toBe(1);
+    expect((fields.line_items as unknown[]).length).toBe(2);
+    expect(getLeaf(fields, 'line_items[1].description')?.value).toBe('');
+    expect((base.line_items as unknown[]).length).toBe(1); // the original is untouched
+  });
+
+  test('works on an invoice with no line items at all', () => {
+    const { fields, index } = addLineItem({} as Fields);
+    expect(index).toBe(0);
+    const typed = setLeafValue(fields, 'line_items[0].description', 'Glimedose MP2');
+    expect(getLeaf(typed, 'line_items[0].description')?.value).toBe('Glimedose MP2');
+  });
+
+  test('a new row shows every field, ready to fill', () => {
+    const { fields } = addLineItem({} as Fields);
+    const paths = buildSections({ doc_type: 'invoice', fields } as ExtractionPayload)
+      .flatMap((s) => s.fields.map((f) => f.path));
+    expect(paths).toContain('line_items[0].hsn');
+    expect(paths).toContain('line_items[0].net_amount');
+  });
+
+  test('removes exactly the chosen row', () => {
+    const two = addLineItem(base).fields;
+    const left = removeLineItem(two, 0);
+    expect((left.line_items as unknown[]).length).toBe(1);
+    expect(getLeaf(left, 'line_items[0].description')?.value).toBe('');
   });
 });

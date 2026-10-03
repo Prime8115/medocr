@@ -11,7 +11,7 @@ import {
   type DocumentDto,
   type ExtractionPayload,
 } from '../api/documents';
-import { buildSections, confidencePercent, extraColumns, getLeaf, isLowConfidence, setLeafValue } from '../lib/payload';
+import { addLineItem, buildSections, confidencePercent, extraColumns, getLeaf, isLowConfidence, removeLineItem, setLeafValue } from '../lib/payload';
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import { formatMoney } from '../lib/table';
@@ -38,6 +38,7 @@ export default function DocumentDetail() {
   const [editItem, setEditItem] = useState<number | null>(null);
   const [itemSearch, setItemSearch] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
+  const [rawTextOpen, setRawTextOpen] = useState(false);
   const [reportNote, setReportNote] = useState('');
 
   const apply = useCallback((d: DocumentDto) => {
@@ -135,6 +136,8 @@ export default function DocumentDetail() {
         total_reconciles?: boolean | null;
         copies_detected?: number | null;
         duplicates_removed?: number;
+        needs_manual_entry?: boolean;
+        raw_text?: string | null;
       }
     | undefined;
   const matchFor = (i: number): MatchItem | undefined => (inv?.connected ? inv.items[i] : undefined);
@@ -245,7 +248,9 @@ export default function DocumentDetail() {
       ))}
 
       {/* Line items / medications — compact table, click a row to edit */}
-      {itemSections.length > 0 && (
+      {/* Shown even with no items on an editable invoice: a document sent for
+          manual entry arrives with none, and they are added here. */}
+      {(itemSections.length > 0 || (isInvoice && editable)) && (
         <div className="glass-card" style={{ padding: 0, marginBottom: 16 }}>
           <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-glass)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
             <h3 style={{ margin: 0 }}>{doc.doc_type === 'invoice' ? 'Line items' : 'Medications'}</h3>
@@ -258,11 +263,35 @@ export default function DocumentDetail() {
                 onChange={(e) => setItemSearch(e.target.value)}
               />
             )}
+            {isInvoice && editable && (
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  const next = addLineItem(fields);
+                  setFields(next.fields);
+                  setEditItem(next.index);
+                }}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                + Add line item
+              </button>
+            )}
+            {meta?.raw_text ? (
+              <button className="btn-secondary" onClick={() => setRawTextOpen((o) => !o)} style={{ whiteSpace: 'nowrap' }}>
+                {rawTextOpen ? 'Hide document text' : 'Text from the document'}
+              </button>
+            ) : null}
             <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>
               {itemSections.length} items{meta?.pages ? ` · ${meta.pages}p` : ''}
               {inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}
             </span>
           </div>
+          {/* What the server read off the document, to copy from when filling it in. */}
+          {rawTextOpen && meta?.raw_text && (
+            <pre style={{ margin: 0, padding: '14px 20px', maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 13, borderBottom: '1px solid var(--border-glass)' }}>
+              {meta.raw_text}
+            </pre>
+          )}
           {isInvoice ? (
             <InvoiceTable fields={fields} rows={tableRows} onSelect={setEditItem} showMatch={!!inv?.connected} />
           ) : (
@@ -371,6 +400,20 @@ export default function DocumentDetail() {
                 );
               })}
             </div>
+            {editable && isInvoice && (
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  if (!window.confirm('Remove this item? It is taken off the invoice when you save.')) return;
+                  const index = editItem;
+                  setEditItem(null);
+                  setFields((prev) => removeLineItem(prev, index));
+                }}
+                style={{ marginTop: 16, color: 'var(--danger, #e5484d)' }}
+              >
+                Remove this item
+              </button>
+            )}
             {extraColumns(fields, editItem).length > 0 && (
               <div style={{ marginTop: 16, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
                 <div className="text-muted" style={{ fontSize: 12, textTransform: 'uppercase', marginBottom: 8 }}>
