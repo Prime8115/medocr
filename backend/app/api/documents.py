@@ -55,8 +55,50 @@ ALLOWED_DOC_TYPES = {"prescription", "invoice"}
 _ocr_semaphore = threading.Semaphore(settings.ocr_max_concurrent_jobs)
 
 
-def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Optional[str]):
-    """Background OCR task with its own DB session and concurrency regulation."""
+# Marks a scan put back in the queue because the AI was busy, so the app can say
+# it is waiting rather than reading.
+WAITING_PROGRESS = "waiting"
+
+
+def _schedule(delay: float, fn, *args) -> None:
+    """Run fn(*args) after `delay` seconds, off the request thread. A seam for
+    tests. A scan waiting here when the server restarts is caught by recovery
+    and offered for retry, like any other interrupted scan."""
+    timer = threading.Timer(delay, fn, args=args)
+    timer.daemon = True
+    timer.start()
+
+
+def _requeue_delay(attempt: int) -> float:
+    return min(
+        settings.ocr_busy_requeue_max_delay,
+        settings.ocr_busy_requeue_base_delay * (2 ** attempt),
+    )
+
+
+def _requeue_when_busy(db: Session, document_id: str, args: tuple, attempt: int) -> bool:
+    """Put a scan the AI was too busy to read back in the queue. Returns False
+    when it has already waited as long as we allow, so it should fail."""
+    if attempt >= settings.ocr_busy_requeue_attempts:
+        return False
+    doc = db.get(Document, document_id)
+    if not doc or not lifecycle.can_transition(doc.status, lifecycle.QUEUED):
+        return False
+    doc.status = lifecycle.QUEUED
+    doc.progress = WAITING_PROGRESS
+    db.commit()
+    delay = _requeue_delay(attempt)
+    log.info("document %s: AI busy, re-queued for %.0fs (attempt %d)", document_id, delay, attempt + 1)
+    _schedule(delay, _run_ocr_job, *args, attempt + 1)
+    return True
+
+
+def _run_ocr_job(
+    document_id: str, data: bytes, content_type: str, doc_type: Optional[str], attempt: int = 0
+):
+    """Background OCR task with its own DB session and concurrency regulation.
+
+    `attempt` counts how many times the AI was too busy for this scan already."""
     db = SessionLocal()
     acquired = False
     try:
@@ -67,6 +109,7 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
             return
         if lifecycle.can_transition(doc.status, lifecycle.PROCESSING):
             doc.status = lifecycle.PROCESSING
+            doc.progress = None  # no longer waiting
             db.commit()
 
         # Persist progress for long PDFs so the app can show "page 12/60".
@@ -90,20 +133,46 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
         doc.error = None
         db.commit()
     except OCRError as exc:
-        _mark_failed(db, document_id, str(exc))
+        if exc.kind == "busy" and _requeue_when_busy(
+            db, document_id, (document_id, data, content_type, doc_type), attempt
+        ):
+            return
+        log.warning("document %s failed: %s", document_id, exc)
+        _mark_failed(db, document_id, _public_message(exc), cause=str(exc))
     except Exception as exc:  # noqa: BLE001 — never leave "processing"
-        _mark_failed(db, document_id, f"Unexpected error: {exc}")
+        log.exception("document %s failed unexpectedly", document_id)
+        _mark_failed(db, document_id, _public_message(exc), cause=f"Unexpected error: {exc}")
     finally:
         if acquired:
             _ocr_semaphore.release()
         db.close()
 
 
-def _mark_failed(db: Session, document_id: str, message: str):
+# What the pharmacist sees when a scan fails. The real cause - Gemini's own
+# error, a quota, a key - means nothing to them and is not theirs to act on, so
+# it goes to the server log and the audit log, never to the app.
+# By the time a scan fails as busy it has already waited in the queue for about
+# ten minutes, so this is most likely the day's AI quota running out.
+BUSY_MESSAGE = "The AI service is busy right now. Please try again in a few minutes."
+FAILED_MESSAGE = "We couldn't read this document. Please try again."
+
+
+def _public_message(exc: Exception) -> str:
+    if isinstance(exc, OCRError) and exc.kind == "busy":
+        return BUSY_MESSAGE
+    return FAILED_MESSAGE
+
+
+def _mark_failed(db: Session, document_id: str, message: str, cause: Optional[str] = None):
     doc = db.get(Document, document_id)
     if doc:
         doc.status = lifecycle.FAILED
+        doc.progress = None
         doc.error = message
+        if cause:
+            # Kept where an operator can query it after the server log rotates.
+            db.add(AuditLog(shop_id=doc.shop_id, actor_id=None, action="document.failed",
+                            target=doc.id, detail={"cause": cause[:2000]}))
         db.commit()
 
 

@@ -6,12 +6,15 @@ finally failing. This keeps scans working when Gemini is briefly busy instead of
 surfacing an error to the pharmacist on every hiccup.
 """
 import json
+import logging
 import time
 
 from app.config import settings
 from app.schemas.extraction import FIELDS_MODEL
 from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.prompts import CLASSIFY_PROMPT, EXTRACTION_PROMPT
+
+log = logging.getLogger(__name__)
 
 # Substrings/codes that indicate a transient, retryable condition.
 _TRANSIENT_MARKERS = (
@@ -26,6 +29,59 @@ def _is_transient(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return any(m in msg for m in _TRANSIENT_MARKERS)
+
+
+def _brief(exc: Exception, limit: int = 300) -> str:
+    """The error as one short line. Gemini errors embed the whole JSON response,
+    which is unreadable on a phone screen and bloats the stored document."""
+    text = " ".join(str(exc).split()) or type(exc).__name__
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def compact_schema(model_cls) -> dict:
+    """The response schema in the smallest form Gemini will accept.
+
+    Gemini rejects a structured-output schema it judges too complex to serve
+    ("too many states"). Pydantic's own schema is far larger than the shape it
+    describes: a title on every property, docstrings as descriptions, the full
+    default object repeated on every nested field, and every nullable value
+    spelled as an anyOf. Doubling the invoice fields for an integrating client
+    doubled all of that.
+
+    None of it constrains the output, so it is dropped: title, description and
+    default removed, and `anyOf: [X, null]` becomes `type: [X, "null"]`. The
+    shared models stay under $defs, so the {value, confidence} leaf is described
+    once rather than 78 times, and that leaf requires both keys - a fixed shape
+    is cheaper for the model than an optional one. Every field is kept: a
+    scanned invoice must return the same fields as a digital one.
+    """
+
+    def walk(node):
+        if isinstance(node, list):
+            return [walk(n) for n in node]
+        if not isinstance(node, dict):
+            return node
+        branches = node.get("anyOf")
+        if branches and len(branches) == 2 and {"type": "null"} in branches:
+            other = walk(next(b for b in branches if b != {"type": "null"}))
+            if set(other) == {"type"} and isinstance(other["type"], str):
+                return {"type": [other["type"], "null"]}
+        out = {}
+        for k, v in node.items():
+            if k in ("title", "description", "default"):
+                continue
+            # Under "properties"/"$defs" the keys are names, not keywords.
+            out[k] = {n: walk(d) for n, d in v.items()} if k in ("properties", "$defs") else walk(v)
+        if set(out.get("properties", {})) == {"value", "confidence"}:
+            out["required"] = ["value", "confidence"]
+        return out
+
+    return walk(model_cls.model_json_schema())
+
+
+def _is_schema_rejection(exc: OCRError) -> bool:
+    msg = str(exc).lower()
+    return exc.kind == "rejected" and ("schema" in msg or "too many states" in msg)
 
 
 class GeminiProvider(OCRProvider):
@@ -107,12 +163,19 @@ class GeminiProvider(OCRProvider):
                 try:
                     return self._generate(self._fallback, contents, config)
                 except Exception as exc2:  # noqa: BLE001
+                    if not _is_transient(exc2):
+                        raise OCRError(
+                            f"AI request was rejected: {_brief(exc2)}", kind="rejected"
+                        ) from exc2
                     raise OCRError(
-                        f"AI service is busy (both models overloaded). Please retry. [{exc2}]"
+                        f"AI service is busy (both models overloaded). Please retry. [{_brief(exc2)}]",
+                        kind="busy",
                     ) from exc2
             if _is_transient(exc):
-                raise OCRError(f"AI service is busy. Please retry in a moment. [{exc}]") from exc
-            raise OCRError(f"Extraction failed: {exc}") from exc
+                raise OCRError(
+                    f"AI service is busy. Please retry in a moment. [{_brief(exc)}]", kind="busy"
+                ) from exc
+            raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
 
     def classify(self, file_bytes: bytes, content_type: str) -> str:
         resp = self._generate_with_fallback(
@@ -129,17 +192,33 @@ class GeminiProvider(OCRProvider):
 
         from google.genai import types
 
-        resp = self._generate_with_fallback(
-            self._content_parts(prompt, file_bytes, content_type),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=model_cls.model_json_schema(),
-                max_output_tokens=settings.ocr_max_output_tokens,
-            ),
-        )
+        contents = self._content_parts(prompt, file_bytes, content_type)
+        try:
+            resp = self._generate_with_fallback(
+                contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_json_schema=compact_schema(model_cls),
+                    max_output_tokens=settings.ocr_max_output_tokens,
+                ),
+            )
+        except OCRError as exc:
+            if not _is_schema_rejection(exc):
+                raise
+            # Still too complex for this model. The prompt spells out every
+            # field, and validate_fields checks the answer's shape afterwards,
+            # so ask for plain JSON rather than failing the scan.
+            log.warning("Gemini rejected the %s response schema; retrying without it: %s", doc_type, exc)
+            resp = self._generate_with_fallback(
+                contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    max_output_tokens=settings.ocr_max_output_tokens,
+                ),
+            )
 
         raw = (getattr(resp, "text", "") or "").strip()
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise OCRError(f"Model returned unreadable output: {exc}") from exc
+            raise OCRError(f"Model returned unreadable output: {exc}", kind="output") from exc

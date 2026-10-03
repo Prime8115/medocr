@@ -11,7 +11,7 @@ from app.models.document import Document
 from app.services import lifecycle
 
 _STUCK = (lifecycle.QUEUED, lifecycle.PROCESSING)
-_MESSAGE = "Processing was interrupted (server restart). Please retry."
+_MESSAGE = "Processing was interrupted. Please try again."
 
 
 def recover_stuck_documents(db: Session) -> int:

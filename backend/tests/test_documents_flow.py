@@ -128,3 +128,136 @@ def test_ocr_failure_marks_document_failed(client, monkeypatch):
     assert doc["status"] == "failed"
     assert doc["error"]
     assert doc["payload"] is None  # nothing fabricated
+
+
+def test_failure_shows_the_user_a_plain_message_and_keeps_the_cause(client, db_session, monkeypatch):
+    """The pharmacist sees what to do, never the AI's own error text; the cause
+    is kept in the audit log for whoever diagnoses it."""
+    from app.api import documents as documents_api
+    from app.models.audit_log import AuditLog
+    from app.services.ocr import OCRError
+
+    cause = "Could not read the document: AI request was rejected: 400 INVALID_ARGUMENT schema"
+
+    def refuse(*_a, **_k):
+        raise OCRError(cause, kind="rejected")
+
+    monkeypatch.setattr(documents_api, "process_document", refuse)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["status"] == "failed"
+    assert doc["error"] == documents_api.FAILED_MESSAGE
+    assert "INVALID_ARGUMENT" not in doc["error"]
+
+    db = db_session()
+    try:
+        row = db.query(AuditLog).filter_by(action="document.failed", target=doc_id).one()
+        assert row.detail["cause"] == cause
+    finally:
+        db.close()
+
+
+def test_busy_failure_tells_the_user_to_try_again(client, monkeypatch):
+    from app.api import documents as documents_api
+    from app.services.ocr import OCRError
+
+    def busy(*_a, **_k):
+        raise OCRError("AI service is busy. Please retry in a moment. [503 UNAVAILABLE]", kind="busy")
+
+    monkeypatch.setattr(documents_api, "process_document", busy)
+    monkeypatch.setattr(settings, "ocr_busy_requeue_attempts", 0)  # no waiting allowed
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["error"] == documents_api.BUSY_MESSAGE
+    assert "503" not in doc["error"]
+    # The app recognises an overload by this word and retries on it.
+    assert "busy" in doc["error"].lower()
+
+
+def test_unexpected_crash_does_not_leak_to_the_user(client, monkeypatch):
+    from app.api import documents as documents_api
+
+    def crash(*_a, **_k):
+        raise KeyError("line_items")
+
+    monkeypatch.setattr(documents_api, "process_document", crash)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["error"] == documents_api.FAILED_MESSAGE
+
+
+def _busy_then(monkeypatch, outcomes):
+    """process_document that is busy until `outcomes` runs out of busy entries;
+    captures each re-queue instead of waiting for it."""
+    from app.api import documents as documents_api
+    from app.services.ocr import OCRError
+
+    calls, scheduled = [], []
+
+    def process(*_a, **_k):
+        calls.append(1)
+        outcome = outcomes.pop(0)
+        if outcome == "busy":
+            raise OCRError("AI service is busy. [429 RESOURCE_EXHAUSTED]", kind="busy")
+        return outcome
+
+    monkeypatch.setattr(documents_api, "process_document", process)
+    monkeypatch.setattr(documents_api, "_schedule", lambda delay, fn, *args: scheduled.append((delay, fn, args)))
+    return calls, scheduled
+
+
+def test_busy_ai_requeues_the_scan_instead_of_failing_it(client, monkeypatch):
+    """The pharmacist sees "processing", not an error, while the AI is busy -
+    and the scan finishes by itself once there is capacity again."""
+    from app.api import documents as documents_api
+
+    result = {"schema_version": "1.0", "doc_type": "invoice", "fields": {}, "meta": {}}
+    calls, scheduled = _busy_then(monkeypatch, ["busy", "busy", result])
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["status"] == "queued"
+    assert doc["progress"] == documents_api.WAITING_PROGRESS
+    assert doc["error"] is None
+
+    # Run the waits the server would have run.
+    delays = []
+    while scheduled:
+        delay, fn, args = scheduled.pop(0)
+        delays.append(delay)
+        fn(*args)
+
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["status"] == "needs_review"
+    assert doc["progress"] is None
+    assert len(calls) == 3
+    assert delays == [settings.ocr_busy_requeue_base_delay, settings.ocr_busy_requeue_base_delay * 2]
+
+
+def test_a_scan_that_stays_busy_fails_after_the_last_wait(client, monkeypatch):
+    from app.api import documents as documents_api
+
+    monkeypatch.setattr(settings, "ocr_busy_requeue_attempts", 3)
+    calls, scheduled = _busy_then(monkeypatch, ["busy"] * 4)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    while scheduled:
+        _delay, fn, args = scheduled.pop(0)
+        fn(*args)
+
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert len(calls) == 4  # the first try and three waits
+    assert doc["status"] == "failed"
+    assert doc["error"] == documents_api.BUSY_MESSAGE
+    assert doc["progress"] is None
+
+
+def test_requeue_waits_double_up_to_a_cap():
+    from app.api import documents as documents_api
+
+    delays = [documents_api._requeue_delay(n) for n in range(6)]
+    assert delays == [20.0, 40.0, 80.0, 160.0, 300.0, 300.0]

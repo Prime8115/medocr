@@ -7,6 +7,9 @@
 
 Editing an already-approved document returns it to needs_review (data changed,
 must be re-reviewed before re-push).
+
+processing ──► queued: the AI was busy, so the scan goes back in the queue and
+is read again shortly, rather than failing in front of the pharmacist.
 """
 from typing import Dict, Set
 
@@ -21,7 +24,7 @@ ALL_STATUSES = {QUEUED, PROCESSING, NEEDS_REVIEW, APPROVED, PUSHED, FAILED}
 
 _ALLOWED: Dict[str, Set[str]] = {
     QUEUED: {PROCESSING, FAILED},
-    PROCESSING: {NEEDS_REVIEW, FAILED},
+    PROCESSING: {NEEDS_REVIEW, FAILED, QUEUED},
     NEEDS_REVIEW: {NEEDS_REVIEW, APPROVED, FAILED},
     APPROVED: {PUSHED, NEEDS_REVIEW},
     PUSHED: {PUSHED, NEEDS_REVIEW},  # re-push is idempotent; edits reopen review

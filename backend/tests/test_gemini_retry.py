@@ -25,9 +25,11 @@ class FakeModels:
     def __init__(self, script):
         self.script = list(script)
         self.calls = []  # models called, in order
+        self.configs = []  # the config sent with each call
 
     def generate_content(self, model, contents, config=None):
         self.calls.append(model)
+        self.configs.append(config)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -114,3 +116,110 @@ def test_multi_key_rotation_on_429(monkeypatch):
     assert out["patient"]["name"]["value"] == "Alice"
     assert pool.is_in_cooldown("keyA")
     assert not pool.is_in_cooldown("keyB")
+
+
+# --- error kinds, and the schema Gemini is asked to fill ---------------------
+
+
+class SchemaTooComplex(Exception):
+    code = 400
+
+    def __str__(self):
+        return (
+            "400 INVALID_ARGUMENT. The specified schema produces a constraint that has "
+            "too many states for serving."
+        )
+
+
+def test_errors_carry_their_kind(monkeypatch):
+    p = _provider(monkeypatch, [Overloaded()] * 4, retries=2)
+    with pytest.raises(OCRError) as busy:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert busy.value.kind == "busy"
+
+    p = _provider(monkeypatch, [BadRequest("API key not valid")], retries=2)
+    with pytest.raises(OCRError) as rejected:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert rejected.value.kind == "rejected"
+    # The cause reaches the pharmacist, not a generic "busy".
+    assert "API key not valid" in str(rejected.value)
+    assert "busy" not in str(rejected.value).lower()
+
+
+def test_fallback_model_rejecting_is_not_reported_as_busy(monkeypatch):
+    # Primary overloaded, fallback refuses the request outright (e.g. a model
+    # name the key has no access to): that is not "busy", and must not say so.
+    p = _provider(monkeypatch, [Overloaded(), Overloaded(), BadRequest("model not found")], retries=2)
+    with pytest.raises(OCRError) as ei:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert ei.value.kind == "rejected"
+    assert "model not found" in str(ei.value)
+
+
+def test_long_gemini_errors_are_shortened(monkeypatch):
+    p = _provider(monkeypatch, [BadRequest("x" * 5000)], retries=1)
+    with pytest.raises(OCRError) as ei:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert len(str(ei.value)) < 400
+
+
+def test_schema_rejection_retries_without_the_schema(monkeypatch):
+    payload = json.dumps({"invoice": {"invoice_no": {"value": "M-544", "confidence": 0.9}}})
+    p = _provider(monkeypatch, [SchemaTooComplex(), payload], retries=2)
+    out = p.extract(b"text", "text/plain", "invoice")
+    assert out["invoice"]["invoice_no"]["value"] == "M-544"
+    first, second = p._client.models.configs
+    assert first.response_json_schema is not None
+    assert second.response_json_schema is None
+    assert second.response_mime_type == "application/json"
+
+
+def test_unreadable_output_is_kind_output(monkeypatch):
+    p = _provider(monkeypatch, ['{"invoice": {'], retries=1)
+    with pytest.raises(OCRError) as ei:
+        p.extract(b"text", "text/plain", "invoice")
+    assert ei.value.kind == "output"
+
+
+def _leaf_paths(schema, node=None, path=""):
+    """Every {value, confidence} leaf the schema describes, as dotted paths."""
+    node = schema if node is None else node
+    if "$ref" in node:
+        node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]]
+    if node.get("type") == "array":
+        return _leaf_paths(schema, node["items"], path + "[]")
+    props = node.get("properties", {})
+    if set(props) == {"value", "confidence"}:
+        return {path}
+    out = set()
+    for name, sub in props.items():
+        out |= _leaf_paths(schema, sub, f"{path}.{name}" if path else name)
+    return out
+
+
+@pytest.mark.parametrize("doc_type", ["invoice", "prescription"])
+def test_compact_schema_keeps_every_field(doc_type):
+    from app.schemas.extraction import FIELDS_MODEL
+
+    model = FIELDS_MODEL[doc_type]
+    full, compact = model.model_json_schema(), gem.compact_schema(model)
+    # Nothing a scanned document can return is lost by shrinking the schema.
+    assert _leaf_paths(compact) == _leaf_paths(full)
+    for name, definition in full["$defs"].items():
+        assert set(compact["$defs"][name].get("properties", {})) == set(definition.get("properties", {}))
+
+
+def test_compact_schema_drops_what_does_not_constrain_output():
+    from app.schemas.extraction import FIELDS_MODEL
+
+    model = FIELDS_MODEL["invoice"]
+    text = json.dumps(gem.compact_schema(model))
+    for noise in ('"title"', '"default"', '"anyOf"'):
+        assert noise not in text
+    # A property NAMED description is a field, not the keyword - it must stay.
+    assert '"description"' in text
+    # Well under the size that was rejected after the client fields were added.
+    assert len(text) < len(json.dumps(model.model_json_schema())) / 2
+    leaf = gem.compact_schema(model)["$defs"]["Field"]
+    assert leaf["required"] == ["value", "confidence"]
+    assert leaf["properties"]["value"] == {"type": ["string", "null"]}
