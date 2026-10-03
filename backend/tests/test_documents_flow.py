@@ -128,3 +128,61 @@ def test_ocr_failure_marks_document_failed(client, monkeypatch):
     assert doc["status"] == "failed"
     assert doc["error"]
     assert doc["payload"] is None  # nothing fabricated
+
+
+def test_failure_shows_the_user_a_plain_message_and_keeps_the_cause(client, db_session, monkeypatch):
+    """The pharmacist sees what to do, never the AI's own error text; the cause
+    is kept in the audit log for whoever diagnoses it."""
+    from app.api import documents as documents_api
+    from app.models.audit_log import AuditLog
+    from app.services.ocr import OCRError
+
+    cause = "Could not read the document: AI request was rejected: 400 INVALID_ARGUMENT schema"
+
+    def refuse(*_a, **_k):
+        raise OCRError(cause, kind="rejected")
+
+    monkeypatch.setattr(documents_api, "process_document", refuse)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["status"] == "failed"
+    assert doc["error"] == documents_api.FAILED_MESSAGE
+    assert "INVALID_ARGUMENT" not in doc["error"]
+
+    db = db_session()
+    try:
+        row = db.query(AuditLog).filter_by(action="document.failed", target=doc_id).one()
+        assert row.detail["cause"] == cause
+    finally:
+        db.close()
+
+
+def test_busy_failure_tells_the_user_to_try_again(client, monkeypatch):
+    from app.api import documents as documents_api
+    from app.services.ocr import OCRError
+
+    def busy(*_a, **_k):
+        raise OCRError("AI service is busy. Please retry in a moment. [503 UNAVAILABLE]", kind="busy")
+
+    monkeypatch.setattr(documents_api, "process_document", busy)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["error"] == documents_api.BUSY_MESSAGE
+    assert "503" not in doc["error"]
+    # The app recognises an overload by this word and retries on it.
+    assert "busy" in doc["error"].lower()
+
+
+def test_unexpected_crash_does_not_leak_to_the_user(client, monkeypatch):
+    from app.api import documents as documents_api
+
+    def crash(*_a, **_k):
+        raise KeyError("line_items")
+
+    monkeypatch.setattr(documents_api, "process_document", crash)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["error"] == documents_api.FAILED_MESSAGE

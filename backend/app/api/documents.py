@@ -91,21 +91,39 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
         db.commit()
     except OCRError as exc:
         log.warning("document %s failed: %s", document_id, exc)
-        _mark_failed(db, document_id, str(exc))
+        _mark_failed(db, document_id, _public_message(exc), cause=str(exc))
     except Exception as exc:  # noqa: BLE001 — never leave "processing"
         log.exception("document %s failed unexpectedly", document_id)
-        _mark_failed(db, document_id, f"Unexpected error: {exc}")
+        _mark_failed(db, document_id, _public_message(exc), cause=f"Unexpected error: {exc}")
     finally:
         if acquired:
             _ocr_semaphore.release()
         db.close()
 
 
-def _mark_failed(db: Session, document_id: str, message: str):
+# What the pharmacist sees when a scan fails. The real cause - Gemini's own
+# error, a quota, a key - means nothing to them and is not theirs to act on, so
+# it goes to the server log and the audit log, never to the app.
+# "busy" must stay in the busy message: the app retries on it.
+BUSY_MESSAGE = "The AI service is busy right now. Please try again in a moment."
+FAILED_MESSAGE = "We couldn't read this document. Please try again."
+
+
+def _public_message(exc: Exception) -> str:
+    if isinstance(exc, OCRError) and exc.kind == "busy":
+        return BUSY_MESSAGE
+    return FAILED_MESSAGE
+
+
+def _mark_failed(db: Session, document_id: str, message: str, cause: Optional[str] = None):
     doc = db.get(Document, document_id)
     if doc:
         doc.status = lifecycle.FAILED
         doc.error = message
+        if cause:
+            # Kept where an operator can query it after the server log rotates.
+            db.add(AuditLog(shop_id=doc.shop_id, actor_id=None, action="document.failed",
+                            target=doc.id, detail={"cause": cause[:2000]}))
         db.commit()
 
 

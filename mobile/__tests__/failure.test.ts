@@ -1,10 +1,10 @@
 import { isBusyFailure, isInterruptedFailure, isRetryableFailure } from '../src/lib/failure';
 
 describe('failure helpers', () => {
-  const busy = 'AI service is busy (both models overloaded). Please retry. [503 UNAVAILABLE]';
-  const interrupted = 'Processing was interrupted (server restart). Please retry.';
-  const rejected =
-    'Could not read the document: AI request was rejected: 400 INVALID_ARGUMENT. The specified schema produces a constraint that has too many states for serving.';
+  // The messages the backend stores on a failed document.
+  const busy = 'The AI service is busy right now. Please try again in a moment.';
+  const interrupted = 'Processing was interrupted. Please try again.';
+  const failed = "We couldn't read this document. Please try again.";
 
   test('an overloaded AI is busy and worth retrying', () => {
     expect(isBusyFailure(busy)).toBe(true);
@@ -17,9 +17,9 @@ describe('failure helpers', () => {
     expect(isRetryableFailure(interrupted)).toBe(true);
   });
 
-  test('a refused request is neither busy nor retried', () => {
-    expect(isBusyFailure(rejected)).toBe(false);
-    expect(isRetryableFailure(rejected)).toBe(false);
+  test('any other failure is neither busy nor retried', () => {
+    expect(isBusyFailure(failed)).toBe(false);
+    expect(isRetryableFailure(failed)).toBe(false);
   });
 
   test('no error is not retryable', () => {
