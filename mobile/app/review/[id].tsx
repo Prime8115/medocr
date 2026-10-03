@@ -29,7 +29,7 @@ import { buildSections, extraColumns, getLeaf, setLeafValue, ExtractionPayload, 
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
-import { isBusyFailure, isRetryableFailure } from '@/src/lib/failure';
+import { isRetryableFailure, isWaitingForAi } from '@/src/lib/failure';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
 
@@ -49,8 +49,6 @@ export default function ReviewScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   const [inv, setInv] = useState<DocMatch | null>(null);
   const [autoRetry, setAutoRetry] = useState(0);
-  // Why the automatic retry is running - only an overload is "AI busy".
-  const [retryBusy, setRetryBusy] = useState(false);
   const [manualRetrying, setManualRetrying] = useState(false);
   const [editIndex, setEditIndex] = useState<number | null>(null); // item section being edited
   const [search, setSearch] = useState('');
@@ -106,11 +104,11 @@ export default function ReviewScreen() {
         if (d.status === 'queued' || d.status === 'processing') {
           timer = setTimeout(poll, POLL_MS);
         } else if (d.status === 'failed' && retries < 1 && isRetryableFailure(d.error)) {
-          // Only a failure that may pass on a second try is retried. A request
-          // the AI refused would fail the same way, and the wait would hide why.
+          // Only a scan cut short by a server restart is retried here. A busy
+          // AI is already waited out on the server, and anything else would
+          // fail the same way again.
           retries += 1;
           setAutoRetry(retries);
-          setRetryBusy(isBusyFailure(d.error));
           try {
             await retryDocument(id);
           } catch {
@@ -246,13 +244,15 @@ export default function ReviewScreen() {
     return (
       <Screen>
         <CenterState
-          title={autoRetry > 0 ? (retryBusy ? 'AI busy — retrying…' : 'Retrying…') : t('processing')}
+          title={
+            autoRetry > 0 ? 'Retrying…' : isWaitingForAi(doc?.progress) ? 'Waiting in the queue…' : t('processing')
+          }
           subtitle={
             autoRetry > 0
-              ? retryBusy
-                ? 'Retrying with backup AI model…'
-                : 'The scan was interrupted - reading it again…'
-              : doc?.progress
+              ? 'The scan was interrupted - reading it again…'
+              : isWaitingForAi(doc?.progress)
+                ? 'Many scans are being read right now. Yours will finish on its own - you can leave this screen.'
+                : doc?.progress
                 ? `Reading page ${doc.progress}…`
                 : elapsed > 15
                   ? `Analyzing document (${elapsed}s)…`
