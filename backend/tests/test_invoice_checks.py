@@ -205,3 +205,28 @@ def test_a_discount_already_inside_the_line_amounts_still_reconciles():
     report = reconcile_invoice(fields)
     assert report["total_reconciles"] is True
     assert report["total_reconciled_by"] == "lines + bill tax"
+
+
+# --- a bill discount the reading missed, implied by the taxable value ------
+# The MSV photo: the AI read taxable 14,318.10 and CGST/SGST, but not the
+# discount line. The gap to the lines is exactly 10% - a bill discount.
+
+def test_a_round_implied_discount_reconciles():
+    report = reconcile_invoice(_msv(total_discount_amount=None))
+    assert report["total_reconciles"] is True
+    assert report["total_reconciled_by"] == "lines - 10% bill discount + bill tax"
+
+
+def test_an_extra_line_is_not_mistaken_for_an_implied_discount():
+    # A line read that is not on the bill: the gap to the taxable value becomes
+    # 2,002.90 - 12.27% of the lines, not a round rate.
+    amounts = list(MSV_AMOUNTS) + ["412.00"]
+    report = reconcile_invoice(_msv(amounts=amounts, total_discount_amount=None))
+    assert report["total_reconciles"] is False
+
+
+def test_an_odd_gap_is_not_taken_for_a_discount():
+    wrong = list(MSV_AMOUNTS)
+    wrong[0] = "6170.00"   # misread by 100 - lines 16,009: gap 10.56%, not round
+    report = reconcile_invoice(_msv(amounts=wrong, total_discount_amount=None))
+    assert report["total_reconciles"] is False

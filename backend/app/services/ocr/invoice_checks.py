@@ -303,7 +303,40 @@ def _expected_totals(line_total: float, gross_total: Optional[float], invoice: d
         candidates.append(("lines + bill tax", line_total + tax))
         if discount:
             candidates.append(("lines - bill discount + bill tax", line_total - discount + tax))
+        else:
+            implied = _implied_discount(line_total, _num(invoice.get("total_taxable_amount")))
+            if implied is not None:
+                pct, amount = implied
+                candidates.append((f"lines - {pct:g}% bill discount + bill tax", line_total - amount + tax))
     return [(name, round(value, 2)) for name, value in candidates]
+
+
+# A bill-wide discount is a round rate: 10%, 2.5%. Anything else between the
+# lines and the taxable value is more likely a missing or misread line.
+_IMPLIED_DISCOUNT_RANGE = (0.5, 30.0)
+_ROUND_RATE_TOLERANCE = 0.02   # percentage points
+
+
+def _implied_discount(line_total: float, taxable: Optional[float]) -> Optional[Tuple[float, float]]:
+    """(rate %, amount) of a bill discount the invoice applied but whose figure
+    was not read - inferred from the gap between the lines and the printed
+    taxable value, and accepted only if that gap is a round rate.
+
+    The MSV photo: the AI read the taxable value 14,318.10 and both tax heads,
+    but not the "Less Trade Discount (-)1,590.90" line. 15,909.00 - 14,318.10
+    = 1,590.90 is exactly 10.00% of the lines, which no missing line would
+    produce by chance - while the gap a dropped or misread line leaves almost
+    never lands on a round rate, so that is still flagged.
+    """
+    if not taxable or not line_total or taxable >= line_total:
+        return None
+    gap = line_total - taxable
+    pct = gap / line_total * 100
+    nearest = round(pct * 2) / 2   # whole or half percent
+    low, high = _IMPLIED_DISCOUNT_RANGE
+    if low <= nearest <= high and abs(pct - nearest) <= _ROUND_RATE_TOLERANCE:
+        return nearest, gap
+    return None
 
 
 def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> dict:
