@@ -20,7 +20,7 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, require_owner
 from app.database import SessionLocal, get_db
 from app.models.audit_log import AuditLog
 from app.models.connector import Connector
@@ -319,6 +319,43 @@ def _get_owned_document(document_id: str, db: Session, user: User) -> Document:
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
+
+
+@router.get("/{document_id}/diagnostics")
+def document_diagnostics(
+    document_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_owner),
+):
+    """Why a scan failed, for whoever is diagnosing it - never shown in the app.
+
+    The pharmacist only ever sees a plain message; the real cause (the AI's own
+    error, a quota, a validation failure) is kept in the audit log. Reading it
+    used to need a shell on the server; this returns it to the shop's owner over
+    the API they already log in to. Owner-only, and scoped to their own shop.
+    """
+    doc = _get_owned_document(document_id, db, user)
+    failures = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "document.failed", AuditLog.target == doc.id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    meta = (doc.payload or {}).get("meta") or {}
+    return {
+        "document_id": doc.id,
+        "status": doc.status,
+        "doc_type": doc.doc_type,
+        "requested_doc_type": doc.requested_doc_type,
+        "image_ref": doc.image_ref,
+        "progress": doc.progress,
+        "pipeline": meta.get("pipeline"),
+        "failures": [
+            {"at": f.created_at.isoformat() if f.created_at else None, "cause": (f.detail or {}).get("cause")}
+            for f in failures
+        ],
+    }
 
 
 @router.get("/{document_id}", response_model=DocumentOut)
