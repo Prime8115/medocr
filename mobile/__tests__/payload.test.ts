@@ -90,3 +90,44 @@ describe('payload path helpers', () => {
     expect(labelFor(2)).toBe('Rate'); // no source recorded -> plain label
   });
 });
+
+// The client's import specification (InvoiceScanRequirementData.xlsx): every one
+// of these is on screen for every invoice - blank when the bill does not print it.
+describe('every required invoice field is always shown', () => {
+  const empty = { doc_type: 'invoice', fields: { line_items: [{}] } } as unknown as ExtractionPayload;
+  const sections = buildSections(empty);
+  const paths = sections.flatMap((s) => s.fields.map((f) => f.path));
+
+  test('the 18 header fields', () => {
+    for (const path of [
+      'bill_to.name', 'ship_to.name', 'bill_to.gstin', 'ship_to.gstin',
+      'invoice.total_gst_amount', 'invoice.total_utgst_amount', 'invoice.lr_date',
+      'supplier.dl_no_1', 'supplier.dl_date_1', 'supplier.dl_no_2', 'supplier.dl_date_2',
+      'supplier.dl_no_3', 'supplier.dl_date_3', 'invoice.total_discount_amount',
+      'bill_to.pan', 'ship_to.pan', 'supplier.email', 'invoice.po_date',
+    ]) {
+      expect(paths).toContain(path);
+    }
+  });
+
+  test('the 13 line fields, on every line', () => {
+    for (const key of [
+      'hsn', 'cd_percent', 'cd_amount', 'wp_percent', 'wp_amount', 'igst_amount', 'utgst_amount',
+      'uom', 'mfg_date', 'net_amount', 'manufacturer', 'pack', 'scheme_value',
+    ]) {
+      expect(paths).toContain(`line_items[0].${key}`);
+    }
+  });
+
+  test('a field the invoice lacks reads blank, not missing', () => {
+    expect(getLeaf(empty.fields, 'line_items[0].hsn')?.value ?? '').toBe('');
+    expect(getLeaf(empty.fields, 'bill_to.pan')?.value ?? '').toBe('');
+  });
+
+  test('the four checked first still lead each line', () => {
+    const line = sections.find((s) => s.title.endsWith('#1'))!;
+    expect(line.fields.slice(0, 1).map((f) => f.path)).toEqual(['line_items[0].description']);
+    const keys = line.fields.map((f) => f.path.split('.').pop());
+    expect(keys.indexOf('amount')).toBeLessThan(keys.indexOf('hsn'));
+  });
+});

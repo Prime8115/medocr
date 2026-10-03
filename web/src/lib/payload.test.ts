@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { buildSections, getLeaf, setLeafValue } from './payload';
+import { buildSections, getLeaf, setLeafValue, type Fields } from './payload';
 import type { ExtractionPayload } from '../api/documents';
 
 const prescription: ExtractionPayload = {
@@ -60,5 +60,34 @@ describe('web payload helpers', () => {
     expect(labelFor(0)).toBe('Rate (PTR)');
     expect(labelFor(1)).toBe('Rate (RATE)');
     expect(labelFor(2)).toBe('Rate');
+  });
+});
+
+// The client's import specification (InvoiceScanRequirementData.xlsx): every one
+// of these is on screen for every invoice - blank when the bill does not print it.
+describe('every required invoice field is always shown', () => {
+  const fields = { line_items: [{}] } as unknown as Fields;
+  const payload = { doc_type: 'invoice', fields } as unknown as ExtractionPayload;
+  const paths = buildSections(payload, fields).flatMap((s) => s.fields.map((f) => f.path));
+
+  test('the 18 header fields', () => {
+    for (const path of [
+      'bill_to.name', 'ship_to.name', 'bill_to.gstin', 'ship_to.gstin',
+      'invoice.total_gst_amount', 'invoice.total_utgst_amount', 'invoice.lr_date',
+      'supplier.dl_no_1', 'supplier.dl_date_1', 'supplier.dl_no_2', 'supplier.dl_date_2',
+      'supplier.dl_no_3', 'supplier.dl_date_3', 'invoice.total_discount_amount',
+      'bill_to.pan', 'ship_to.pan', 'supplier.email', 'invoice.po_date',
+    ]) {
+      expect(paths).toContain(path);
+    }
+  });
+
+  test('the 13 line fields, on every line', () => {
+    for (const key of [
+      'hsn', 'cd_percent', 'cd_amount', 'wp_percent', 'wp_amount', 'igst_amount', 'utgst_amount',
+      'uom', 'mfg_date', 'net_amount', 'manufacturer', 'pack', 'scheme_value',
+    ]) {
+      expect(paths).toContain(`line_items[0].${key}`);
+    }
   });
 });

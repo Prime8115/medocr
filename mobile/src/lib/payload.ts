@@ -105,17 +105,41 @@ const MED_FIELDS = (i: number): FieldSpec[] => [
   { path: `medications[${i}].instructions`, label: 'Instructions' },
 ];
 
+// Every field the client's import asks for is listed, so it always appears -
+// blank when the invoice does not print it - rather than only when filled.
 const INVOICE_SINGLE: Section[] = [
   {
     title: 'supplier',
     fields: [
       { path: 'supplier.name', label: 'Supplier' },
       { path: 'supplier.gstin', label: 'GSTIN' },
-    { path: 'supplier.pan', label: 'PAN' },
-    { path: 'supplier.dl_no_1', label: 'Drug licence' },
-    { path: 'supplier.dl_no_2', label: 'Drug licence 2' },
-    { path: 'supplier.dl_no_3', label: 'Drug licence 3' },
-    { path: 'supplier.email', label: 'Email' },
+      { path: 'supplier.pan', label: 'PAN' },
+      { path: 'supplier.address', label: 'Address' },
+      { path: 'supplier.email', label: 'Email' },
+      { path: 'supplier.dl_no_1', label: 'Drug licence 1' },
+      { path: 'supplier.dl_date_1', label: 'Drug licence 1 date' },
+      { path: 'supplier.dl_no_2', label: 'Drug licence 2' },
+      { path: 'supplier.dl_date_2', label: 'Drug licence 2 date' },
+      { path: 'supplier.dl_no_3', label: 'Drug licence 3' },
+      { path: 'supplier.dl_date_3', label: 'Drug licence 3 date' },
+    ],
+  },
+  {
+    title: 'billTo',
+    fields: [
+      { path: 'bill_to.name', label: 'Bill to' },
+      { path: 'bill_to.gstin', label: 'GSTIN' },
+      { path: 'bill_to.pan', label: 'PAN' },
+      { path: 'bill_to.address', label: 'Address' },
+    ],
+  },
+  {
+    title: 'shipTo',
+    fields: [
+      { path: 'ship_to.name', label: 'Ship to' },
+      { path: 'ship_to.gstin', label: 'GSTIN' },
+      { path: 'ship_to.pan', label: 'PAN' },
+      { path: 'ship_to.address', label: 'Address' },
     ],
   },
   {
@@ -124,21 +148,21 @@ const INVOICE_SINGLE: Section[] = [
       { path: 'invoice.invoice_no', label: 'Invoice no' },
       { path: 'invoice.invoice_date', label: 'Date' },
       { path: 'invoice.total_amount', label: 'Total' },
-    { path: 'invoice.due_date', label: 'Due date' },
-    { path: 'invoice.total_taxable_amount', label: 'Taxable total' },
-    { path: 'invoice.total_gst_amount', label: 'GST total' },
-    { path: 'invoice.total_discount_amount', label: 'Discount total' },
-    { path: 'invoice.total_utgst_amount', label: 'UTGST total' },
-    { path: 'invoice.lr_date', label: 'LR date' },
-    { path: 'invoice.po_date', label: 'PO date' },
-    { path: 'invoice.total_cgst_amount', label: 'CGST total' },
-    { path: 'invoice.total_sgst_amount', label: 'SGST total' },
-    { path: 'invoice.total_igst_amount', label: 'IGST total' },
-    { path: 'invoice.eway_bill_no', label: 'E-way bill' },
-    { path: 'invoice.irn', label: 'IRN' },
-    { path: 'invoice.lr_no', label: 'LR no' },
-    { path: 'invoice.transport', label: 'Transport' },
-    { path: 'invoice.po_no', label: 'PO no' },
+      { path: 'invoice.due_date', label: 'Due date' },
+      { path: 'invoice.total_taxable_amount', label: 'Taxable total' },
+      { path: 'invoice.total_gst_amount', label: 'GST total' },
+      { path: 'invoice.total_discount_amount', label: 'Discount total' },
+      { path: 'invoice.total_utgst_amount', label: 'UTGST total' },
+      { path: 'invoice.lr_date', label: 'LR date' },
+      { path: 'invoice.po_date', label: 'PO date' },
+      { path: 'invoice.total_cgst_amount', label: 'CGST total' },
+      { path: 'invoice.total_sgst_amount', label: 'SGST total' },
+      { path: 'invoice.total_igst_amount', label: 'IGST total' },
+      { path: 'invoice.eway_bill_no', label: 'E-way bill' },
+      { path: 'invoice.irn', label: 'IRN' },
+      { path: 'invoice.lr_no', label: 'LR no' },
+      { path: 'invoice.transport', label: 'Transport' },
+      { path: 'invoice.po_no', label: 'PO no' },
     ],
   },
 ];
@@ -155,16 +179,50 @@ function rateLabel(fields: Fields, i: number): string {
   return source ? `Rate (${source})` : 'Rate';
 }
 
-const LINE_FIELDS = (i: number, fields: Fields): FieldSpec[] => [
-  { path: `line_items[${i}].description`, label: 'Item' },
-  { path: `line_items[${i}].batch_no`, label: 'Batch' },
-  { path: `line_items[${i}].expiry`, label: 'Expiry' },
-  { path: `line_items[${i}].quantity`, label: 'Qty' },
-  { path: `line_items[${i}].free_quantity`, label: 'Free qty' },
-  { path: `line_items[${i}].mrp`, label: 'MRP' },
-  { path: `line_items[${i}].rate`, label: rateLabel(fields, i) },
-  { path: `line_items[${i}].amount`, label: 'Amount' },
-];
+// The four a pharmacist checks first lead; then every other line field, so each
+// is always there to see and correct - blank when the invoice does not print it.
+const LINE_FIELDS = (i: number, fields: Fields): FieldSpec[] => {
+  const p = (key: string, label: string): FieldSpec => ({ path: `line_items[${i}].${key}`, label });
+  return [
+    p('description', 'Item'),
+    p('batch_no', 'Batch'),
+    p('expiry', 'Expiry'),
+    p('quantity', 'Qty'),
+    p('free_quantity', 'Free qty'),
+    p('mrp', 'MRP'),
+    p('rate', rateLabel(fields, i)),
+    p('amount', 'Amount'),
+    p('hsn', 'HSN'),
+    p('product_code', 'Product code'),
+    p('manufacturer', 'Mfg name'),
+    p('mfg_date', 'Mfg date'),
+    p('pack', 'Pack'),
+    p('uom', 'UOM'),
+    p('total_quantity', 'Total qty'),
+    p('ptr', 'PTR'),
+    p('pts', 'PTS'),
+    p('discount_percent', 'Discount %'),
+    p('discount_amount', 'Discount amount'),
+    p('scheme', 'Scheme'),
+    p('scheme_percent', 'Scheme %'),
+    p('scheme_value', 'Scheme value'),
+    p('cd_percent', 'CD %'),
+    p('cd_amount', 'CD amount'),
+    p('wp_percent', 'WP %'),
+    p('wp_amount', 'WP amount'),
+    p('gross_amount', 'Gross amount'),
+    p('gst_percent', 'GST %'),
+    p('cgst_percent', 'CGST %'),
+    p('cgst_amount', 'CGST amount'),
+    p('sgst_percent', 'SGST %'),
+    p('sgst_amount', 'SGST amount'),
+    p('igst_percent', 'IGST %'),
+    p('igst_amount', 'IGST amount'),
+    p('utgst_percent', 'UTGST %'),
+    p('utgst_amount', 'UTGST amount'),
+    p('net_amount', 'Net amount'),
+  ];
+};
 
 /** Section titles are stored as i18n keys; resolve them for display. */
 function translateTitle(section: Section): Section {
