@@ -29,6 +29,7 @@ import { buildSections, extraColumns, getLeaf, setLeafValue, ExtractionPayload, 
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
+import { isBusyFailure, isRetryableFailure } from '@/src/lib/failure';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
 
@@ -48,6 +49,8 @@ export default function ReviewScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   const [inv, setInv] = useState<DocMatch | null>(null);
   const [autoRetry, setAutoRetry] = useState(0);
+  // Why the automatic retry is running - only an overload is "AI busy".
+  const [retryBusy, setRetryBusy] = useState(false);
   const [manualRetrying, setManualRetrying] = useState(false);
   const [editIndex, setEditIndex] = useState<number | null>(null); // item section being edited
   const [search, setSearch] = useState('');
@@ -102,9 +105,12 @@ export default function ReviewScreen() {
         setDoc(d); // Always update doc so progress (e.g. 2/5 pages) updates in real-time
         if (d.status === 'queued' || d.status === 'processing') {
           timer = setTimeout(poll, POLL_MS);
-        } else if (d.status === 'failed' && retries < 1) {
+        } else if (d.status === 'failed' && retries < 1 && isRetryableFailure(d.error)) {
+          // Only a failure that may pass on a second try is retried. A request
+          // the AI refused would fail the same way, and the wait would hide why.
           retries += 1;
           setAutoRetry(retries);
+          setRetryBusy(isBusyFailure(d.error));
           try {
             await retryDocument(id);
           } catch {
@@ -240,10 +246,12 @@ export default function ReviewScreen() {
     return (
       <Screen>
         <CenterState
-          title={autoRetry > 0 ? 'AI busy — retrying…' : t('processing')}
+          title={autoRetry > 0 ? (retryBusy ? 'AI busy — retrying…' : 'Retrying…') : t('processing')}
           subtitle={
             autoRetry > 0
-              ? 'Retrying with backup AI model…'
+              ? retryBusy
+                ? 'Retrying with backup AI model…'
+                : 'The scan was interrupted - reading it again…'
               : doc?.progress
                 ? `Reading page ${doc.progress}…`
                 : elapsed > 15
@@ -273,7 +281,7 @@ export default function ReviewScreen() {
   if (doc.status === 'failed') {
     return (
       <Screen>
-        <CenterState title={t('failed')} subtitle={doc.error ?? 'Extraction failed. The AI may be busy — please try again.'}>
+        <CenterState title={t('failed')} subtitle={doc.error ?? 'Extraction failed. Please try again.'}>
           <Button title={manualRetrying ? 'Retrying…' : 'Try again'} onPress={tryAgain} loading={manualRetrying} style={{ marginTop: spacing.lg, minWidth: 200 }} />
         </CenterState>
       </Screen>
