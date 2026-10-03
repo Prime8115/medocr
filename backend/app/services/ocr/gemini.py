@@ -122,6 +122,9 @@ class GeminiProvider(OCRProvider):
         self._max_retries = max(1, settings.ocr_max_retries)
         self._base_backoff = settings.ocr_base_backoff
         self._sleep = sleep
+        # How many extractions Gemini only answered once the response schema
+        # was dropped. Zero in a healthy system; the nightly live test reports it.
+        self.schema_fallbacks = 0
 
     def _content_parts(self, prompt: str, file_bytes: bytes, content_type: str) -> list:
         """Build the model input: raw text for digital PDFs (compact, reliable),
@@ -226,6 +229,7 @@ class GeminiProvider(OCRProvider):
             # field, and validate_fields checks the answer's shape afterwards,
             # so ask for plain JSON rather than failing the scan.
             log.warning("Gemini rejected the %s response schema; retrying without it: %s", doc_type, exc)
+            self.schema_fallbacks += 1
             resp = self._generate_with_fallback(
                 contents,
                 config=types.GenerateContentConfig(
