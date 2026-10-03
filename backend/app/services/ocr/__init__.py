@@ -15,6 +15,7 @@ from app.schemas.extraction import (
     validate_fields,
 )
 from app.services.ocr.base import OCRError, OCRProvider
+from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
     dedupe_line_items,
     mark_free_supplies,
@@ -25,6 +26,7 @@ from app.services.ocr.invoice_checks import (
 from app.services.ocr.postprocess import postprocess_fields
 from app.services.ocr.pdf_utils import (
     extract_text_pages,
+    extract_text_sample,
     is_digital_pdf,
     page_count,
     split_pdf,
@@ -332,7 +334,14 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     # --- Tier 2: AI vision/text pipeline (images, scanned PDFs, non-invoice PDFs) ---
     provider = get_provider()
 
-    # Classify on the first page only (cheaper for long PDFs); use text when digital.
+    # A PDF that carries text usually says what it is; reading that costs
+    # nothing, where asking the AI spends a call of the scan's quota.
+    if not doc_type and content_type == "application/pdf":
+        doc_type = classify_text((extract_text_sample(file_bytes, 1)[:1] or [""])[0])
+        if doc_type:
+            log.info("document %s classified as %s from its text", document_id, doc_type)
+
+    # Otherwise ask the AI, on the first page only (cheaper for long PDFs).
     if not doc_type:
         classify_bytes, classify_ct = file_bytes, content_type
         if content_type == "application/pdf" and page_count(file_bytes) > 1:

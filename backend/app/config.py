@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     ocr_fallback_model: Optional[str] = "gemini-2.5-flash"
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
+    # When the AI is still busy after those retries, the scan is put back in the
+    # queue and read again later instead of failing: free-tier per-minute limits
+    # clear within a minute, so waiting is usually all it needs. Waits double
+    # from the base (20s, 40s, 80s, 160s, 300s ~ 10 minutes in all), capped.
+    ocr_busy_requeue_attempts: int = 5
+    ocr_busy_requeue_base_delay: float = 20.0
+    ocr_busy_requeue_max_delay: float = 300.0
     # Large multi-page PDFs (e.g. long distributor invoices) are processed in
     # page-chunks and merged, to stay under the model's output-token limit.
     ocr_pdf_chunk_pages: int = 2
