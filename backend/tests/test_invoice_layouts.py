@@ -40,7 +40,7 @@ def build_invoice(header, rows, ruled=True, portrait=False, total="0.00"):
     bold = ParagraphStyle("b", fontName="Helvetica-Bold", fontSize=9, leading=12)
     story = [
         Paragraph("ACME PHARMA DISTRIBUTORS PVT LTD", bold),
-        Paragraph("GSTIN No : 27AABCA1234B1ZX", small),
+        Paragraph("GSTIN No : 27AABCA1234B1ZH", small),
         Paragraph("Invoice No: INV-9001 &nbsp; Invoice Date: 12.08.2025", small),
         Paragraph("Bill to Party : SOME CHEMIST", small),
         Spacer(1, 8),

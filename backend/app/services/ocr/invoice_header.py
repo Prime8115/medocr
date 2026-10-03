@@ -32,6 +32,28 @@ _TOKEN = r"([A-Za-z0-9][A-Za-z0-9\-\/]*)"
 # this pattern was one character short and therefore matched NO real GSTIN -
 # the supplier's only came through via the label fallback, and no buyer's at all.
 _GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][A-Z0-9])\b")
+_GSTIN_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def gstin_is_valid(gstin: Optional[str]) -> bool:
+    """Whether a GSTIN's 15th character is its correct check character.
+
+    GSTN's own scheme: each of the first 14 characters' base-36 value, weighted
+    1, 2, 1, 2, ..., folded back into base 36 and summed; the check character
+    makes the total a multiple of 36. A scanner's garbled text layer and a
+    misread photo both produce GSTINs that are the right SHAPE but wrong - the
+    MSV Lifesciences bill gave "33ABEFM0315R128". This catches them.
+    """
+    g = (gstin or "").strip().upper()
+    if len(g) != 15 or any(ch not in _GSTIN_ALPHABET for ch in g):
+        return False
+    total = 0
+    for i, ch in enumerate(g[:14]):
+        product = _GSTIN_ALPHABET.index(ch) * (2 if i % 2 else 1)
+        total += product // 36 + product % 36
+    return _GSTIN_ALPHABET[(36 - total % 36) % 36] == g[14]
+
+
 _PAN_SHAPE = re.compile(r"\b([A-Z]{5}\d{4}[A-Z])\b")
 _EMAIL = re.compile(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b")
 

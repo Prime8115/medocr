@@ -113,29 +113,51 @@ def _process_job(db: Session, job: OcrJob) -> None:
         return
 
     try:
-        try:
-            data = storage.load(doc.image_ref)
-        except Exception as exc:  # noqa: BLE001
-            raise OCRError(f"Stored file could not be loaded: {exc}") from exc
+        data = storage.load(doc.image_ref)
+    except Exception as exc:  # noqa: BLE001 - nothing to read, not even locally
+        _fail_job(db, job_id, document_id, FAILED_MESSAGE, f"Stored file could not be loaded: {exc}")
+        return
 
-        if lifecycle.can_transition(doc.status, lifecycle.PROCESSING):
-            doc.status = lifecycle.PROCESSING
-            doc.progress = None  # no longer waiting
-            db.commit()
+    if lifecycle.can_transition(doc.status, lifecycle.PROCESSING):
+        doc.status = lifecycle.PROCESSING
+        doc.progress = None  # no longer waiting
+        db.commit()
 
-        # Persist progress for long PDFs so the app can show "page 12/60".
-        def _on_progress(done: int, total: int):
-            if total > 1:
-                d = db.get(Document, document_id)
-                if d:
-                    d.progress = f"{done}/{total}"
-                    db.commit()
+    # Persist progress for long PDFs so the app can show "page 12/60".
+    def _on_progress(done: int, total: int):
+        if total > 1:
+            d = db.get(Document, document_id)
+            if d:
+                d.progress = f"{done}/{total}"
+                db.commit()
 
+    failure: Optional[Exception] = None
+    try:
         result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress)
+    except OCRError as exc:
+        db.rollback()
+        if exc.kind == "busy" and _requeue_when_busy(db, job_id, exc):
+            return
+        failure = exc
+    except Exception as exc:  # noqa: BLE001 — never leave "processing"
+        db.rollback()
+        log.exception("document %s: extraction crashed", document_id)
+        failure = exc
 
+    cause = None
+    if failure is not None:
+        # The AI could not read it. Never a dead end: read its text ourselves
+        # and hand it to the pharmacist to complete, flagged for manual entry.
+        cause = str(failure) if isinstance(failure, OCRError) else f"Unexpected error: {failure}"
+        result = _manual_entry(document_id, data, job, cause)
+        if result is None:
+            _fail_job(db, job_id, document_id, _public_message(failure), cause)
+            return
+
+    try:
         # Result and job close in one transaction, and only if this process
         # still holds the job - otherwise whoever took it over owns the outcome.
-        if not jobs.finish(db, job_id, ok=True):
+        if not jobs.finish(db, job_id, ok=True, error=cause):
             db.rollback()
             log.warning("document %s: lease lost while reading; result discarded", document_id)
             return
@@ -146,23 +168,35 @@ def _process_job(db: Session, job: OcrJob) -> None:
         doc.status = lifecycle.NEEDS_REVIEW
         doc.progress = None
         doc.error = None
+        if cause:
+            db.add(AuditLog(shop_id=doc.shop_id, actor_id=None, action="document.manual_entry",
+                            target=doc.id, detail={"cause": cause[:2000]}))
         db.commit()
-    except OCRError as exc:
+    except Exception as exc:  # noqa: BLE001
         db.rollback()
-        if exc.kind == "busy" and _requeue_when_busy(db, job_id, exc):
-            return
-        log.warning("document %s failed: %s", document_id, exc)
-        if jobs.finish(db, job_id, ok=False, error=str(exc)):
-            _mark_failed(db, document_id, _public_message(exc), cause=str(exc))
-        else:
-            db.rollback()
-    except Exception as exc:  # noqa: BLE001 — never leave "processing"
+        log.exception("document %s: could not save the result", document_id)
+        _fail_job(db, job_id, document_id, FAILED_MESSAGE, f"Could not save the result: {exc}")
+
+
+def _manual_entry(document_id: str, data: bytes, job: OcrJob, cause: str) -> Optional[dict]:
+    """The manual-entry fallback, or None when it is off or itself fails."""
+    if not settings.ocr_fallback_enabled:
+        return None
+    from app.services.ocr.fallback import fallback_payload
+
+    try:
+        return fallback_payload(document_id, data, job.content_type, job.doc_type, cause)
+    except Exception:  # noqa: BLE001
+        log.exception("document %s: manual-entry fallback failed too", document_id)
+        return None
+
+
+def _fail_job(db: Session, job_id: str, document_id: str, message: str, cause: str) -> None:
+    log.warning("document %s failed: %s", document_id, cause)
+    if jobs.finish(db, job_id, ok=False, error=cause):
+        _mark_failed(db, document_id, message, cause=cause)
+    else:
         db.rollback()
-        log.exception("document %s failed unexpectedly", document_id)
-        if jobs.finish(db, job_id, ok=False, error=f"Unexpected error: {exc}"):
-            _mark_failed(db, document_id, _public_message(exc), cause=f"Unexpected error: {exc}")
-        else:
-            db.rollback()
 
 
 def _requeue_when_busy(db: Session, job_id: str, exc: OCRError) -> bool:

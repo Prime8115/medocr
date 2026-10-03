@@ -280,6 +280,12 @@ class ExtractionMeta(BaseModel):
     billed_rate_column: Optional[str] = None
     # Lines the supplier billed at zero (free/replacement supply).
     free_supply_lines: int = 0
+    # Set when the AI could not read the document and it was sent for manual
+    # entry instead of failing (services/ocr/fallback.py): what we found in its
+    # text is filled in, and the text itself is kept for the reviewer.
+    needs_manual_entry: bool = False
+    text_source: Optional[str] = None   # "pdf_text" | "ocr" | "none"
+    raw_text: Optional[str] = None
 
 
 class ExtractionPayload(BaseModel):

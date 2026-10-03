@@ -42,7 +42,7 @@ def _payload(fields):
 
 SAMPLE = {
     "supplier": {
-        "name": {"value": "ACME PHARMA LTD"}, "gstin": {"value": "27AABCA1234B1ZX"},
+        "name": {"value": "ACME PHARMA LTD"}, "gstin": {"value": "27AABCA1234B1ZH"},
         "pan": {"value": "AABCA1234B"}, "email": {"value": "sales@acme.example"},
         "dl_no_1": {"value": "MH-TZ5-1111"}, "dl_date_1": {"value": "01.01.2030"},
         "dl_no_2": {"value": "MH-TZ5-2222"}, "dl_date_2": {"value": None},
@@ -118,7 +118,7 @@ def test_customer_fields_carry_the_supplier_not_the_buyer():
     row = dict(zip(header, first))
 
     assert row["CustomerName"] == "ACME PHARMA LTD"
-    assert row["CustomerGSTINNO"] == "27AABCA1234B1ZX"
+    assert row["CustomerGSTINNO"] == "27AABCA1234B1ZH"
     assert row["CustomerPANNO"] == "AABCA1234B"
     assert row["CustomerDLNo1"] == "MH-TZ5-1111"
     # ...and the buyer stays on the Bill-to / Ship-to columns.
@@ -202,7 +202,7 @@ def test_webhook_payload_carries_the_client_columns_when_asked():
 
     row = out["rows"][0]
     assert row["CustomerName"] == "ACME PHARMA LTD"
-    assert row["CustomerGSTINNO"] == "27AABCA1234B1ZX"
+    assert row["CustomerGSTINNO"] == "27AABCA1234B1ZH"
     assert row["BillToName"] == "SOME CHEMIST"
     assert row["ProductName"] == "MED 1"
     assert row["TaxableAmount"] == "1000.00"

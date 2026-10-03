@@ -25,7 +25,7 @@ import {
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { buildSections, extraColumns, getLeaf, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
+import { addLineItem, buildSections, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
@@ -57,6 +57,7 @@ export default function ReviewScreen() {
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [headerOpen, setHeaderOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [rawTextOpen, setRawTextOpen] = useState(false);
   const [reportNote, setReportNote] = useState('');
   const [reporting, setReporting] = useState(false);
 
@@ -140,6 +141,28 @@ export default function ReviewScreen() {
   }, [id, applyDoc]);
 
   const onChangeField = (path: string, value: string) => setFields((prev) => setLeafValue(prev, path, value));
+
+  // A line the reading missed - or every line, on a document sent for manual
+  // entry - is typed in here, then saved with the rest.
+  function addItem() {
+    const next = addLineItem(fields);
+    setFields(next.fields);
+    setEditIndex(next.index);
+  }
+
+  function removeItem(index: number) {
+    Alert.alert('Remove this item?', 'It will be taken off this invoice when you save.', [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => {
+          setEditIndex(null);
+          setFields((prev) => removeLineItem(prev, index));
+        },
+      },
+    ]);
+  }
 
   async function save(): Promise<boolean> {
     setSaving(true);
@@ -295,6 +318,8 @@ export default function ReviewScreen() {
         item_count?: number;
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
+        needs_manual_entry?: boolean;
+        raw_text?: string | null;
       }
     | undefined;
   const warnings = meta?.warnings ?? [];
@@ -441,6 +466,21 @@ export default function ReviewScreen() {
             >
               <Text style={[styles.toggleText, viewMode === 'cards' && styles.toggleTextActive]}>☰  Cards</Text>
             </TouchableOpacity>
+          </View>
+        )}
+
+        {isInvoice && (editable || meta?.raw_text) && (
+          <View style={styles.manualRow}>
+            {editable && (
+              <TouchableOpacity onPress={addItem} style={styles.manualBtn} accessibilityRole="button">
+                <Text style={styles.manualBtnText}>＋ Add line item</Text>
+              </TouchableOpacity>
+            )}
+            {meta?.raw_text ? (
+              <TouchableOpacity onPress={() => setRawTextOpen(true)} style={styles.manualBtn} accessibilityRole="button">
+                <Text style={styles.manualBtnText}>📄 Text from the document</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         )}
 
@@ -600,6 +640,25 @@ export default function ReviewScreen() {
         </View>
       </Modal>
 
+      {/* What the server read off the document, for a reviewer filling it in by
+          hand: selectable, so a batch number or a name can be copied, not retyped. */}
+      <Modal visible={rawTextOpen} animationType="slide" transparent onRequestClose={() => setRawTextOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setRawTextOpen(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>Text from the document</Text>
+            <TouchableOpacity onPress={() => setRawTextOpen(false)}>
+              <Text style={styles.modalDone}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView>
+            <Text selectable style={styles.rawText}>
+              {meta?.raw_text ?? ''}
+            </Text>
+          </ScrollView>
+        </View>
+      </Modal>
+
       {/* Edit-a-single-item modal */}
       <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => setEditIndex(null)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setEditIndex(null)} />
@@ -628,6 +687,11 @@ export default function ReviewScreen() {
                     />
                   );
                 })}
+                {editable && isInvoice && (
+                  <TouchableOpacity onPress={() => removeItem(editIndex)} style={styles.removeBtn} accessibilityRole="button">
+                    <Text style={styles.removeText}>Remove this item</Text>
+                  </TouchableOpacity>
+                )}
                 {/* Columns this supplier prints that we have no name for. Read-only:
                     they are shown so nothing on the bill is invisible. */}
                 {extraColumns(fields, editIndex).length > 0 && (
@@ -790,6 +854,18 @@ const styles = StyleSheet.create({
   modalHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   modalTitle: { ...font.h2, color: colors.text },
   modalDone: { ...font.h3, color: colors.primary },
+  manualRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.sm },
+  manualBtn: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  manualBtnText: { ...font.body, color: colors.primary },
+  removeBtn: { alignItems: 'center', paddingVertical: spacing.md, marginTop: spacing.md },
+  removeText: { ...font.body, color: colors.danger },
+  rawText: { ...font.body, color: colors.text, fontFamily: 'monospace', paddingBottom: spacing.xl },
   invBox: { marginTop: spacing.md, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: spacing.md },
   invLabel: { ...font.label, color: colors.textSecondary, textTransform: 'uppercase', marginBottom: spacing.sm },
   invRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.xs },

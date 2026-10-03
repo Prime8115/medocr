@@ -120,6 +120,8 @@ def test_retry_reprocesses_stored_image(client, mock_ocr):
 
 def test_ocr_failure_marks_document_failed(client, monkeypatch):
     """No mock, no API key -> provider raises OCRError -> document ends 'failed' (never faked)."""
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     monkeypatch.setattr(settings, "allow_mock_ocr", False)
     monkeypatch.setattr(settings, "gemini_api_key", None)
     headers = register_and_login(client)
@@ -133,6 +135,8 @@ def test_ocr_failure_marks_document_failed(client, monkeypatch):
 def test_failure_shows_the_user_a_plain_message_and_keeps_the_cause(client, db_session, monkeypatch):
     """The pharmacist sees what to do, never the AI's own error text; the cause
     is kept in the audit log for whoever diagnoses it."""
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     from app.api import documents as documents_api
     from app.models.audit_log import AuditLog
     from app.services.ocr import OCRError
@@ -159,6 +163,8 @@ def test_failure_shows_the_user_a_plain_message_and_keeps_the_cause(client, db_s
 
 
 def test_busy_failure_tells_the_user_to_try_again(client, monkeypatch):
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     from app.api import documents as documents_api
     from app.services.ocr import OCRError
 
@@ -177,6 +183,8 @@ def test_busy_failure_tells_the_user_to_try_again(client, monkeypatch):
 
 
 def test_unexpected_crash_does_not_leak_to_the_user(client, monkeypatch):
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     from app.api import documents as documents_api
 
     def crash(*_a, **_k):
@@ -260,6 +268,8 @@ def test_busy_ai_requeues_the_scan_instead_of_failing_it(client, db_session, mon
 
 
 def test_a_scan_that_stays_busy_fails_after_the_last_wait(client, db_session, monkeypatch):
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     from app.api import documents as documents_api
 
     monkeypatch.setattr(settings, "ocr_busy_requeue_attempts", 3)
@@ -289,6 +299,8 @@ def test_retrying_an_auto_detected_scan_detects_its_type_again(client, monkeypat
     failed one must not treat that placeholder as the user's choice - it once
     forced a scanned invoice through the prescription reader, so every invoice
     field came back empty."""
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     from app.api import documents as documents_api
     from app.services.ocr import OCRError
 
@@ -344,6 +356,8 @@ def _failed_doc(client, monkeypatch, headers, cause):
 
 
 def test_the_owner_can_read_why_a_scan_failed(client, monkeypatch):
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     headers = register_and_login(client)
     cause = "Could not read the document: Invalid invoice fields: quantity"
     doc_id = _failed_doc(client, monkeypatch, headers, cause)

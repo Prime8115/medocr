@@ -33,11 +33,11 @@ SCANNED_INVOICE_TEXT = """lnvoice No.
 S-1029
 SUNRISE PHARMA DISTRIBUTORS
 12 Market Road, Pune 411001
-GSTIN/UlN: 27ABCDE1234F1Z5
+GSTIN/UlN: 27ABCDE1234F1Z0
 State Name : Maharashtra, Code: 27
 Buyer
 City Care Chemists
-GSTIN/UIN : 27PQRST6789K1Z2
+GSTIN/UIN : 27PQRST6789K1ZW
 Description HSN/SAC Quantltyqt Rate per Amount
 Paracip 500 Tab 10's
 Batch : PC-2401
@@ -83,8 +83,8 @@ def _photographed_invoice() -> bytes:
     draw = ImageDraw.Draw(img)
     big, font = ImageFont.load_default(size=40), ImageFont.load_default(size=26)
     draw.text((40, 30), "SUNRISE PHARMA DISTRIBUTORS", font=big, fill="black")
-    draw.text((40, 90), "GSTIN: 27ABCDE1234F1Z5    TAX INVOICE  No. S-1029   Date 12-09-2025", font=font, fill="black")
-    draw.text((40, 130), "Bill to: City Care Chemists   GSTIN: 27PQRST6789K1Z2", font=font, fill="black")
+    draw.text((40, 90), "GSTIN: 27ABCDE1234F1Z0    TAX INVOICE  No. S-1029   Date 12-09-2025", font=font, fill="black")
+    draw.text((40, 130), "Bill to: City Care Chemists   GSTIN: 27PQRST6789K1ZW", font=font, fill="black")
     y = 200
     for col, x in zip(("Product", "Batch", "Exp", "Qty", "Rate", "Amount"), (40, 520, 720, 860, 1000, 1180)):
         draw.text((x, y), col, font=font, fill="black")
