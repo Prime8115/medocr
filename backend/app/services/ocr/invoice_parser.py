@@ -515,7 +515,8 @@ def _extract_header_meta(
     }
     # PAN, e-mail and drug licences come from the supplier's own block, so the
     # buyer's equivalents cannot be mistaken for the vendor's.
-    for key, value in supplier_extras(own or text).items():
+    party_text = "\n".join((parties or {}).values())
+    for key, value in supplier_extras(own or text, party_text).items():
         supplier[key] = _f(value)
 
     # Bill-to and Ship-to, each read from its own column.
@@ -693,6 +694,35 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
             if value:
                 item["amount"] = _f(value)
                 break
+
+    # A merged "Discount Qty | Amt." column (JB) holds two numbers under one
+    # heading, so neither reached a field and the invoice reported no discount
+    # at all. Split it the same way the merged tax columns are split: the last
+    # number is the money.
+    if cols.get("discount_amount") is None and cols.get("discount_percent") is None:
+        for idx, heading in enumerate(header_row):
+            head = _norm(heading)
+            if "disc" not in head or idx >= len(row):
+                continue
+            numbers = _NUM.findall(str(row[idx] or ""))
+            if numbers:
+                item["discount_amount"] = _f(numbers[-1].replace(",", ""))
+            break
+
+    # NetAmount is what the client's import posts against the purchase. Most
+    # invoices do not print it as a column - they print the taxable value and
+    # the tax heads and leave the reader to add them up - so compute it when it
+    # is absent rather than exporting a blank for every single line.
+    if not (item.get("net_amount") or {}).get("value"):
+        taxable = _num((item.get("amount") or {}).get("value"))
+        if taxable is not None:
+            taxes = [
+                _num((item.get(k) or {}).get("value"))
+                for k in ("cgst_amount", "sgst_amount", "igst_amount", "utgst_amount")
+            ]
+            known = [float(t) for t in taxes if t is not None]
+            if known:
+                item["net_amount"] = _f(f"{float(taxable) + sum(known):.2f}")
 
     # A footer line that slips past the text filters gives itself away here: its
     # "quantity" is an IRN or invoice number a dozen digits long. Kanchan's IRN

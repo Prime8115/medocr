@@ -62,11 +62,15 @@ _REFERENCES: Dict[str, Tuple[List[str], str]] = {
 
 _DATES: Dict[str, List[str]] = {
     "due_date": ["Due Date", "Payment Due", "Due On"],
-    "lr_date": ["LR Date", "LR/RR No Date", "LR No Dt", "LR Dt"],
+    # Kanchan prints "LR/RR No. : 2035873 Date : 11/07/2025" - the number sits
+    # between the label and the date, so a plain "LR Date" never matches.
+    "lr_date": ["LR Date", "LR No Dt", "LR Dt", "LR RR No", "LR/RR No", "LR No"],
     "po_date": ["PO Date", "P O Date", "Ord Ref Date", "Order Date"],
 }
 
 _TOTALS: Dict[str, List[str]] = {
+    "total_gst_amount": ["Total GST Amount", "Total GST Amt", "Total GST", "GST Total",
+                         "Total Tax Amount", "Total Tax"],
     "total_taxable_amount": ["Total Taxable Value", "Total Taxable Amount", "Total Taxable",
                              "Taxable Value Total", "Basic Amount", "Total Basic"],
     "total_discount_amount": ["Total Discount", "Discount Total", "SD Discount",
@@ -91,6 +95,9 @@ def extract_references(text: str) -> Dict[str, Optional[str]]:
         out[field] = found
     for field, labels in _DATES.items():
         out[field] = _labelled(text, labels, _DATE)
+        if out[field] is None:
+            # Allow a reference number to sit between the label and its date.
+            out[field] = _labelled(text, labels, r"[A-Za-z0-9\-/]{0,20}\s*(?:date|dt)\s*[:\-]?\s*" + _DATE)
     return out
 
 
@@ -132,7 +139,15 @@ def sum_line_totals(items: List[dict]) -> Dict[str, Optional[str]]:
             if value is not None:
                 sums[total_field] = sums.get(total_field, 0.0) + value
                 seen[total_field] = True
-    return {k: f"{sums[k]:.2f}" for k in sums if seen.get(k)}
+    out = {k: f"{sums[k]:.2f}" for k in sums if seen.get(k)}
+
+    # The combined GST figure. Invoices print the heads, or the total, or both;
+    # the client's import asks for both, so derive whichever is missing.
+    heads = [sums[k] for k in ("total_cgst_amount", "total_sgst_amount",
+                               "total_igst_amount", "total_utgst_amount") if k in sums]
+    if heads:
+        out["total_gst_amount"] = f"{sum(heads):.2f}"
+    return out
 
 
 # ------------------------------- the parties -------------------------------
@@ -366,17 +381,32 @@ def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
         if _GSTIN_SHAPE.fullmatch(number) or _PAN_SHAPE.fullmatch(number):
             continue
         seen.add(number)
-        tail = (text or "")[match.end():match.end() + 40]
-        date = re.search(_DATE, tail)
+        # Suppliers join the licence to its validity differently: Bharat writes
+        # "MH-MZ5-190671 28.05.2030", Zydus "20B-MH-MZ4-373004 & 25.11.2029".
+        # Allow a separator and a little slack, but stop before the next licence
+        # so one date is not attached to two numbers.
+        tail = (text or "")[match.end():match.end() + 48]
+        tail = _DL_SHAPE.split(tail)[0]
+        date = re.search(r"[\s&,:/]{0,4}" + _DATE, tail)
         out.append((number, date.group(1) if date else None))
-        if len(out) == 3:
+        # More than three are collected on purpose: the caller drops any that
+        # belong to another party, and then takes the first three that remain.
+        if len(out) == 12:
             break
     return out
 
 
-def supplier_extras(text: str) -> Dict[str, Optional[str]]:
-    """PAN, e-mail and drug licences from the supplier's own block."""
+def supplier_extras(text: str, exclude: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """PAN, e-mail and drug licences belonging to the SUPPLIER.
+
+    `exclude` is the Bill-to and Ship-to text. A pharma invoice prints drug
+    licences for every party, and when the supplier's own block carries none the
+    search widens to the whole page - which is where the buyer's live. Zydus was
+    having its customer's licence filed as its third own licence. Anything that
+    appears in a party block is therefore dropped: it is not the vendor's.
+    """
     out: Dict[str, Optional[str]] = {}
+    blocked = {n for n, _ in drug_licences(exclude or "")} if exclude else set()
     pan = None
     for candidate in _PAN_SHAPE.finditer(text or ""):
         if not _GSTIN_SHAPE.search((text or "")[max(0, candidate.start() - 2):candidate.end() + 3]):
@@ -385,7 +415,13 @@ def supplier_extras(text: str) -> Dict[str, Optional[str]]:
     out["pan"] = pan
     email = _EMAIL.search(text or "")
     out["email"] = email.group(1) if email else None
-    for i, (number, date) in enumerate(drug_licences(text), start=1):
-        out[f"dl_no_{i}"] = number
-        out[f"dl_date_{i}"] = date
+    index = 0
+    for number, date in drug_licences(text):
+        if number in blocked:
+            continue
+        index += 1
+        out[f"dl_no_{index}"] = number
+        out[f"dl_date_{index}"] = date
+        if index == 3:
+            break
     return out

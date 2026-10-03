@@ -106,6 +106,10 @@ class InvoiceMeta(BaseModel):
     # the lines, so the figures always reach the shop's accounts. ---
     total_taxable_amount: Field = Field()
     total_discount_amount: Field = Field()
+    # Every tax head added together. Several invoices print only the heads, or
+    # only the combined figure; the client's import wants both, so whichever is
+    # absent is computed from the other.
+    total_gst_amount: Field = Field()
     total_cgst_amount: Field = Field()
     total_sgst_amount: Field = Field()
     total_igst_amount: Field = Field()

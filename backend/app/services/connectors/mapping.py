@@ -36,7 +36,8 @@ FIELD_KEYS = {
     # discount_percent are additive - existing profiles are unchanged, but a
     # custom `columns` config can now reference them.
     "invoice": [
-        "document_id", "supplier", "supplier_gstin", "invoice_no", "invoice_date",
+        "document_id", "supplier", "supplier_gstin", "total_gst_amount",
+        "invoice_no", "invoice_date",
         "description", "product_code", "manufacturer", "pack", "uom", "batch_no",
         "expiry", "mfg_date", "quantity", "free_quantity", "total_quantity",
         "mrp", "ptr", "pts", "rate", "rate_source", "discount_percent",
@@ -85,8 +86,8 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
             header[f"dl_date_{i}"] = _v(sup.get(f"dl_date_{i}"))
         for key in ("due_date", "irn", "eway_bill_no", "lr_no", "lr_date", "transport",
                     "po_no", "po_date", "total_taxable_amount", "total_discount_amount",
-                    "total_cgst_amount", "total_sgst_amount", "total_igst_amount",
-                    "total_utgst_amount"):
+                    "total_gst_amount", "total_cgst_amount", "total_sgst_amount",
+                    "total_igst_amount", "total_utgst_amount"):
             header[key] = _v(inv.get(key))
         header["final_amount"] = _v(inv.get("total_amount"))
         invoice_no = _v(inv.get("invoice_no"))
@@ -269,6 +270,10 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "PONO", "field": "po_no"},
             {"header": "PODATE", "field": "po_date"},
             {"header": "DueDate", "field": "due_date"},
+            # Appended rather than inserted: the 33 columns above keep the exact
+            # positions first specified, so an importer already built against
+            # them does not shift by one.
+            {"header": "TotalGSTAmount", "field": "total_gst_amount"},
             {"header": "ProductCode", "field": "product_code"},
             {"header": "ProductName", "field": "description"},
             {"header": "HSN", "field": "hsn"},

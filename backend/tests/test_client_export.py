@@ -23,6 +23,9 @@ CLIENT_HEADER_COLUMNS = [
     "CustomerDLNo3", "CustomerDLDate3", "TotalDiscountAmount", "TotalTaxableAmount",
     "CustomerPANNO", "Transport", "BillToPanNo", "ShipToPanNo", "Email", "EwaybillNo",
     "IRNNO", "PONO", "PODATE", "DueDate",
+    # Asked for in a later revision of the spec; appended so the 33 above keep
+    # the positions they were first given.
+    "TotalGSTAmount",
 ]
 CLIENT_LINE_COLUMNS = [
     "ProductCode", "ProductName", "HSN", "Qty", "FreeQty", "HsnCode", "BatchNo", "ExpDate",
@@ -226,3 +229,88 @@ def test_a_custom_column_list_also_works_over_the_api():
     out = build_push_payload(_Doc(SAMPLE), config)
     assert out["row_columns"] == ["Item", "Qty"]
     assert out["rows"] == [{"Item": "MED 1", "Qty": "10"}]
+
+
+# ------------------- fields the client reported as still missing -------------------
+def test_combined_gst_total_is_derived_from_the_heads():
+    """Invoices print the heads, or the combined figure, or both. The client's
+    import asks for both, so whichever is absent is computed."""
+    from app.services.ocr.invoice_header import sum_line_totals
+
+    items = [{
+        "amount": {"value": "1000.00"},
+        "cgst_amount": {"value": "60.00"}, "sgst_amount": {"value": "60.00"},
+        "igst_amount": {"value": "0.00"},
+    }]
+    totals = sum_line_totals(items)
+    assert totals["total_gst_amount"] == "120.00"
+    assert totals["total_cgst_amount"] == "60.00"
+    assert totals["total_taxable_amount"] == "1000.00"
+
+
+def test_net_amount_is_computed_when_the_invoice_prints_no_net_column():
+    """Most invoices print the taxable value and the tax heads and leave the
+    reader to add them up. NetAmount is what the client's import posts, so a
+    blank in every row would make the export useless for that purpose."""
+    from app.services.ocr.invoice_parser import _build_item, _gst_columns, _map_columns
+
+    header = ["Product", "Batch", "Exp", "Qty", "Rate", "Taxable Value", "CGST %", "SGST %"]
+    row = ["MED 1", "B1", "01/2028", "10", "100.00", "1000.00", "6.00", "6.00"]
+    cols = _map_columns(header)
+    item = _build_item(row, cols, header, _gst_columns(header))
+    # No net column on this invoice, so it is derived: taxable has no tax
+    # amounts beside it here, which means net must stay unset rather than wrong.
+    assert item["amount"]["value"] == "1000.00"
+
+    with_tax = dict(item)
+    with_tax["cgst_amount"] = {"value": "60.00", "confidence": 1.0}
+    with_tax["sgst_amount"] = {"value": "60.00", "confidence": 1.0}
+    row2 = ["MED 2", "B2", "01/2028", "10", "100.00", "1000.00", "6.00 60.00", "6.00 60.00"]
+    item2 = _build_item(row2, cols, header, _gst_columns(header))
+    assert item2["cgst_amount"]["value"] == "60.00"
+    assert item2["net_amount"]["value"] == "1120.00"   # 1000 + 60 + 60
+
+
+def test_total_gst_amount_is_appended_not_inserted():
+    """The 33 original columns must keep their first-specified positions, so an
+    importer already built against them does not shift by one."""
+    headers = [c["header"] for c in PROFILES["client_full"]["invoice"]]
+    assert headers[32] == "DueDate"          # last of the original header block
+    assert headers[33] == "TotalGSTAmount"   # the later addition, appended
+
+
+def test_supplier_licences_never_include_the_buyers():
+    """A pharma invoice prints drug licences for every party. When the supplier's
+    own block carries none the search widens to the whole page - which is where
+    the buyer's live - and Zydus was having its customer's licence filed as its
+    own third licence."""
+    from app.services.ocr.invoice_header import supplier_extras
+
+    page = "Drug Lic. No: 20B MH-TZ5210091, 21B MH-TZ5210092\nDrug Lic.No. & Date: 20B-MH-MZ4-373004 & 25.11.2029"
+    buyer = "Drug Lic.No. & Date: 20B-MH-MZ4-373004 & 25.11.2029"
+
+    out = supplier_extras(page, buyer)
+    assert out["dl_no_1"] == "MH-TZ5210091"
+    assert out["dl_no_2"] == "MH-TZ5210092"
+    assert out.get("dl_no_3") is None, "the buyer's licence must not be the supplier's"
+
+
+def test_a_drug_licence_date_is_read_when_printed():
+    """Suppliers join the licence to its validity differently - "NO 28.05.2030"
+    and "NO & 25.11.2029" both appear on real invoices."""
+    from app.services.ocr.invoice_header import drug_licences
+
+    assert drug_licences("D.L.No. MH-MZ5-190671 28.05.2030")[0] == ("MH-MZ5-190671", "28.05.2030")
+    assert drug_licences("Drug Lic.No. & Date: 20B-MH-MZ4-373004 & 25.11.2029")[0] == (
+        "20B-MH-MZ4-373004", "25.11.2029")
+    # An unrelated date further along the line is not the licence's validity.
+    assert drug_licences("DL NO:MH-TZ5-379188 , MH-TZ5-379189 Order Date : 21.08.2025")[0][1] is None
+
+
+def test_lr_date_survives_a_number_between_label_and_date():
+    """Kanchan prints "LR/RR No. : 2035873 Date : 11/07/2025"."""
+    from app.services.ocr.invoice_header import extract_references
+
+    out = extract_references("LR/RR No. : 2035873 Date : 11/07/2025")
+    assert out["lr_no"] == "2035873"
+    assert out["lr_date"] == "11/07/2025"
