@@ -314,3 +314,84 @@ def test_lr_date_survives_a_number_between_label_and_date():
     out = extract_references("LR/RR No. : 2035873 Date : 11/07/2025")
     assert out["lr_no"] == "2035873"
     assert out["lr_date"] == "11/07/2025"
+
+
+# --------------------------- which tax head applies ---------------------------
+# Four heads exist, and an invoice uses CGST+SGST, CGST+UTGST, or IGST alone.
+# Suppliers head ONE column for both possibilities - Zydus prints "CGST/ IGST %"
+# and "SGST/ UTGST %" and fills whichever applies - so the heading cannot settle
+# it. The parties' GSTIN state codes can. Posting input credit under the wrong
+# head is a GST filing error, not a cosmetic one.
+import pytest as _pytest  # noqa: E402
+
+from app.services.ocr.invoice_header import (  # noqa: E402
+    UTGST_STATE_CODES,
+    is_interstate,
+    local_tax_head,
+)
+from app.services.ocr.invoice_parser import _tax_head  # noqa: E402
+
+
+def _heads(supplier_state, buyer_state):
+    sup, buy = f"{supplier_state}AAACG1895Q1ZY", f"{buyer_state}AASCA3306L1ZE"
+    local, inter = local_tax_head(sup, buy), is_interstate(sup, buy)
+    return (_tax_head("cgst/igst%", inter, local), _tax_head("sgst/utgst%", inter, local))
+
+
+def test_same_state_is_taxed_cgst_plus_sgst():
+    assert _heads("27", "27") == ("cgst", "sgst")      # both Maharashtra
+
+
+def test_different_states_are_taxed_igst():
+    assert _heads("27", "29")[0] == "igst"             # Maharashtra -> Karnataka
+
+
+@_pytest.mark.parametrize("code", sorted(UTGST_STATE_CODES))
+def test_union_territory_without_a_legislature_is_taxed_cgst_plus_utgst(code):
+    assert _heads(code, code) == ("cgst", "utgst")
+
+
+@_pytest.mark.parametrize("code,name", [("07", "Delhi"), ("34", "Puducherry"),
+                                        ("01", "Jammu & Kashmir")])
+def test_union_territory_with_a_legislature_is_taxed_cgst_plus_sgst(code, name):
+    """These have their own legislature and levy SGST, not UTGST. Treating them
+    as UTGST would post the tax under a head they do not use."""
+    assert _heads(code, code) == ("cgst", "sgst"), name
+
+
+@_pytest.mark.parametrize("heading,expected", [
+    ("cgst%", "cgst"), ("sgst%", "sgst"), ("utgst%", "utgst"), ("igst%", "igst"),
+])
+def test_a_single_head_column_is_honoured_as_printed(heading, expected):
+    """Where the supplier names one head, it knows its own situation."""
+    assert _tax_head(heading, False, "sgst") == expected
+
+
+def test_state_code_cannot_be_read_falls_back_to_the_heading():
+    assert local_tax_head(None, None) is None
+    assert is_interstate(None, "27AASCA3306L1ZE") is None
+    # With nothing to compare, the heading's own wording still decides.
+    assert _tax_head("utgst%", None, None) == "utgst"
+
+
+def test_merged_tax_columns_are_reassigned_by_state_code():
+    """The keyword mapper files "CGST/ IGST AMT." as IGST because "igstamt" is a
+    substring. On an intra-state invoice that figure is CGST."""
+    from app.services.ocr.invoice_parser import reassign_merged_tax_columns
+
+    header = ["Item", "CGST/ IGST %", "CGST/ IGST AMT.", "SGST/ UTGST %", "SGST/ UTGST AMT."]
+    cols = {"description": 0, "igst_percent": 1, "igst_amount": 2,
+            "utgst_percent": 3, "utgst_amount": 4}
+
+    intra = reassign_merged_tax_columns(cols, header, interstate=False, local="sgst")
+    assert intra["cgst_percent"] == 1 and intra["cgst_amount"] == 2
+    assert intra["sgst_percent"] == 3 and intra["sgst_amount"] == 4
+    assert "igst_amount" not in intra and "utgst_amount" not in intra
+
+    # Inside a Union Territory the same columns are CGST + UTGST.
+    ut = reassign_merged_tax_columns(cols, header, interstate=False, local="utgst")
+    assert ut["cgst_amount"] == 2 and ut["utgst_amount"] == 4
+
+    # Across a state line, the first column is the IGST it was already mapped to.
+    inter = reassign_merged_tax_columns(cols, header, interstate=True, local="sgst")
+    assert inter["igst_percent"] == 1 and inter["igst_amount"] == 2

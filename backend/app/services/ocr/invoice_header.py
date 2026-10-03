@@ -303,6 +303,47 @@ def _tidy_name(raw: str) -> str:
     return " ".join(out).strip(" ,.-")
 
 
+# GSTIN state codes for the Union Territories that levy UTGST - those WITHOUT
+# their own legislature. A UT that has a legislature (Delhi 07, Puducherry 34,
+# Jammu & Kashmir 01) levies SGST like any state, so those are deliberately
+# absent: treating them as UTGST would post the tax under a head they do not use.
+#   04 Chandigarh   26 Dadra & Nagar Haveli and Daman & Diu   31 Lakshadweep
+#   35 Andaman & Nicobar Islands                              38 Ladakh
+UTGST_STATE_CODES = frozenset({"04", "25", "26", "31", "35", "38"})
+
+
+def _state_code(gstin: Optional[str]) -> Optional[str]:
+    value = str(gstin or "").strip()
+    return value[:2] if len(value) >= 2 and value[:2].isdigit() else None
+
+
+def local_tax_head(supplier_gstin: Optional[str], buyer_gstin: Optional[str]) -> Optional[str]:
+    """The head that pairs with CGST on an intra-state sale: "sgst" or "utgst".
+
+    Supply inside a Union Territory without a legislature is taxed CGST + UTGST;
+    everywhere else it is CGST + SGST. Returns None when the state code cannot be
+    read, so the caller falls back to the column heading.
+    """
+    code = _state_code(supplier_gstin) or _state_code(buyer_gstin)
+    if code is None:
+        return None
+    return "utgst" if code in UTGST_STATE_CODES else "sgst"
+
+
+def is_interstate(supplier_gstin: Optional[str], buyer_gstin: Optional[str]) -> Optional[bool]:
+    """True when the sale crosses a state line, False when it does not.
+
+    The first two digits of a GSTIN are the state code. Same code means an
+    intra-state sale, taxed CGST + SGST; different codes mean inter-state, taxed
+    IGST. Returns None when either GSTIN is missing, so the caller falls back to
+    the column heading rather than guessing.
+    """
+    for value in (supplier_gstin, buyer_gstin):
+        if not value or len(str(value).strip()) < 2 or not str(value).strip()[:2].isdigit():
+            return None
+    return str(supplier_gstin).strip()[:2] != str(buyer_gstin).strip()[:2]
+
+
 def normalised_party_key(name: Optional[str]) -> str:
     """A comparison key for deciding whether two parties are the same company."""
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())

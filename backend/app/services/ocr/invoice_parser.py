@@ -26,6 +26,8 @@ from app.services.ocr.amount_words import total_from_words
 from app.services.ocr.invoice_header import (
     extract_references,
     extract_totals,
+    is_interstate,
+    local_tax_head,
     normalised_party_key,
     party_details,
     party_regions,
@@ -614,7 +616,84 @@ def price_labels(cols: dict, header_row) -> dict:
     return out
 
 
-def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[dict]:
+# Only three heads exist on an Indian invoice. A sale is either INTRA-state,
+# taxed as CGST + SGST, or INTER-state, taxed as IGST - never both. UTGST simply
+# replaces SGST in a Union Territory, so it belongs in the SGST slot.
+def _tax_head(heading: str, interstate: Optional[bool], local: Optional[str] = None) -> str:
+    """Which tax head a column belongs to.
+
+    Suppliers routinely head one column for both possibilities - Zydus prints
+    "CGST/ IGST %" and "SGST/ UTGST %" and fills whichever applies. Matching the
+    heading alone picked the name that happened to appear last, so an
+    intra-state Maharashtra sale was being posted as IGST and UTGST. Getting
+    this wrong is not cosmetic: input credit claimed under the wrong head is a
+    GST filing error.
+
+    When a heading names both, the parties' GSTIN state codes decide. With no
+    GSTINs to compare, the heading's own wording is the fallback.
+    """
+    names = {n for n in ("cgst", "sgst", "igst", "utgst") if n in heading}
+    # `local` is the head that pairs with CGST on this invoice - SGST normally,
+    # UTGST inside a Union Territory that has no legislature.
+    pairs = local or ("utgst" if "utgst" in names and "sgst" not in names else "sgst")
+
+    merged = bool(names & {"cgst", "sgst", "utgst"}) and "igst" in names
+    if merged and interstate is not None:
+        if interstate:
+            return "igst"
+        return "cgst" if "cgst" in names else pairs
+    if names == {"igst"}:
+        return "igst"
+    if "cgst" in names:
+        return "cgst"
+    if names & {"sgst", "utgst"}:
+        # An explicitly single-head column is honoured as printed: the supplier
+        # knows whether it charges SGST or UTGST.
+        return "utgst" if "utgst" in names and "sgst" not in names else pairs
+    if "igst" in names:
+        return "igst"
+    return "cgst"
+
+
+_TAX_FIELDS = ("cgst_percent", "cgst_amount", "sgst_percent", "sgst_amount",
+               "igst_percent", "igst_amount", "utgst_percent", "utgst_amount")
+
+
+def reassign_merged_tax_columns(cols: dict, header_row, interstate: Optional[bool],
+                                local: Optional[str] = None) -> dict:
+    """Correct tax columns whose heading names more than one head.
+
+    Keyword mapping works on substrings, so "CGST/ IGST AMT." matches "igstamt"
+    and the whole column is filed as IGST - on an intra-state invoice where the
+    figure is actually CGST. Zydus heads all four of its tax columns that way.
+    The heading cannot settle it; the parties' state codes can.
+    """
+    if interstate is None:
+        return cols
+    out = dict(cols)
+    for field in _TAX_FIELDS:
+        idx = out.get(field)
+        if idx is None or idx >= len(header_row):
+            continue
+        heading = _norm(header_row[idx])
+        heads = [h for h in ("cgst", "sgst", "igst", "utgst") if h in heading]
+        if len(heads) < 2:
+            continue                      # a single-head column is unambiguous
+        suffix = "percent" if field.endswith("percent") else "amount"
+        correct = f"{_tax_head(heading, interstate, local)}_{suffix}"
+        if correct != field:
+            out.pop(field, None)
+            # Only claim the corrected slot if nothing truer already holds it.
+            if out.get(correct) is None:
+                out[correct] = idx
+    return out
+
+
+def _build_item(row, cols: dict, header_row, gst_cols: List[int],
+                interstate: Optional[bool] = None,
+                local: Optional[str] = None) -> Optional[dict]:
+    cols = reassign_merged_tax_columns(cols, header_row, interstate, local)
+
     def cell(field):
         idx = cols.get(field)
         if idx is None or idx >= len(row):
@@ -674,7 +753,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
         gst_vals.append(rate)
 
         head = _norm(header_row[gi]) if gi < len(header_row) else ""
-        which = "igst" if "igst" in head else "sgst" if ("sgst" in head or "utgst" in head) else "cgst"
+        which = _tax_head(head, interstate, local)
         if not (item.get(f"{which}_percent") or {}).get("value"):
             item[f"{which}_percent"] = _f(f"{rate:g}")
         amounts = [n for n in numbers if n is not rate]
@@ -751,7 +830,8 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int]) -> Optional[di
     return None
 
 
-def _rows_from_tables(tables, labels: dict) -> List[dict]:
+def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
+                      local: Optional[str] = None) -> List[dict]:
     """Line items from whichever of these tables is the line-item table."""
     out: List[dict] = []
     for table in tables or []:
@@ -765,7 +845,7 @@ def _rows_from_tables(tables, labels: dict) -> List[dict]:
         gst_cols = _gst_columns(header_row)
         labels.update(price_labels(cols, header_row))
         for row in table[hi + 1:]:
-            item = _build_item(row, cols, header_row, gst_cols)
+            item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
                 out.append(item)
     return out
@@ -793,6 +873,8 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     copies = 1
     stated_count = None
     full_text = ""
+    interstate: Optional[bool] = None
+    local_head: Optional[str] = None
 
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -827,6 +909,18 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                         supplier_region_lines(page),
                         party_regions(page, WORD_TOLERANCE),
                     )
+                    # Decided once, from the two GSTINs: an intra-state sale is
+                    # CGST + SGST, an inter-state one is IGST. Suppliers head a
+                    # single column for both, so the heading alone cannot say.
+                    local_head = local_tax_head(
+                        (meta.get("supplier", {}).get("gstin") or {}).get("value"),
+                        (meta.get("bill_to", {}).get("gstin") or {}).get("value"),
+                    )
+                    interstate = is_interstate(
+                        (meta.get("supplier", {}).get("gstin") or {}).get("value"),
+                        (meta.get("bill_to", {}).get("gstin") or {}).get("value")
+                        or (meta.get("ship_to", {}).get("gstin") or {}).get("value"),
+                    )
                 # Two ways to find the table, and we keep whichever actually
                 # yields more line items.
                 #
@@ -838,8 +932,8 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                 # is what keeps both layouts working.
                 ruled_labels: dict = {}
                 word_labels: dict = {}
-                ruled_items = _rows_from_tables(page.extract_tables() or [], ruled_labels)
-                word_items = _rows_from_tables(extract_word_tables(page), word_labels)
+                ruled_items = _rows_from_tables(page.extract_tables() or [], ruled_labels, interstate, local_head)
+                word_items = _rows_from_tables(extract_word_tables(page), word_labels, interstate, local_head)
                 if len(word_items) > len(ruled_items):
                     labels.update(word_labels)
                     page_items[page_no] = word_items
