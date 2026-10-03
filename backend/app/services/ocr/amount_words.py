@@ -35,9 +35,22 @@ _NOISE = re.compile(
 _MAX_PLAUSIBLE_TOTAL = 100_000_000
 
 _LABEL = re.compile(
-    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*[:\-]\s*(?P<words>[A-Za-z \-]{10,200})",
+    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*[:\-]\s*(?P<words>[A-Za-z \-]{10,200})"
+    # Tally prints "Amount Chargeable (in words)" with the figure on the NEXT
+    # line and no colon - MSV Lifesciences - and a scanner may garble the
+    # words before "(in words)". The bracketed label alone is enough.
+    r"|\(\s*in\s*words\s*\)\s*[:\-;]?\s*(?P<words2>[A-Za-z \-]{10,200})"
+    # ...and with scanner noise after it on the same line ("oo an 7 E&OE").
+    r"|\(\s*in\s*words\s*\)[^\n]{0,40}\n\s*(?P<words3>[A-Za-z \-]{10,200})",
     re.I,
 )
+
+# "... Fifteen and Ninety Two paise Only": the paise are not rupees. Counting
+# them in turned 715.92 into 807.
+_PAISE = re.compile(r"\b(?:and|rupees?)\s+(?:[a-z]+[\s\-]+){0,4}pais[ae]\b.*$", re.I)
+# The page often spells out its tax too ("Tax Amount (in words)"). That is not
+# the invoice total, however large.
+_TAX_LABEL = re.compile(r"tax\s*(?:amount|amt)?\s*$", re.I)
 
 
 _NOISE_WORDS = ("rupees", "rupee", "only", "and", "paise", "paisa", "rs", "inr")
@@ -76,6 +89,7 @@ def _words_to_int(text: str) -> Optional[int]:
     """Turn a run of English number words into an integer, or None."""
     known = set(_UNITS) | set(_TENS) | {"hundred"} | {w for w, _ in _SCALES}
     tokens: list = []
+    text = _PAISE.sub("", text)
     for raw in re.split(r"[\s\-]+", _NOISE.sub(" ", text).lower()):
         if not raw:
             continue
@@ -126,7 +140,11 @@ def total_from_words(text: str) -> Optional[str]:
     """
     best: Optional[int] = None
     for match in _LABEL.finditer(text or ""):
-        value = _words_to_int(match.group("words"))
+        before = (text or "")[max(0, match.start() - 16):match.start()]
+        if _TAX_LABEL.search(before):
+            continue
+        words = match.group("words") or match.group("words2") or match.group("words3")
+        value = _words_to_int(words)
         # A pharmacy invoice below a rupee, or above ten crore, is a misparse
         # rather than a total. A wrong total is worse than no total: it would
         # let a bad extraction reconcile and be approved.

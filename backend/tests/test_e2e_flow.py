@@ -95,6 +95,8 @@ def test_full_scan_to_webhook_delivery(client, db_session, webhook_server, monke
 
 def test_failed_extraction_never_delivers(client, webhook_server, monkeypatch):
     """No OCR configured -> document fails -> nothing is ever sent to the receiver."""
+    # The genuine-failure path: the manual-entry fallback is off, or failed too.
+    monkeypatch.setattr(settings, "ocr_fallback_enabled", False)
     monkeypatch.setattr(settings, "allow_mock_ocr", False)
     monkeypatch.setattr(settings, "gemini_api_key", None)
     headers = register_and_login(client)

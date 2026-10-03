@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # file that crashes the server cannot be retried forever.
     ocr_job_max_attempts: int = 3
 
+    # When the AI cannot read a document, read its text locally and send it for
+    # manual entry instead of failing it (services/ocr/fallback.py).
+    ocr_fallback_enabled: bool = True
+    ocr_fallback_max_pages: int = 10
+    tesseract_cmd: str = "tesseract"
+    tesseract_lang: str = "eng"
+    tesseract_timeout_seconds: float = 60.0
+
     # Database connection pool (Postgres). Requests and the scan workers share it.
     db_pool_size: int = 10
     db_max_overflow: int = 20

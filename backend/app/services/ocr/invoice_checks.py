@@ -358,3 +358,27 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
         "stated_item_count": stated_item_count,
         "warnings": warnings,
     }
+
+
+_PARTY_LABELS = {"supplier": "supplier", "bill_to": "Bill-to", "ship_to": "Ship-to"}
+
+
+def flag_invalid_gstins(fields: dict) -> List[str]:
+    """Warn about every GSTIN that fails its check character, and lower its
+    confidence so the review screen highlights it.
+
+    Shape alone is not enough: the AI copied the MSV invoice's garbled scanner
+    text ("33ABEFM0315R128") straight into the supplier GSTIN, where it would
+    have been filed against the wrong party. Never changes the value - only the
+    pharmacist, looking at the paper, can say what it should be.
+    """
+    from app.services.ocr.invoice_header import gstin_is_valid
+
+    warnings: List[str] = []
+    for party, label in _PARTY_LABELS.items():
+        leaf = (fields.get(party) or {}).get("gstin")
+        value = _v(leaf)
+        if value and not gstin_is_valid(value):
+            leaf["confidence"] = min(leaf.get("confidence") or 0.3, 0.3)
+            warnings.append(f"The {label} GSTIN {value} is not a valid GSTIN - please check it against the invoice.")
+    return warnings

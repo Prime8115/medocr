@@ -18,6 +18,7 @@ from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
     dedupe_line_items,
+    flag_invalid_gstins,
     mark_free_supplies,
     reconcile_invoice,
     resolve_billed_rate,
@@ -265,6 +266,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             check_warnings.append(
                 f"{flagged} line(s) where quantity x rate does not match the amount - marked for checking."
             )
+        check_warnings.extend(flag_invalid_gstins(fields))
         report = reconcile_invoice(fields, hints.get("stated_item_count"))
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)
