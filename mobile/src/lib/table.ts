@@ -9,8 +9,10 @@
  *  - **Order by what a pharmacist checks first.** Item, then quantity, rate and
  *    amount, so the four columns that decide whether a line is right fit on a
  *    phone without scrolling sideways. Batch, expiry and the rest follow.
- *  - **Only show columns that carry data.** An invoice with no scheme goods
- *    should not spend 48px on an empty "Free" column.
+ *  - **Every column, always.** The client's import needs every field on every
+ *    invoice, so a column the bill does not print is shown blank rather than
+ *    left out - an absent column reads as "the app did not look", a blank one
+ *    as "the invoice does not have it". The table scrolls sideways.
  */
 import { Fields, Leaf, getLeaf } from './payload';
 
@@ -33,42 +35,41 @@ const CATALOG: Column[] = [
   { key: 'rate', label: 'Rate', width: 84, numeric: true, money: true },
   { key: 'amount', label: 'Amount', width: 92, numeric: true, money: true },
   { key: 'batch_no', label: 'Batch', width: 96, numeric: false },
-  { key: 'product_code', label: 'Code', width: 78, numeric: false },
-  { key: 'manufacturer', label: 'Mfr', width: 96, numeric: false },
-  { key: 'mfg_date', label: 'Mfg', width: 68, numeric: false },
-  { key: 'total_quantity', label: 'Tot qty', width: 58, numeric: true },
-  { key: 'uom', label: 'UOM', width: 52, numeric: false },
-  { key: 'cgst_amount', label: 'CGST', width: 76, numeric: true, money: true },
-  { key: 'sgst_amount', label: 'SGST', width: 76, numeric: true, money: true },
-  { key: 'net_amount', label: 'Net', width: 84, numeric: true, money: true },
-  { key: 'gross_amount', label: 'Gross', width: 84, numeric: true, money: true },
-  { key: 'scheme', label: 'Scheme', width: 76, numeric: false },
-  { key: 'cd_amount', label: 'Cash disc', width: 76, numeric: true, money: true },
-  { key: 'igst_amount', label: 'IGST', width: 76, numeric: true, money: true },
-  { key: 'utgst_amount', label: 'UTGST', width: 76, numeric: true, money: true },
-  { key: 'scheme_value', label: 'Sch val', width: 76, numeric: true, money: true },
-  { key: 'wp_amount', label: 'WP amt', width: 76, numeric: true, money: true },
   { key: 'expiry', label: 'Expiry', width: 68, numeric: false },
-  { key: 'free_quantity', label: 'Free', width: 48, numeric: true },
-  { key: 'mrp', label: 'MRP', width: 76, numeric: true, money: true },
-  { key: 'discount_percent', label: 'Disc%', width: 56, numeric: true },
-  { key: 'gst_percent', label: 'GST%', width: 56, numeric: true },
-  { key: 'pack', label: 'Pack', width: 72, numeric: false },
   { key: 'hsn', label: 'HSN', width: 76, numeric: false },
+  { key: 'product_code', label: 'Code', width: 78, numeric: false },
+  { key: 'manufacturer', label: 'Mfg name', width: 96, numeric: false },
+  { key: 'mfg_date', label: 'Mfg date', width: 72, numeric: false },
+  { key: 'pack', label: 'Pack', width: 72, numeric: false },
+  { key: 'uom', label: 'UOM', width: 52, numeric: false },
+  { key: 'free_quantity', label: 'Free', width: 48, numeric: true },
+  { key: 'total_quantity', label: 'Tot qty', width: 58, numeric: true },
+  { key: 'mrp', label: 'MRP', width: 76, numeric: true, money: true },
+  { key: 'ptr', label: 'PTR', width: 76, numeric: true, money: true },
+  { key: 'pts', label: 'PTS', width: 76, numeric: true, money: true },
+  { key: 'discount_percent', label: 'Disc%', width: 56, numeric: true },
+  { key: 'discount_amount', label: 'Disc amt', width: 76, numeric: true, money: true },
+  { key: 'scheme', label: 'Scheme', width: 76, numeric: false },
+  { key: 'scheme_value', label: 'Sch val', width: 76, numeric: true, money: true },
+  { key: 'cd_percent', label: 'CD%', width: 56, numeric: true },
+  { key: 'cd_amount', label: 'CD amt', width: 76, numeric: true, money: true },
+  { key: 'wp_percent', label: 'WP%', width: 56, numeric: true },
+  { key: 'wp_amount', label: 'WP amt', width: 76, numeric: true, money: true },
+  { key: 'gross_amount', label: 'Gross', width: 84, numeric: true, money: true },
+  { key: 'gst_percent', label: 'GST%', width: 56, numeric: true },
+  { key: 'cgst_percent', label: 'CGST%', width: 60, numeric: true },
+  { key: 'cgst_amount', label: 'CGST', width: 76, numeric: true, money: true },
+  { key: 'sgst_percent', label: 'SGST%', width: 60, numeric: true },
+  { key: 'sgst_amount', label: 'SGST', width: 76, numeric: true, money: true },
+  { key: 'igst_percent', label: 'IGST%', width: 60, numeric: true },
+  { key: 'igst_amount', label: 'IGST', width: 76, numeric: true, money: true },
+  { key: 'utgst_percent', label: 'UTGST%', width: 64, numeric: true },
+  { key: 'utgst_amount', label: 'UTGST', width: 76, numeric: true, money: true },
+  { key: 'net_amount', label: 'Net amt', width: 84, numeric: true, money: true },
 ];
-
-/** Columns the Item column is never dropped in favour of — always shown. */
-const ALWAYS = new Set(['description', 'quantity', 'rate', 'amount']);
 
 export function lineItems(fields: Fields): Record<string, Leaf>[] {
   return ((fields.line_items as Record<string, Leaf>[]) || []).filter(Boolean);
-}
-
-function hasAnyValue(items: Record<string, Leaf>[], key: string): boolean {
-  return items.some((item) => {
-    const v = item?.[key]?.value;
-    return v !== null && v !== undefined && String(v).trim() !== '';
-  });
 }
 
 /**
@@ -93,13 +94,10 @@ export function rateSource(items: Record<string, Leaf>[]): string | undefined {
   return best;
 }
 
-/** The columns to render for this invoice, in priority order. */
+/** Every column, in priority order; a field the invoice lacks renders blank. */
 export function invoiceColumns(fields: Fields): Column[] {
-  const items = lineItems(fields);
-  const source = rateSource(items);
-  return CATALOG.filter((c) => ALWAYS.has(c.key) || hasAnyValue(items, c.key)).map((c) =>
-    c.key === 'rate' && source ? { ...c, sub: source } : c,
-  );
+  const source = rateSource(lineItems(fields));
+  return CATALOG.map((c) => (c.key === 'rate' && source ? { ...c, sub: source } : c));
 }
 
 export function totalWidth(columns: Column[]): number {

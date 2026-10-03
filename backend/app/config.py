@@ -46,6 +46,22 @@ class Settings(BaseSettings):
     ocr_busy_requeue_attempts: int = 5
     ocr_busy_requeue_base_delay: float = 20.0
     ocr_busy_requeue_max_delay: float = 300.0
+    # Extraction work is kept in the ocr_jobs table and run by a background
+    # worker, so a restart or deploy cannot lose a scan in flight. Tests turn
+    # the worker off and run due jobs explicitly.
+    ocr_worker_enabled: bool = True
+    ocr_worker_poll_seconds: float = 5.0
+    # The lease on a running job. Its holder renews it every poll; a lease left
+    # unrenewed this long means the holder is dead, and the job is re-queued.
+    ocr_job_lease_seconds: float = 90.0
+    # A scan whose process dies this many times running is given up on, so a
+    # file that crashes the server cannot be retried forever.
+    ocr_job_max_attempts: int = 3
+
+    # Database connection pool (Postgres). Requests and the scan workers share it.
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout: float = 30.0
     # Large multi-page PDFs (e.g. long distributor invoices) are processed in
     # page-chunks and merged, to stay under the model's output-token limit.
     ocr_pdf_chunk_pages: int = 2

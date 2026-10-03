@@ -190,12 +190,11 @@ def test_unexpected_crash_does_not_leak_to_the_user(client, monkeypatch):
 
 
 def _busy_then(monkeypatch, outcomes):
-    """process_document that is busy until `outcomes` runs out of busy entries;
-    captures each re-queue instead of waiting for it."""
+    """process_document that is busy until `outcomes` runs out of busy entries."""
     from app.api import documents as documents_api
     from app.services.ocr import OCRError
 
-    calls, scheduled = [], []
+    calls = []
 
     def process(*_a, **_k):
         calls.append(1)
@@ -205,17 +204,37 @@ def _busy_then(monkeypatch, outcomes):
         return outcome
 
     monkeypatch.setattr(documents_api, "process_document", process)
-    monkeypatch.setattr(documents_api, "_schedule", lambda delay, fn, *args: scheduled.append((delay, fn, args)))
-    return calls, scheduled
+    return calls
 
 
-def test_busy_ai_requeues_the_scan_instead_of_failing_it(client, monkeypatch):
+def _job(db_session, doc_id):
+    from app.models.job import OcrJob
+
+    db = db_session()
+    try:
+        job = db.query(OcrJob).filter_by(document_id=doc_id).one()
+        db.expunge(job)
+        return job
+    finally:
+        db.close()
+
+
+def _let_time_pass():
+    """Run every queued job as if its wait were over."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api import documents as documents_api
+
+    return documents_api.run_due_jobs(now=datetime.now(timezone.utc) + timedelta(days=1))
+
+
+def test_busy_ai_requeues_the_scan_instead_of_failing_it(client, db_session, monkeypatch):
     """The pharmacist sees "processing", not an error, while the AI is busy -
     and the scan finishes by itself once there is capacity again."""
     from app.api import documents as documents_api
 
     result = {"schema_version": "1.0", "doc_type": "invoice", "fields": {}, "meta": {}}
-    calls, scheduled = _busy_then(monkeypatch, ["busy", "busy", result])
+    calls = _busy_then(monkeypatch, ["busy", "busy", result])
     headers = register_and_login(client)
     doc_id = _submit(client, headers).json()["document_id"]
 
@@ -223,37 +242,39 @@ def test_busy_ai_requeues_the_scan_instead_of_failing_it(client, monkeypatch):
     assert doc["status"] == "queued"
     assert doc["progress"] == documents_api.WAITING_PROGRESS
     assert doc["error"] is None
+    job = _job(db_session, doc_id)
+    assert job.status == "pending" and job.busy_attempts == 1
 
-    # Run the waits the server would have run.
-    delays = []
-    while scheduled:
-        delay, fn, args = scheduled.pop(0)
-        delays.append(delay)
-        fn(*args)
+    # Not due yet: nothing runs before the wait is over.
+    assert documents_api.run_due_jobs() == 0
+
+    assert _let_time_pass() == 1   # busy again
+    assert _job(db_session, doc_id).busy_attempts == 2
+    assert _let_time_pass() == 1   # reads it
 
     doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
     assert doc["status"] == "needs_review"
     assert doc["progress"] is None
     assert len(calls) == 3
-    assert delays == [settings.ocr_busy_requeue_base_delay, settings.ocr_busy_requeue_base_delay * 2]
+    assert _job(db_session, doc_id).status == "done"
 
 
-def test_a_scan_that_stays_busy_fails_after_the_last_wait(client, monkeypatch):
+def test_a_scan_that_stays_busy_fails_after_the_last_wait(client, db_session, monkeypatch):
     from app.api import documents as documents_api
 
     monkeypatch.setattr(settings, "ocr_busy_requeue_attempts", 3)
-    calls, scheduled = _busy_then(monkeypatch, ["busy"] * 4)
+    calls = _busy_then(monkeypatch, ["busy"] * 4)
     headers = register_and_login(client)
     doc_id = _submit(client, headers).json()["document_id"]
-    while scheduled:
-        _delay, fn, args = scheduled.pop(0)
-        fn(*args)
+    while _let_time_pass():
+        pass
 
     doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
     assert len(calls) == 4  # the first try and three waits
     assert doc["status"] == "failed"
     assert doc["error"] == documents_api.BUSY_MESSAGE
     assert doc["progress"] is None
+    assert _job(db_session, doc_id).status == "failed"
 
 
 def test_requeue_waits_double_up_to_a_cap():

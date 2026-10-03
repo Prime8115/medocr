@@ -1,0 +1,63 @@
+name: Live AI check
+
+# Runs the extraction pipeline against the REAL Gemini API, every night and
+# whenever the AI code changes on main.
+#
+# Every other test fakes Gemini, which is how production could refuse every
+# scanned invoice ("400 INVALID_ARGUMENT") while all 305 tests stayed green.
+# This is the check that notices Gemini changing underneath us - a model
+# update, a schema it now refuses, a key or quota problem - before a
+# pharmacist does. GitHub e-mails the repository owner when a scheduled run
+# fails.
+#
+# Needs the repository secret GEMINI_API_KEY (Settings > Secrets and variables
+# > Actions). Secrets never reach pull requests from forks, and this workflow
+# does not run on pull requests at all, so the public repository cannot leak it.
+#
+# A busy or rate-limited Gemini skips a test rather than failing it, so a red
+# run means something is actually broken. About five requests per run - well
+# inside the free tier.
+
+on:
+  schedule:
+    - cron: '23 1 * * *'   # 06:53 IST daily, before the shops open
+  push:
+    branches: [main]
+    paths:
+      - 'backend/app/services/ocr/**'
+      - 'backend/app/schemas/extraction.py'
+      - 'backend/tests/live/**'
+      - '.github/workflows/live-ai.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: live-ai
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Real Gemini extraction
+    runs-on: ubuntu-24.04
+    env:
+      RUN_LIVE_AI: '1'
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # Ride out a briefly overloaded model instead of reporting it as broken.
+      OCR_MAX_RETRIES: '4'
+      OCR_BASE_BACKOFF: '5'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check the API key is configured
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::Repository secret GEMINI_API_KEY is not set - the live AI check cannot run."
+            exit 1
+          fi
+      - name: Install deps
+        working-directory: ./backend
+        run: pip install -r requirements.txt
+      - name: Run live tests
+        working-directory: ./backend
+        run: python -m pytest tests/live -v -rsxX

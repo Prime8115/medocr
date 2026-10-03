@@ -28,6 +28,8 @@ const en = {
   medications: 'Medications',
   supplier: 'Supplier',
   invoiceDetails: 'Invoice',
+  billTo: 'Bill to',
+  shipTo: 'Ship to',
   lineItems: 'Line items',
   save: 'Save',
   approve: 'Approve',

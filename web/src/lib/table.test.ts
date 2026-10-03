@@ -12,6 +12,7 @@ import {
   totalWidth,
 } from './table';
 import type { Fields } from './payload';
+import type { Leaf } from '../api/documents';
 
 const f = (value: string | null, confidence: number | null = 1) => ({ value, confidence });
 
@@ -39,17 +40,30 @@ describe('invoice table columns', () => {
     expect(keys.slice(0, 4)).toEqual(['description', 'quantity', 'rate', 'amount']);
   });
 
-  test('drops columns that carry no data on this invoice', () => {
+  test('shows every column, even ones this invoice does not print', () => {
     const keys = invoiceColumns(invoice).map((c) => c.key);
     expect(keys).toContain('free_quantity');
-    expect(keys).not.toContain('discount_percent');
+    expect(keys).toContain('discount_percent'); // no row has a discount - still shown, blank
   });
 
-  test('always keeps the four core columns even when empty', () => {
+  test('a sparse invoice still gets every column, blank where it has nothing', () => {
     const sparse: Fields = { line_items: [{ description: f('X') }] };
-    expect(invoiceColumns(sparse).map((c) => c.key)).toEqual([
-      'description', 'quantity', 'rate', 'amount',
-    ]);
+    const columns = invoiceColumns(sparse);
+    expect(columns.map((c) => c.key)).toEqual(invoiceColumns(invoice).map((c) => c.key));
+    const item = (sparse.line_items as Record<string, Leaf>[])[0];
+    expect(cellText(item, columns.find((c) => c.key === 'hsn')!)).toBe('');
+  });
+
+  // The client's import specification: every one of these line fields must be
+  // on screen for every invoice, filled or blank.
+  test('has a column for every line field the client requires', () => {
+    const keys = invoiceColumns(invoice).map((c) => c.key);
+    for (const key of [
+      'hsn', 'cd_percent', 'cd_amount', 'wp_percent', 'wp_amount', 'igst_amount', 'utgst_amount',
+      'uom', 'mfg_date', 'net_amount', 'manufacturer', 'pack', 'scheme_value',
+    ]) {
+      expect(keys).toContain(key);
+    }
   });
 
   test('labels the rate column with the supplier own wording', () => {

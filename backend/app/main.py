@@ -13,23 +13,31 @@ from app.api import agent, auth, connectors, documents, inventory
 from app.config import settings
 from app.database import SessionLocal
 from app.services.recovery import recover_stuck_documents
+from app.services.worker import build_worker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Recover any documents left mid-processing by a previous restart/crash.
+    # Resume any scans a previous restart, crash or deploy interrupted.
     # Never let a recovery hiccup prevent the app from starting.
     try:
         db = SessionLocal()
         try:
             n = recover_stuck_documents(db)
             if n:
-                print(f"[startup] recovered {n} interrupted document(s) -> failed (retryable)")
+                print(f"[startup] resuming {n} interrupted document(s)")
         finally:
             db.close()
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] recovery skipped: {exc}")
+
+    worker = None
+    if settings.ocr_worker_enabled:
+        worker = build_worker()
+        worker.start()
     yield
+    if worker:
+        worker.stop()
 
 limiter = Limiter(
     key_func=get_remote_address,

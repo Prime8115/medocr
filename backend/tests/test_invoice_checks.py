@@ -138,3 +138,70 @@ def test_reconcile_reports_lines_without_an_amount():
     items = [_item("A"), _item("B", batch="B2", amount=None)]
     report = reconcile_invoice(_fields(items, "200.00"))
     assert any("no amount" in w for w in report["warnings"])
+
+
+# ------------------- bill-level discount and tax (MSV) --------------------
+# The MSV Lifesciences invoice: 6 lines totalling 15,909.00, a 10% trade
+# discount on the whole bill (1,590.90), then CGST 357.96 + SGST 357.96 on the
+# discounted value, rounded to 15,034.00. It was flagged on every upload.
+
+MSV_AMOUNTS = ["6070.00", "1785.00", "1070.00", "1735.50", "1856.00", "3392.50"]
+
+
+def _msv(amounts=MSV_AMOUNTS, gst_percent=None, **invoice):
+    items = []
+    for i, amt in enumerate(amounts):
+        item = _item(f"M{i}", batch=f"B{i}", amount=amt)
+        if gst_percent:
+            item["gst_percent"] = _f(gst_percent)
+        items.append(item)
+    head = {"total_amount": _f("15,034.00"), "total_taxable_amount": _f("14,318.10"),
+            "total_discount_amount": _f("(-)1,590.90"),
+            "total_cgst_amount": _f("357.96"), "total_sgst_amount": _f("357.96")}
+    head.update({k: _f(v) for k, v in invoice.items()})
+    return {"line_items": items, "invoice": head}
+
+
+def test_a_bill_discount_and_tax_at_the_foot_reconcile():
+    report = reconcile_invoice(_msv())
+    assert report["total_reconciles"] is True
+    assert report["total_reconciled_by"] == "lines - bill discount + bill tax"
+    assert report["warnings"] == []
+
+
+def test_it_reconciles_when_the_ai_also_reads_a_gst_rate_per_line():
+    # What production read: gst_percent 5 on every line as well. Adding it
+    # before the discount gave 16,704.45 - the bill's own figures still match.
+    report = reconcile_invoice(_msv(gst_percent="5"))
+    assert report["total_reconciles"] is True
+
+
+def test_a_combined_gst_figure_is_used_when_the_heads_are_not():
+    report = reconcile_invoice(_msv(total_cgst_amount=None, total_sgst_amount=None,
+                                    total_gst_amount="715.92"))
+    assert report["total_reconciles"] is True
+
+
+def test_a_missing_line_is_still_caught_despite_the_bill_figures():
+    # The bill's discount and tax are all there - but one line was not read.
+    # Matching the total from the summary figures alone would hide this.
+    report = reconcile_invoice(_msv(amounts=MSV_AMOUNTS[:-1]))
+    assert report["total_reconciles"] is False
+    assert "12,516.50" in report["warnings"][0] or "12516.50" in report["warnings"][0]
+
+
+def test_a_misread_amount_is_still_caught():
+    wrong = list(MSV_AMOUNTS)
+    wrong[0] = "60.70"   # the rate read as the amount
+    assert reconcile_invoice(_msv(amounts=wrong))["total_reconciles"] is False
+
+
+def test_a_discount_already_inside_the_line_amounts_still_reconciles():
+    # Kanchan-style: lines are already net of discount, the discount figure is
+    # informational, and lines + tax is the total.
+    fields = {"line_items": [_item("A", amount="1000.00"), _item("B", amount="500.00")],
+              "invoice": {"total_amount": _f("1575.00"), "total_discount_amount": _f("150.00"),
+                          "total_gst_amount": _f("75.00")}}
+    report = reconcile_invoice(fields)
+    assert report["total_reconciles"] is True
+    assert report["total_reconciled_by"] == "lines + bill tax"

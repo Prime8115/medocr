@@ -33,6 +33,9 @@ def db_session(monkeypatch):
     # The background OCR job opens its own session via SessionLocal — point it at
     # the same in-memory engine so tests observe its writes.
     monkeypatch.setattr(documents_module, "SessionLocal", TestingSession)
+    # No background worker in tests: jobs run inline from the upload, and tests
+    # that need time to pass call documents_module.run_due_jobs() themselves.
+    monkeypatch.setattr(settings, "ocr_worker_enabled", False)
 
     yield TestingSession
 

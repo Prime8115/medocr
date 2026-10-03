@@ -9,8 +9,10 @@
  *
  *  - **Order by what a pharmacist checks first.** Item, then quantity, rate and
  *    amount; batch, expiry and the rest follow.
- *  - **Only show columns that carry data.** An invoice with no scheme goods
- *    should not spend a column on an empty "Free".
+ *  - **Every column, always.** The client's import needs every field on every
+ *    invoice, so a column the bill does not print is shown blank rather than
+ *    left out - an absent column reads as "the app did not look", a blank one
+ *    as "the invoice does not have it".
  */
 import type { Leaf } from '../api/documents';
 import { getLeaf, type Fields } from './payload';
@@ -30,46 +32,45 @@ export interface Column {
 
 const CATALOG: Column[] = [
   { key: 'description', label: 'Item', width: 240, numeric: false },
-  { key: 'quantity', label: 'Qty', width: 70, numeric: true },
-  { key: 'rate', label: 'Rate', width: 104, numeric: true, money: true },
-  { key: 'amount', label: 'Amount', width: 116, numeric: true, money: true },
-  { key: 'batch_no', label: 'Batch', width: 120, numeric: false },
-  { key: 'product_code', label: 'Code', width: 96, numeric: false },
-  { key: 'manufacturer', label: 'Mfr', width: 130, numeric: false },
-  { key: 'mfg_date', label: 'Mfg', width: 88, numeric: false },
-  { key: 'total_quantity', label: 'Tot qty', width: 72, numeric: true },
-  { key: 'uom', label: 'UOM', width: 64, numeric: false },
-  { key: 'cgst_amount', label: 'CGST', width: 96, numeric: true, money: true },
-  { key: 'sgst_amount', label: 'SGST', width: 96, numeric: true, money: true },
-  { key: 'net_amount', label: 'Net', width: 104, numeric: true, money: true },
-  { key: 'gross_amount', label: 'Gross', width: 104, numeric: true, money: true },
-  { key: 'scheme', label: 'Scheme', width: 96, numeric: false },
-  { key: 'cd_amount', label: 'Cash disc', width: 96, numeric: true, money: true },
-  { key: 'igst_amount', label: 'IGST', width: 96, numeric: true, money: true },
-  { key: 'utgst_amount', label: 'UTGST', width: 96, numeric: true, money: true },
-  { key: 'scheme_value', label: 'Sch val', width: 96, numeric: true, money: true },
-  { key: 'wp_amount', label: 'WP amt', width: 96, numeric: true, money: true },
+  { key: 'quantity', label: 'Qty', width: 68, numeric: true },
+  { key: 'rate', label: 'Rate', width: 110, numeric: true, money: true },
+  { key: 'amount', label: 'Amount', width: 120, numeric: true, money: true },
+  { key: 'batch_no', label: 'Batch', width: 124, numeric: false },
   { key: 'expiry', label: 'Expiry', width: 88, numeric: false },
-  { key: 'free_quantity', label: 'Free', width: 64, numeric: true },
-  { key: 'mrp', label: 'MRP', width: 96, numeric: true, money: true },
+  { key: 'hsn', label: 'HSN', width: 98, numeric: false },
+  { key: 'product_code', label: 'Code', width: 102, numeric: false },
+  { key: 'manufacturer', label: 'Mfg name', width: 124, numeric: false },
+  { key: 'mfg_date', label: 'Mfg date', width: 94, numeric: false },
+  { key: 'pack', label: 'Pack', width: 94, numeric: false },
+  { key: 'uom', label: 'UOM', width: 68, numeric: false },
+  { key: 'free_quantity', label: 'Free', width: 62, numeric: true },
+  { key: 'total_quantity', label: 'Tot qty', width: 76, numeric: true },
+  { key: 'mrp', label: 'MRP', width: 98, numeric: true, money: true },
+  { key: 'ptr', label: 'PTR', width: 98, numeric: true, money: true },
+  { key: 'pts', label: 'PTS', width: 98, numeric: true, money: true },
   { key: 'discount_percent', label: 'Disc%', width: 72, numeric: true },
+  { key: 'discount_amount', label: 'Disc amt', width: 98, numeric: true, money: true },
+  { key: 'scheme', label: 'Scheme', width: 98, numeric: false },
+  { key: 'scheme_value', label: 'Sch val', width: 98, numeric: true, money: true },
+  { key: 'cd_percent', label: 'CD%', width: 72, numeric: true },
+  { key: 'cd_amount', label: 'CD amt', width: 98, numeric: true, money: true },
+  { key: 'wp_percent', label: 'WP%', width: 72, numeric: true },
+  { key: 'wp_amount', label: 'WP amt', width: 98, numeric: true, money: true },
+  { key: 'gross_amount', label: 'Gross', width: 110, numeric: true, money: true },
   { key: 'gst_percent', label: 'GST%', width: 72, numeric: true },
-  { key: 'pack', label: 'Pack', width: 90, numeric: false },
-  { key: 'hsn', label: 'HSN', width: 96, numeric: false },
+  { key: 'cgst_percent', label: 'CGST%', width: 78, numeric: true },
+  { key: 'cgst_amount', label: 'CGST', width: 98, numeric: true, money: true },
+  { key: 'sgst_percent', label: 'SGST%', width: 78, numeric: true },
+  { key: 'sgst_amount', label: 'SGST', width: 98, numeric: true, money: true },
+  { key: 'igst_percent', label: 'IGST%', width: 78, numeric: true },
+  { key: 'igst_amount', label: 'IGST', width: 98, numeric: true, money: true },
+  { key: 'utgst_percent', label: 'UTGST%', width: 84, numeric: true },
+  { key: 'utgst_amount', label: 'UTGST', width: 98, numeric: true, money: true },
+  { key: 'net_amount', label: 'Net amt', width: 110, numeric: true, money: true },
 ];
-
-/** Columns that are always shown, even when empty. */
-const ALWAYS = new Set(['description', 'quantity', 'rate', 'amount']);
 
 export function lineItems(fields: Fields): Record<string, Leaf>[] {
   return ((fields.line_items as Record<string, Leaf>[]) || []).filter(Boolean);
-}
-
-function hasAnyValue(items: Record<string, Leaf>[], key: string): boolean {
-  return items.some((item) => {
-    const v = item?.[key]?.value;
-    return v !== null && v !== undefined && String(v).trim() !== '';
-  });
 }
 
 /**
@@ -94,13 +95,10 @@ export function rateSource(items: Record<string, Leaf>[]): string | undefined {
   return best;
 }
 
-/** The columns to render for this invoice, in priority order. */
+/** Every column, in priority order; a field the invoice lacks renders blank. */
 export function invoiceColumns(fields: Fields): Column[] {
-  const items = lineItems(fields);
-  const source = rateSource(items);
-  return CATALOG.filter((c) => ALWAYS.has(c.key) || hasAnyValue(items, c.key)).map((c) =>
-    c.key === 'rate' && source ? { ...c, sub: source } : c,
-  );
+  const source = rateSource(lineItems(fields));
+  return CATALOG.map((c) => (c.key === 'rate' && source ? { ...c, sub: source } : c));
 }
 
 export function totalWidth(columns: Column[]): number {
