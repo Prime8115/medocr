@@ -261,3 +261,51 @@ def test_requeue_waits_double_up_to_a_cap():
 
     delays = [documents_api._requeue_delay(n) for n in range(6)]
     assert delays == [20.0, 40.0, 80.0, 160.0, 300.0, 300.0]
+
+
+def test_retrying_an_auto_detected_scan_detects_its_type_again(client, monkeypatch):
+    """An Auto upload stores a placeholder type until it is read. Retrying a
+    failed one must not treat that placeholder as the user's choice - it once
+    forced a scanned invoice through the prescription reader, so every invoice
+    field came back empty."""
+    from app.api import documents as documents_api
+    from app.services.ocr import OCRError
+
+    seen = []
+
+    def fail_then_record(document_id, data, content_type, doc_type, on_progress=None):
+        seen.append(doc_type)
+        if len(seen) == 1:
+            raise OCRError("Could not read the document.")
+        return {"schema_version": "1.0", "doc_type": "invoice", "fields": {}, "meta": {}}
+
+    monkeypatch.setattr(documents_api, "process_document", fail_then_record)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers).json()["document_id"]  # Auto: no doc_type
+    assert client.get(f"/v1/documents/{doc_id}", headers=headers).json()["status"] == "failed"
+
+    assert client.post(f"/v1/documents/{doc_id}/retry", headers=headers).status_code == 200
+
+    assert seen == [None, None]  # detected both times, never forced
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["doc_type"] == "invoice"
+
+
+def test_retrying_keeps_a_type_the_user_chose(client, monkeypatch):
+    from app.api import documents as documents_api
+    from app.services.ocr import OCRError
+
+    seen = []
+
+    def fail_then_record(document_id, data, content_type, doc_type, on_progress=None):
+        seen.append(doc_type)
+        if len(seen) == 1:
+            raise OCRError("Could not read the document.")
+        return {"schema_version": "1.0", "doc_type": doc_type, "fields": {}, "meta": {}}
+
+    monkeypatch.setattr(documents_api, "process_document", fail_then_record)
+    headers = register_and_login(client)
+    doc_id = _submit(client, headers, doc_type="prescription").json()["document_id"]
+    client.post(f"/v1/documents/{doc_id}/retry", headers=headers)
+
+    assert seen == ["prescription", "prescription"]
