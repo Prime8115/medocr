@@ -15,15 +15,49 @@ the UI can highlight low-confidence extractions for human review.
 """
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 SCHEMA_VERSION = "1.0"
 DOC_TYPES = ("prescription", "invoice")
 
 
+def _as_text(value):
+    """A value as the text the rest of the pipeline expects.
+
+    The AI is asked for strings, but an invoice is mostly numbers and it does
+    not always comply - one `100` or `60.7` among hundreds of fields used to
+    fail validation and with it the WHOLE invoice. Numbers are written without
+    float noise (1785.0 -> "1785"); booleans as "true"/"false", matching the
+    free_supply convention."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return ("%.6f" % value).rstrip("0").rstrip(".")
+    return value  # anything else is genuinely malformed; let validation say so
+
+
 class Field(BaseModel):
     value: Optional[str] = None
     confidence: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bare_value(cls, data):
+        # Without a schema enforced the AI may answer `"quantity": "100"`
+        # rather than {"value": "100", "confidence": ...}. Keep the value; its
+        # confidence is simply unknown.
+        if data is None or isinstance(data, (str, int, float, bool)):
+            return {"value": data}
+        return data
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_as_text(cls, value):
+        return _as_text(value)
 
 
 # ----------------------------- Prescription -----------------------------
@@ -127,6 +161,11 @@ class ExtraField(BaseModel):
     label: Optional[str] = None
     value: Optional[str] = None
     confidence: Optional[float] = None
+
+    @field_validator("label", "value", mode="before")
+    @classmethod
+    def _as_text(cls, value):
+        return _as_text(value)
 
 
 class InvoiceLineItem(BaseModel):
