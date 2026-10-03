@@ -3,13 +3,14 @@
 An upload starts its own job at once; the worker is for everything after that
 - a busy-AI retry whose wait is over, a scan whose process died mid-way, and
 the work found at startup. One thread polls; a small pool does the reading.
-Each job is claimed atomically (services/jobs.py), so a job the upload already
-started is skipped here rather than read twice.
+Each pass also renews the leases this process holds (the heartbeat) and
+returns to the queue any job whose holder stopped renewing - in this process
+or any other. Each job is claimed atomically (services/jobs.py), so a job the
+upload already started is skipped here rather than read twice.
 """
 import concurrent.futures as cf
 import logging
 import threading
-from datetime import datetime, timedelta, timezone
 from typing import Optional, Set
 
 from app.config import settings
@@ -18,9 +19,11 @@ log = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, poll_seconds: float, stale_seconds: float, max_workers: int):
+    def __init__(self, poll_seconds: float, lease_seconds: float, max_workers: int):
+        if poll_seconds * 3 > lease_seconds:
+            raise ValueError("the poll must renew a lease several times before it expires")
         self.poll_seconds = poll_seconds
-        self.stale_seconds = stale_seconds
+        self.lease_seconds = lease_seconds
         self._pool = cf.ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="ocr-job")
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -46,16 +49,16 @@ class Worker:
                 log.exception("ocr worker pass failed")
 
     def tick(self) -> int:
-        """One pass: free stalled jobs, then start every job that is due."""
+        """One pass: renew our leases, free expired ones, start what is due."""
         from app.api import documents as documents_api  # runtime import: avoids a cycle
         from app.services import jobs
 
         db = documents_api.SessionLocal()
         try:
-            stale_before = datetime.now(timezone.utc) - timedelta(seconds=self.stale_seconds)
-            freed = jobs.release_running(db, stale_before=stale_before)
+            jobs.heartbeat(db, jobs.held_job_ids())
+            freed = jobs.release_expired(db, self.lease_seconds)
             if freed:
-                log.warning("ocr worker: %d stalled job(s) returned to the queue", freed)
+                log.warning("ocr worker: %d job(s) whose holder stopped renewing returned to the queue", freed)
             due = jobs.due_job_ids(db, limit=50)
         finally:
             db.close()
@@ -85,6 +88,6 @@ class Worker:
 def build_worker() -> Worker:
     return Worker(
         poll_seconds=settings.ocr_worker_poll_seconds,
-        stale_seconds=settings.ocr_job_stale_seconds,
+        lease_seconds=settings.ocr_job_lease_seconds,
         max_workers=settings.ocr_max_concurrent_jobs,
     )

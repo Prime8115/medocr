@@ -70,37 +70,48 @@ def _requeue_delay(attempt: int) -> float:
 
 
 def run_job(job_id: str) -> None:
-    """Read one queued scan. Safe to call from anywhere, any number of times:
-    only the caller that claims the job does the work.
+    """Read one queued scan. Safe to call from anywhere, any number of times,
+    in any number of processes: only the caller that claims the job does the
+    work.
 
-    Called straight after an upload (so a scan starts at once, as before) and by
-    the worker for anything still due - a busy-AI retry whose wait is over, or a
-    scan whose process died mid-way. The work itself lives in the ocr_jobs
-    table, so a restart or deploy can no longer lose it.
+    Called straight after an upload (so a scan starts at once) and by the worker
+    for anything still due - a busy-AI retry whose wait is over, or a scan whose
+    process died and whose lease ran out. The work lives in the ocr_jobs table,
+    so a restart or deploy can no longer lose it.
     """
-    db = SessionLocal()
     # A slot first, then the claim: a job left waiting for a slot stays in the
     # queue for the worker, rather than being held by a thread doing nothing.
     if not _ocr_semaphore.acquire(timeout=120):
-        db.close()
         return
+    db = SessionLocal()
     try:
-        if not jobs.claim(db, job_id):
-            return
-        job = db.get(OcrJob, job_id)
-        _process_job(db, job)
+        if jobs.claim(db, job_id):
+            _process_job(db, db.get(OcrJob, job_id))
     finally:
-        _ocr_semaphore.release()
+        jobs.let_go(job_id)
         db.close()
+        _ocr_semaphore.release()
 
 
 def _process_job(db: Session, job: OcrJob) -> None:
-    document_id = job.document_id
+    job_id, document_id = job.id, job.document_id
     doc = db.get(Document, document_id)
     if not doc:
-        jobs.finish(db, job, ok=False, error="document no longer exists")
+        jobs.finish(db, job_id, ok=False, error="document no longer exists")
         db.commit()
         return
+
+    # A scan whose process died on it this many times running is taking the
+    # process down with it (out of memory on a huge file, say). Stop retrying it.
+    if job.attempts > settings.ocr_job_max_attempts:
+        cause = f"Gave up after {job.attempts - 1} attempts that never finished (the process died each time)"
+        log.error("document %s: %s", document_id, cause)
+        if jobs.finish(db, job_id, ok=False, error=cause):
+            _mark_failed(db, document_id, FAILED_MESSAGE, cause=cause)
+        else:
+            db.rollback()
+        return
+
     try:
         try:
             data = storage.load(doc.image_ref)
@@ -112,19 +123,22 @@ def _process_job(db: Session, job: OcrJob) -> None:
             doc.progress = None  # no longer waiting
             db.commit()
 
-        # Persist progress for long PDFs so the app can show "page 12/60". It
-        # doubles as the job's heartbeat: a long scan that is still moving is
-        # never mistaken for a dead one and read a second time.
+        # Persist progress for long PDFs so the app can show "page 12/60".
         def _on_progress(done: int, total: int):
-            job.locked_at = datetime.now(timezone.utc)
             if total > 1:
                 d = db.get(Document, document_id)
                 if d:
                     d.progress = f"{done}/{total}"
-            db.commit()
+                    db.commit()
 
         result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress)
 
+        # Result and job close in one transaction, and only if this process
+        # still holds the job - otherwise whoever took it over owns the outcome.
+        if not jobs.finish(db, job_id, ok=True):
+            db.rollback()
+            log.warning("document %s: lease lost while reading; result discarded", document_id)
+            return
         doc = db.get(Document, document_id)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
@@ -132,25 +146,29 @@ def _process_job(db: Session, job: OcrJob) -> None:
         doc.status = lifecycle.NEEDS_REVIEW
         doc.progress = None
         doc.error = None
-        jobs.finish(db, job, ok=True)
         db.commit()
     except OCRError as exc:
         db.rollback()
-        if exc.kind == "busy" and _requeue_when_busy(db, job, exc):
+        if exc.kind == "busy" and _requeue_when_busy(db, job_id, exc):
             return
         log.warning("document %s failed: %s", document_id, exc)
-        jobs.finish(db, job, ok=False, error=str(exc))
-        _mark_failed(db, document_id, _public_message(exc), cause=str(exc))
+        if jobs.finish(db, job_id, ok=False, error=str(exc)):
+            _mark_failed(db, document_id, _public_message(exc), cause=str(exc))
+        else:
+            db.rollback()
     except Exception as exc:  # noqa: BLE001 — never leave "processing"
         db.rollback()
         log.exception("document %s failed unexpectedly", document_id)
-        jobs.finish(db, job, ok=False, error=f"Unexpected error: {exc}")
-        _mark_failed(db, document_id, _public_message(exc), cause=f"Unexpected error: {exc}")
+        if jobs.finish(db, job_id, ok=False, error=f"Unexpected error: {exc}"):
+            _mark_failed(db, document_id, _public_message(exc), cause=f"Unexpected error: {exc}")
+        else:
+            db.rollback()
 
 
-def _requeue_when_busy(db: Session, job: OcrJob, exc: OCRError) -> bool:
+def _requeue_when_busy(db: Session, job_id: str, exc: OCRError) -> bool:
     """Put a scan the AI was too busy to read back in the queue, due after a
     wait. Returns False when it has already waited as long as we allow."""
+    job = db.get(OcrJob, job_id)
     attempt = job.busy_attempts or 0
     if attempt >= settings.ocr_busy_requeue_attempts:
         return False
@@ -158,7 +176,9 @@ def _requeue_when_busy(db: Session, job: OcrJob, exc: OCRError) -> bool:
     if not doc or not lifecycle.can_transition(doc.status, lifecycle.QUEUED):
         return False
     delay = _requeue_delay(attempt)
-    jobs.defer(db, job, delay, str(exc))
+    if not jobs.defer(db, job_id, delay, str(exc)):
+        db.rollback()
+        return True  # no longer ours: whoever holds it decides
     doc.status = lifecycle.QUEUED
     doc.progress = WAITING_PROGRESS
     db.commit()
@@ -167,8 +187,8 @@ def _requeue_when_busy(db: Session, job: OcrJob, exc: OCRError) -> bool:
 
 
 def run_due_jobs(now=None, limit: int = 50) -> int:
-    """Run every job due now (or by `now`), one after another. The worker's
-    unit of work, and how tests stand in for time passing."""
+    """Run every job due now (or by `now`), one after another, in this thread.
+    How tests stand in for time passing; the worker runs jobs in parallel."""
     db = SessionLocal()
     try:
         ids = jobs.due_job_ids(db, limit, now=now)
@@ -178,12 +198,12 @@ def run_due_jobs(now=None, limit: int = 50) -> int:
     for job_id in ids:
         db = SessionLocal()
         try:
-            claimed = jobs.claim(db, job_id, now=now)
-            if claimed:
+            if jobs.claim(db, job_id, now=now):
                 with _ocr_semaphore:
                     _process_job(db, db.get(OcrJob, job_id))
                 ran += 1
         finally:
+            jobs.let_go(job_id)
             db.close()
     return ran
 

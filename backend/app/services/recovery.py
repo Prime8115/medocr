@@ -16,14 +16,7 @@ _MESSAGE = "Processing was interrupted. Please try again."
 
 
 def recover_stuck_documents(db: Session) -> int:
-    """Re-queue interrupted work. Returns how many documents will be resumed.
-
-    Assumes it runs in the only process serving the API (one uvicorn worker,
-    as the Dockerfile starts it): every 'running' job then belongs to a process
-    that no longer exists.
-    """
-    jobs.release_running(db)
-
+    """Give every stuck document a job. Returns how many will be resumed."""
     resumed = 0
     for doc in db.query(Document).filter(Document.status.in_(_STUCK)).all():
         if not jobs.active_job(db, doc.id):
@@ -33,9 +26,9 @@ def recover_stuck_documents(db: Session) -> int:
                 doc.error = doc.error or _MESSAGE
                 continue
             jobs.enqueue(db, doc.id, jobs.infer_content_type(doc.image_ref), doc.requested_doc_type)
-        if doc.status == lifecycle.PROCESSING:
-            doc.status = lifecycle.QUEUED
-            doc.progress = None
+            if doc.status == lifecycle.PROCESSING:
+                doc.status = lifecycle.QUEUED
+                doc.progress = None
         resumed += 1
     db.commit()
     return resumed

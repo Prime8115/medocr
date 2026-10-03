@@ -1,4 +1,6 @@
 """A restart, crash or deploy never loses a scan: interrupted work resumes."""
+from datetime import datetime, timedelta, timezone
+
 from app.models.document import Document
 from app.models.job import OcrJob
 from app.services import jobs
@@ -27,6 +29,7 @@ def test_a_scan_killed_mid_way_finishes_after_a_restart(client, db_session, monk
             db.get(Document, job.document_id).status = "processing"
             db.commit()
         finally:
+            jobs.let_go(job_id)  # the process is gone: nothing renews its lease
             db.close()
 
     monkeypatch.setattr(documents_api, "run_job", start_then_die)
@@ -41,15 +44,21 @@ def test_a_scan_killed_mid_way_finishes_after_a_restart(client, db_session, monk
         assert doc.status == "processing"
         assert s.query(OcrJob).one().status == "running"  # held by the "dead" process
 
-        # Restart.
+        # Restart. The dead process's job is left alone - nothing here can
+        # know its holder is dead - until its lease runs out unrenewed.
         assert recover_stuck_documents(s) == 1
-        assert s.get(Document, doc_id).status == "queued"
+        assert s.query(OcrJob).one().status == "running"
+        assert jobs.release_expired(s, 90) == 0
+        later = datetime.now(timezone.utc) + timedelta(seconds=91)
+        assert jobs.release_expired(s, 90, now=later) == 1
+        s.expire_all()
         assert s.query(OcrJob).one().status == "pending"
     finally:
         s.close()
 
     monkeypatch.setattr(documents_api, "process_document", lambda *_a, **_k: RESULT)
-    assert documents_api.run_due_jobs() == 1
+    monkeypatch.setattr(documents_api.storage, "load", lambda _ref: b"%PDF")
+    assert documents_api.run_due_jobs(now=later) == 1
 
     doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
     assert doc["status"] == "needs_review"
