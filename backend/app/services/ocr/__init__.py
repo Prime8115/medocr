@@ -117,21 +117,44 @@ def _resplit_unit(data: bytes, content_type: str):
 
 
 def _process_unit(provider, data, content_type, doc_type):
-    """Process one unit; on truncation re-split to single pages.
-    Returns (merged_fields_or_None, failed_pages)."""
+    """Process one unit; on unusable output re-split to single pages.
+    Returns (merged_fields_or_None, failed_pages, last_error_or_None).
+
+    The error comes back rather than being dropped: when nothing could be read,
+    it is the only explanation the pharmacist - and we - will get.
+    """
     try:
-        return _extract_one(provider, data, content_type, doc_type), 0
-    except (OCRError, ValueError):
+        return _extract_one(provider, data, content_type, doc_type), 0, None
+    except (OCRError, ValueError) as exc:
+        log.warning("extraction failed for a %d-byte %s unit: %s", len(data), content_type, exc)
+        # Smaller pieces fix a truncated or malformed answer, nothing else. An
+        # overloaded AI or a refused request would only fail once per page.
+        if getattr(exc, "kind", None) in ("busy", "rejected"):
+            return None, 1, exc
         pages = _resplit_unit(data, content_type)
         if len(pages) <= 1:
-            return None, 1
-        merged, failed = None, 0
+            return None, 1, exc
+        merged, failed, last = None, 0, exc
         for pdata, pct in pages:
             try:
                 merged = _merge_fields(doc_type, merged, _extract_one(provider, pdata, pct, doc_type))
-            except (OCRError, ValueError):
+            except (OCRError, ValueError) as page_exc:
+                log.warning("extraction failed for a single page: %s", page_exc)
                 failed += 1
-        return merged, failed
+                last = page_exc
+        return merged, failed, (last if merged is None else None)
+
+
+def _unreadable(prefix: str, exc) -> OCRError:
+    """The failure to report when nothing could be read, keeping the cause.
+
+    An overloaded AI keeps its own message, so the app can tell the pharmacist
+    to retry; anything else says what the AI actually objected to."""
+    if isinstance(exc, OCRError) and exc.kind == "busy":
+        return OCRError(str(exc), kind="busy")
+    if exc is None:
+        return OCRError(f"{prefix}.")
+    return OCRError(f"{prefix}: {exc}", kind=getattr(exc, "kind", None))
 
 
 def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=None):
@@ -150,9 +173,9 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     # Fast path: a single unit — run inline and surface errors.
     if len(units) == 1:
         data, ct, _n = units[0]
-        fields, failed = _process_unit(provider, data, ct, doc_type)
+        fields, failed, error = _process_unit(provider, data, ct, doc_type)
         if fields is None:
-            raise OCRError("Could not read the document.")
+            raise _unreadable("Could not read the document", error)
         return fields, failed, total_pages
 
     results: dict[int, tuple] = {}
@@ -175,14 +198,16 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
 
     merged = None
     failed_pages = 0
+    error = None
     for i in range(len(units)):
-        fields, failed = results.get(i, (None, 0))
+        fields, failed, unit_error = results.get(i, (None, 0, None))
         failed_pages += failed
+        error = error or unit_error
         if fields is not None:
             merged = _merge_fields(doc_type, merged, fields)
 
     if merged is None:
-        raise OCRError("Could not read any page of the document.")
+        raise _unreadable("Could not read any page of the document", error)
     return merged, failed_pages, total_pages
 
 

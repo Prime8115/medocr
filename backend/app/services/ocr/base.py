@@ -7,7 +7,19 @@ class OCRError(Exception):
 
     The API surfaces this as an explicit 'failed' document status. We never fall
     back to fabricated data — a pharmacy must never see an invented prescription.
+
+    `kind` says what went wrong, because the right response differs:
+      "busy"     - the AI is overloaded or rate-limited; retrying later will help.
+      "rejected" - the AI refused the request itself (bad key, bad model, schema
+                   it will not serve); retrying the same request will not help.
+      "output"   - the AI answered but the answer was unusable (truncated JSON);
+                   splitting the document into smaller pieces may help.
+      None       - anything else.
     """
+
+    def __init__(self, message: str = "", kind: str | None = None):
+        super().__init__(message)
+        self.kind = kind
 
 
 class OCRProvider(ABC):

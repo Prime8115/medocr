@@ -90,8 +90,10 @@ def _run_ocr_job(document_id: str, data: bytes, content_type: str, doc_type: Opt
         doc.error = None
         db.commit()
     except OCRError as exc:
+        log.warning("document %s failed: %s", document_id, exc)
         _mark_failed(db, document_id, str(exc))
     except Exception as exc:  # noqa: BLE001 — never leave "processing"
+        log.exception("document %s failed unexpectedly", document_id)
         _mark_failed(db, document_id, f"Unexpected error: {exc}")
     finally:
         if acquired:
