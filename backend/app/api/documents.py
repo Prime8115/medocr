@@ -201,6 +201,7 @@ async def submit_document(
     doc = Document(
         shop_id=user.shop_id,
         doc_type=doc_type or "prescription",
+        requested_doc_type=doc_type,
         status=lifecycle.QUEUED,
         image_ref=image_ref,
         created_by=user.id,
@@ -251,7 +252,9 @@ def retry_document(
     db.commit()
 
     background_tasks.add_task(
-        _run_ocr_job, doc.id, data, _infer_content_type(doc.image_ref), doc.doc_type
+        # The user's own choice, or None to detect again - never doc_type, which
+        # for an Auto upload that failed is only a placeholder.
+        _run_ocr_job, doc.id, data, _infer_content_type(doc.image_ref), doc.requested_doc_type
     )
     return DocumentResponse(document_id=doc.id, status=lifecycle.QUEUED)
 

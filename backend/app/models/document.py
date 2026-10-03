@@ -16,6 +16,11 @@ class Document(Base, TimestampMixin):
     id = Column(String(40), primary_key=True, default=gen_doc_id)
     shop_id = Column(String(32), ForeignKey("shops.id"), nullable=False, index=True)
     doc_type = Column(String(32), default="prescription", nullable=False)  # prescription | invoice
+    # The type the user picked at upload; NULL means "Auto". doc_type above holds
+    # a placeholder until the scan is read, so it must never stand in for this:
+    # a retry that did so forced Auto-uploaded invoices through the prescription
+    # reader.
+    requested_doc_type = Column(String(32), nullable=True)
     status = Column(String(32), default="queued", nullable=False, index=True)
     image_ref = Column(String(512), nullable=True)
     overall_confidence = Column(Float, nullable=True)
