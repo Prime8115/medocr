@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     ocr_busy_requeue_attempts: int = 5
     ocr_busy_requeue_base_delay: float = 20.0
     ocr_busy_requeue_max_delay: float = 300.0
+    # Extraction work is kept in the ocr_jobs table and run by a background
+    # worker, so a restart or deploy cannot lose a scan in flight. Tests turn
+    # the worker off and run due jobs explicitly.
+    ocr_worker_enabled: bool = True
+    ocr_worker_poll_seconds: float = 5.0
+    # A job "running" this long without progress is presumed dead and re-queued.
+    ocr_job_stale_seconds: float = 900.0
     # Large multi-page PDFs (e.g. long distributor invoices) are processed in
     # page-chunks and merged, to stay under the model's output-token limit.
     ocr_pdf_chunk_pages: int = 2

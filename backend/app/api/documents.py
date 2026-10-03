@@ -26,6 +26,7 @@ from app.models.audit_log import AuditLog
 from app.models.connector import Connector
 from app.models.document import Document
 from app.models.inventory import InventoryItem
+from app.models.job import OcrJob
 from app.models.user import User
 from app.schemas.connector import DeliveryOut
 from app.schemas.document import (
@@ -36,7 +37,7 @@ from app.schemas.document import (
     DocumentUpdate,
 )
 from app.schemas.extraction import validate_fields
-from app.services import lifecycle
+from app.services import jobs, lifecycle
 from app.services.connectors import service as connector_service
 from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
@@ -51,22 +52,14 @@ log = logging.getLogger(__name__)
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 ALLOWED_DOC_TYPES = {"prescription", "invoice"}
 
-# Regulate concurrent outbound OCR processing (smooth pacing for simultaneous user scans)
+# Bounds how many scans are read at once in this process, so a burst of uploads
+# queues here instead of hammering the AI all at once.
 _ocr_semaphore = threading.Semaphore(settings.ocr_max_concurrent_jobs)
 
 
 # Marks a scan put back in the queue because the AI was busy, so the app can say
 # it is waiting rather than reading.
 WAITING_PROGRESS = "waiting"
-
-
-def _schedule(delay: float, fn, *args) -> None:
-    """Run fn(*args) after `delay` seconds, off the request thread. A seam for
-    tests. A scan waiting here when the server restarts is caught by recovery
-    and offered for retry, like any other interrupted scan."""
-    timer = threading.Timer(delay, fn, args=args)
-    timer.daemon = True
-    timer.start()
 
 
 def _requeue_delay(attempt: int) -> float:
@@ -76,76 +69,134 @@ def _requeue_delay(attempt: int) -> float:
     )
 
 
-def _requeue_when_busy(db: Session, document_id: str, args: tuple, attempt: int) -> bool:
-    """Put a scan the AI was too busy to read back in the queue. Returns False
-    when it has already waited as long as we allow, so it should fail."""
-    if attempt >= settings.ocr_busy_requeue_attempts:
-        return False
-    doc = db.get(Document, document_id)
-    if not doc or not lifecycle.can_transition(doc.status, lifecycle.QUEUED):
-        return False
-    doc.status = lifecycle.QUEUED
-    doc.progress = WAITING_PROGRESS
-    db.commit()
-    delay = _requeue_delay(attempt)
-    log.info("document %s: AI busy, re-queued for %.0fs (attempt %d)", document_id, delay, attempt + 1)
-    _schedule(delay, _run_ocr_job, *args, attempt + 1)
-    return True
+def run_job(job_id: str) -> None:
+    """Read one queued scan. Safe to call from anywhere, any number of times:
+    only the caller that claims the job does the work.
 
-
-def _run_ocr_job(
-    document_id: str, data: bytes, content_type: str, doc_type: Optional[str], attempt: int = 0
-):
-    """Background OCR task with its own DB session and concurrency regulation.
-
-    `attempt` counts how many times the AI was too busy for this scan already."""
+    Called straight after an upload (so a scan starts at once, as before) and by
+    the worker for anything still due - a busy-AI retry whose wait is over, or a
+    scan whose process died mid-way. The work itself lives in the ocr_jobs
+    table, so a restart or deploy can no longer lose it.
+    """
     db = SessionLocal()
-    acquired = False
+    # A slot first, then the claim: a job left waiting for a slot stays in the
+    # queue for the worker, rather than being held by a thread doing nothing.
+    if not _ocr_semaphore.acquire(timeout=120):
+        db.close()
+        return
     try:
-        # Bounded concurrency: wait for a processing slot without crashing or overloading the AI API
-        acquired = _ocr_semaphore.acquire(timeout=120)
-        doc = db.get(Document, document_id)
-        if not doc:
+        if not jobs.claim(db, job_id):
             return
+        job = db.get(OcrJob, job_id)
+        _process_job(db, job)
+    finally:
+        _ocr_semaphore.release()
+        db.close()
+
+
+def _process_job(db: Session, job: OcrJob) -> None:
+    document_id = job.document_id
+    doc = db.get(Document, document_id)
+    if not doc:
+        jobs.finish(db, job, ok=False, error="document no longer exists")
+        db.commit()
+        return
+    try:
+        try:
+            data = storage.load(doc.image_ref)
+        except Exception as exc:  # noqa: BLE001
+            raise OCRError(f"Stored file could not be loaded: {exc}") from exc
+
         if lifecycle.can_transition(doc.status, lifecycle.PROCESSING):
             doc.status = lifecycle.PROCESSING
             doc.progress = None  # no longer waiting
             db.commit()
 
-        # Persist progress for long PDFs so the app can show "page 12/60".
+        # Persist progress for long PDFs so the app can show "page 12/60". It
+        # doubles as the job's heartbeat: a long scan that is still moving is
+        # never mistaken for a dead one and read a second time.
         def _on_progress(done: int, total: int):
+            job.locked_at = datetime.now(timezone.utc)
             if total > 1:
                 d = db.get(Document, document_id)
                 if d:
                     d.progress = f"{done}/{total}"
-                    db.commit()
+            db.commit()
 
-        result = process_document(document_id, data, content_type, doc_type, on_progress=_on_progress)
+        result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress)
 
         doc = db.get(Document, document_id)
-        if not doc:
-            return
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
         doc.status = lifecycle.NEEDS_REVIEW
         doc.progress = None
         doc.error = None
+        jobs.finish(db, job, ok=True)
         db.commit()
     except OCRError as exc:
-        if exc.kind == "busy" and _requeue_when_busy(
-            db, document_id, (document_id, data, content_type, doc_type), attempt
-        ):
+        db.rollback()
+        if exc.kind == "busy" and _requeue_when_busy(db, job, exc):
             return
         log.warning("document %s failed: %s", document_id, exc)
+        jobs.finish(db, job, ok=False, error=str(exc))
         _mark_failed(db, document_id, _public_message(exc), cause=str(exc))
     except Exception as exc:  # noqa: BLE001 — never leave "processing"
+        db.rollback()
         log.exception("document %s failed unexpectedly", document_id)
+        jobs.finish(db, job, ok=False, error=f"Unexpected error: {exc}")
         _mark_failed(db, document_id, _public_message(exc), cause=f"Unexpected error: {exc}")
+
+
+def _requeue_when_busy(db: Session, job: OcrJob, exc: OCRError) -> bool:
+    """Put a scan the AI was too busy to read back in the queue, due after a
+    wait. Returns False when it has already waited as long as we allow."""
+    attempt = job.busy_attempts or 0
+    if attempt >= settings.ocr_busy_requeue_attempts:
+        return False
+    doc = db.get(Document, job.document_id)
+    if not doc or not lifecycle.can_transition(doc.status, lifecycle.QUEUED):
+        return False
+    delay = _requeue_delay(attempt)
+    jobs.defer(db, job, delay, str(exc))
+    doc.status = lifecycle.QUEUED
+    doc.progress = WAITING_PROGRESS
+    db.commit()
+    log.info("document %s: AI busy, re-queued for %.0fs (attempt %d)", doc.id, delay, attempt + 1)
+    return True
+
+
+def run_due_jobs(now=None, limit: int = 50) -> int:
+    """Run every job due now (or by `now`), one after another. The worker's
+    unit of work, and how tests stand in for time passing."""
+    db = SessionLocal()
+    try:
+        ids = jobs.due_job_ids(db, limit, now=now)
     finally:
-        if acquired:
-            _ocr_semaphore.release()
         db.close()
+    ran = 0
+    for job_id in ids:
+        db = SessionLocal()
+        try:
+            claimed = jobs.claim(db, job_id, now=now)
+            if claimed:
+                with _ocr_semaphore:
+                    _process_job(db, db.get(OcrJob, job_id))
+                ran += 1
+        finally:
+            db.close()
+    return ran
+
+
+def _enqueue_and_start(
+    db: Session, background_tasks: BackgroundTasks, doc: Document, content_type: str, doc_type: Optional[str]
+) -> None:
+    job = jobs.enqueue(db, doc.id, content_type, doc_type)
+    db.commit()
+    # Start at once rather than waiting for the worker's next pass. If this
+    # process dies first, the job is still in the table and the worker or the
+    # startup recovery picks it up.
+    background_tasks.add_task(run_job, job.id)
 
 
 # What the pharmacist sees when a scan fails. The real cause - Gemini's own
@@ -211,19 +262,8 @@ async def submit_document(
     db.commit()
     db.refresh(doc)
 
-    background_tasks.add_task(_run_ocr_job, doc.id, data, file.content_type, doc_type)
+    _enqueue_and_start(db, background_tasks, doc, file.content_type, doc_type)
     return DocumentResponse(document_id=doc.id, status=doc.status)
-
-
-def _infer_content_type(ref: str) -> str:
-    r = (ref or "").lower()
-    if r.endswith(".pdf"):
-        return "application/pdf"
-    if r.endswith(".png"):
-        return "image/png"
-    if r.endswith(".webp"):
-        return "image/webp"
-    return "image/jpeg"
 
 
 @router.post("/{document_id}/retry", response_model=DocumentResponse)
@@ -242,7 +282,7 @@ def retry_document(
         raise HTTPException(status_code=400, detail="No stored image to re-process.")
 
     try:
-        data = storage.load(doc.image_ref)
+        storage.load(doc.image_ref)  # fail now, not in the background, if it is gone
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=410, detail="Stored image is no longer available.")
 
@@ -251,10 +291,10 @@ def retry_document(
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.retried", target=doc.id))
     db.commit()
 
-    background_tasks.add_task(
-        # The user's own choice, or None to detect again - never doc_type, which
-        # for an Auto upload that failed is only a placeholder.
-        _run_ocr_job, doc.id, data, _infer_content_type(doc.image_ref), doc.requested_doc_type
+    # The user's own choice, or None to detect again - never doc_type, which for
+    # an Auto upload that failed is only a placeholder.
+    _enqueue_and_start(
+        db, background_tasks, doc, jobs.infer_content_type(doc.image_ref), doc.requested_doc_type
     )
     return DocumentResponse(document_id=doc.id, status=lifecycle.QUEUED)
 
