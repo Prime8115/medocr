@@ -286,6 +286,9 @@ class ExtractionMeta(BaseModel):
     needs_manual_entry: bool = False
     text_source: Optional[str] = None   # "pdf_text" | "ocr" | "none"
     raw_text: Optional[str] = None
+    # The AI could not say whether it is an invoice or a prescription; it was
+    # read as an invoice and the reviewer is asked to check.
+    type_unsure: bool = False
 
 
 class ExtractionPayload(BaseModel):

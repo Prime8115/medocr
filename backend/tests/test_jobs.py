@@ -217,9 +217,13 @@ def test_the_worker_finishes_due_work_on_its_own(client, db_session, doc_id, job
     worker = Worker(poll_seconds=30, lease_seconds=LEASE, max_workers=2)
     try:
         assert worker.tick() == 1
-        for _ in range(100):  # the pool runs it in the background
-            if _job(db_session, job_id).status == "done":
-                break
+        # The pool runs it in the background. Wait for it to finish before
+        # looking: the in-memory test database is ONE connection shared by every
+        # thread, so reading while the job writes could roll its transaction back.
+        for _ in range(200):
+            with worker._lock:
+                if not worker._inflight:
+                    break
             time.sleep(0.05)
         assert _job(db_session, job_id).status == "done"
         s = db_session()

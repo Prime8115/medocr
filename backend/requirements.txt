@@ -21,6 +21,7 @@ slowapi>=0.1.9
 google-genai>=1.0.0
 pillow>=10.3.0
 python-dateutil>=2.9.0
+tzdata>=2024.1   # Gemini quota resets at midnight Pacific; slim images lack zoneinfo data
 rapidfuzz>=3.9.0
 pypdf>=4.0.0
 pdfplumber>=0.11.0

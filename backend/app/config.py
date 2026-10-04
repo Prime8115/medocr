@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     ocr_fallback_model: Optional[str] = "gemini-2.5-flash"
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
+    # Requests per minute the app allows itself per key and model, so it paces
+    # itself below Gemini's quota instead of being refused. The free tier allows
+    # about 15 for Flash-Lite; 0 turns the limit off (a paid key, say).
+    ocr_rpm_per_key: int = 10
+    # How long a scan may wait in place for a free slot before going back to
+    # the queue (which waits as long as Gemini said, without holding a worker).
+    ocr_rate_wait_max_seconds: float = 20.0
+    # When the day's Gemini quota is gone: "manual_entry" sends the scan for
+    # completion by hand at once; "wait" keeps it queued until the quota resets
+    # at midnight Pacific time.
+    ocr_daily_quota_mode: str = "manual_entry"
     # When the AI is still busy after those retries, the scan is put back in the
     # queue and read again later instead of failing: free-tier per-minute limits
     # clear within a minute, so waiting is usually all it needs. Waits double
