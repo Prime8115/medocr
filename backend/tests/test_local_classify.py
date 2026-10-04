@@ -79,3 +79,50 @@ def test_a_pdf_without_clear_text_still_asks_the_ai(monkeypatch):
     ocr.process_document("d", b"%PDF", "application/pdf", None)
 
     assert provider.classify_calls == 1
+
+
+# --- an unclear answer from the AI is never silently a prescription ---------
+
+@pytest.mark.parametrize("answer, expected", [
+    ("invoice", "invoice"),
+    ("Invoice.", "invoice"),
+    ("prescription", "prescription"),
+    ("'prescription'", "prescription"),
+    ("This is a purchase bill", "invoice"),
+    ("", None),
+    ("I cannot tell", None),
+    ("prescription or invoice", None),
+])
+def test_the_ais_answer_is_read_strictly(answer, expected):
+    from app.services.ocr.gemini import parse_classification
+
+    assert parse_classification(answer) == expected
+
+
+class UnsureProvider(CountingProvider):
+    def classify(self, file_bytes, content_type):
+        self.classify_calls += 1
+        return None
+
+
+def test_an_unclear_type_is_read_as_an_invoice_and_flagged(monkeypatch):
+    provider = UnsureProvider()
+    monkeypatch.setattr(ocr, "get_provider", lambda: provider)
+
+    out = ocr.process_document("d", b"img", "image/jpeg", None)
+
+    assert provider.extract_types == ["invoice"]
+    assert out["doc_type"] == "invoice"
+    assert out["meta"]["type_unsure"] is True
+    assert out["meta"]["warnings"][0] == ocr.TYPE_UNSURE_WARNING
+
+
+def test_a_clear_type_carries_no_warning(monkeypatch):
+    provider = CountingProvider()
+    monkeypatch.setattr(ocr, "get_provider", lambda: provider)
+
+    out = ocr.process_document("d", b"img", "image/jpeg", None)
+
+    assert out["doc_type"] == "prescription"
+    assert not out["meta"].get("type_unsure")
+    assert ocr.TYPE_UNSURE_WARNING not in out["meta"]["warnings"]

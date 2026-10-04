@@ -41,6 +41,7 @@ from app.services import jobs, lifecycle
 from app.services.connectors import service as connector_service
 from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
+from app.services.ocr.key_pool import next_quota_reset
 from app.services.ocr.postprocess import postprocess_fields
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
@@ -201,7 +202,13 @@ def _fail_job(db: Session, job_id: str, document_id: str, message: str, cause: s
 
 def _requeue_when_busy(db: Session, job_id: str, exc: OCRError) -> bool:
     """Put a scan the AI was too busy to read back in the queue, due after a
-    wait. Returns False when it has already waited as long as we allow."""
+    wait. Returns False when it has already waited as long as we allow - or
+    when the day's AI quota is gone and waiting for it is switched off
+    (OCR_DAILY_QUOTA_MODE=manual_entry): the pharmacist gets the scan for manual
+    entry now rather than tomorrow."""
+    daily = getattr(exc, "daily_quota", False)
+    if daily and settings.ocr_daily_quota_mode != "wait":
+        return False
     job = db.get(OcrJob, job_id)
     attempt = job.busy_attempts or 0
     if attempt >= settings.ocr_busy_requeue_attempts:
@@ -209,7 +216,10 @@ def _requeue_when_busy(db: Session, job_id: str, exc: OCRError) -> bool:
     doc = db.get(Document, job.document_id)
     if not doc or not lifecycle.can_transition(doc.status, lifecycle.QUEUED):
         return False
-    delay = _requeue_delay(attempt)
+    # Never sooner than Gemini said to come back - an earlier try is only refused again.
+    delay = max(_requeue_delay(attempt), getattr(exc, "retry_after", None) or 0.0)
+    if daily:
+        delay = max(delay, next_quota_reset() - time.time())
     if not jobs.defer(db, job_id, delay, str(exc)):
         db.rollback()
         return True  # no longer ours: whoever holds it decides
