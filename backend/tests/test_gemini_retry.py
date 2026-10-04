@@ -115,6 +115,7 @@ def test_multi_key_rotation_on_429(monkeypatch):
     out = p.extract(b"img", "image/jpeg", "prescription")
     assert out["patient"]["name"]["value"] == "Alice"
     assert pool.is_in_cooldown("keyA")
+    assert pool.is_in_cooldown("keyA", settings.ocr_model)
     assert not pool.is_in_cooldown("keyB")
 
 

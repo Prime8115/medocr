@@ -7,7 +7,9 @@ surfacing an error to the pharmacist on every hiccup.
 """
 import json
 import logging
+import re
 import time
+from typing import Optional, Tuple
 
 from app.config import settings
 from app.schemas.extraction import FIELDS_MODEL
@@ -29,6 +31,42 @@ def _is_transient(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return any(m in msg for m in _TRANSIENT_MARKERS)
+
+
+def _rate_limit_info(exc: Exception) -> Tuple[Optional[float], bool]:
+    """(seconds Gemini says to wait, whether the DAILY quota ran out).
+
+    A 429 from Gemini carries a RetryInfo ("retryDelay": "37s") and a
+    QuotaFailure naming the quota - "...PerDay..." when it is the day's quota,
+    which no amount of short retrying will bring back. Read from the structured
+    error when there is one, else from its text.
+    """
+    retry_after: Optional[float] = None
+    daily = False
+    details = getattr(exc, "details", None)
+    entries = []
+    if isinstance(details, dict):
+        entries = (details.get("error") or details).get("details") or []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        delay = entry.get("retryDelay")
+        if delay:
+            try:
+                retry_after = float(str(delay).rstrip("s"))
+            except ValueError:
+                pass
+        for violation in entry.get("violations") or []:
+            if "perday" in str(violation.get("quotaId", "")).lower():
+                daily = True
+    text = str(exc)
+    if retry_after is None:
+        m = re.search(r"retry(?:Delay|\s+in)['\":\s]+([\d.]+)\s*s", text, re.I)
+        if m:
+            retry_after = float(m.group(1))
+    if not daily and re.search(r"per\s*day", text, re.I):
+        daily = True
+    return retry_after, daily
 
 
 def _brief(exc: Exception, limit: int = 300) -> str:
@@ -101,6 +139,18 @@ def _is_schema_rejection(exc: OCRError) -> bool:
     )
 
 
+def parse_classification(answer: str) -> Optional[str]:
+    """'invoice' or 'prescription' when the AI's answer names exactly one of
+    them; None when it names neither or both - the caller decides what an
+    unclear answer means, rather than this quietly calling it a prescription."""
+    words = set(re.findall(r"[a-z]+", answer.lower()))
+    is_invoice = bool(words & {"invoice", "bill"})
+    is_rx = "prescription" in words
+    if is_invoice != is_rx:
+        return "invoice" if is_invoice else "prescription"
+    return None
+
+
 class GeminiProvider(OCRProvider):
     name = "gemini"
 
@@ -113,9 +163,11 @@ class GeminiProvider(OCRProvider):
         except ImportError as exc:  # pragma: no cover
             raise OCRError("google-genai is not installed.") from exc
         self._genai = genai
-        from app.services.ocr.key_pool import KeyPool
+        from app.services.ocr.key_pool import shared_pool
 
-        self._key_pool = key_pool or KeyPool(keys) if keys else None
+        # Shared across scans, so a cooldown or the day's quota learned on one
+        # scan is not rediscovered - by being refused - on every next one.
+        self._key_pool = key_pool or (shared_pool(keys, settings.ocr_rpm_per_key) if keys else None)
         self._client = None
         self._primary = settings.ocr_model
         self._fallback = settings.ocr_fallback_model
@@ -145,14 +197,19 @@ class GeminiProvider(OCRProvider):
         return "429" in msg or "resource_exhausted" in msg or "rate limit" in msg
 
     def _generate(self, model: str, contents, config=None):
-        """One or more attempts against a single model with key rotation and backoff on transient errors."""
+        """Attempts against one model: through the shared key pool (which rotates
+        keys, paces requests and remembers cooldowns), else a single client with
+        backoff. Raises QuotaWait when every key is out for this model."""
+        from app.services.ocr.key_pool import QuotaWait
+
         last_exc = None
         for attempt in range(1, self._max_retries + 1):
             if self._client is not None:
-                client = self._client
-                key = "default"
+                client, key = self._client, "default"
             elif self._key_pool is not None:
-                client, key = self._key_pool.get_client()
+                client, key = self._key_pool.acquire(
+                    model, max_wait=settings.ocr_rate_wait_max_seconds, sleep=self._sleep
+                )
             else:
                 client = self._genai.Client(api_key=settings.gemini_api_key)
                 key = "default"
@@ -163,19 +220,37 @@ class GeminiProvider(OCRProvider):
                 )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                if self._is_rate_limit(exc) and self._key_pool is not None:
-                    self._key_pool.mark_rate_limited(key, cooldown_seconds=45.0)
-                    if len(self._key_pool) > 1 and attempt < self._max_retries:
-                        continue
+                if self._is_rate_limit(exc):
+                    retry_after, daily = _rate_limit_info(exc)
+                    if self._key_pool is not None:
+                        # The pool now knows; the next acquire() picks another
+                        # key, waits briefly, or raises QuotaWait.
+                        self._key_pool.report_rate_limit(key, model, retry_after, daily)
+                        if attempt < self._max_retries:
+                            continue
+                    raise QuotaWait(model, retry_after or 60.0, daily) from exc
                 if not _is_transient(exc) or attempt == self._max_retries:
                     raise
-                # Exponential backoff (capped at 60s), for rate-limit recovery.
+                # Exponential backoff (capped at 60s) on an overloaded model.
                 self._sleep(min(60.0, self._base_backoff * (2 ** (attempt - 1))))
         raise last_exc  # pragma: no cover
 
     def _generate_with_fallback(self, contents, config=None):
         """Try the primary model (with retries); on persistent transient failure,
-        try the fallback model (with retries). Non-transient errors propagate."""
+        try the fallback model, which has a quota of its own. Non-transient errors
+        propagate. A busy outcome says how long to wait, and whether it is the
+        day's quota on both models."""
+        from app.services.ocr.key_pool import QuotaWait
+
+        def busy(exc: Exception, others: Tuple[Exception, ...] = ()) -> OCRError:
+            waits = [e for e in (exc,) + others if isinstance(e, QuotaWait)]
+            retry_after = min((w.retry_after for w in waits), default=None)
+            daily = bool(waits) and len(waits) == 1 + len(others) and all(w.daily for w in waits)
+            return OCRError(
+                f"AI service is busy. Please retry in a moment. [{_brief(exc)}]",
+                kind="busy", retry_after=retry_after, daily_quota=daily,
+            )
+
         try:
             return self._generate(self._primary, contents, config)
         except Exception as exc:  # noqa: BLE001
@@ -187,22 +262,16 @@ class GeminiProvider(OCRProvider):
                         raise OCRError(
                             f"AI request was rejected: {_brief(exc2)}", kind="rejected"
                         ) from exc2
-                    raise OCRError(
-                        f"AI service is busy (both models overloaded). Please retry. [{_brief(exc2)}]",
-                        kind="busy",
-                    ) from exc2
+                    raise busy(exc2, (exc,)) from exc2
             if _is_transient(exc):
-                raise OCRError(
-                    f"AI service is busy. Please retry in a moment. [{_brief(exc)}]", kind="busy"
-                ) from exc
+                raise busy(exc) from exc
             raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
 
     def classify(self, file_bytes: bytes, content_type: str) -> str:
         resp = self._generate_with_fallback(
             self._content_parts(CLASSIFY_PROMPT, file_bytes, content_type)
         )
-        text = (getattr(resp, "text", "") or "").strip().lower()
-        return "invoice" if "invoice" in text else "prescription"
+        return parse_classification(getattr(resp, "text", "") or "")
 
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
         prompt = EXTRACTION_PROMPT.get(doc_type)

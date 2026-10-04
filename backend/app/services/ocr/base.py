@@ -17,9 +17,14 @@ class OCRError(Exception):
       None       - anything else.
     """
 
-    def __init__(self, message: str = "", kind: str | None = None):
+    def __init__(self, message: str = "", kind: str | None = None,
+                 retry_after: float | None = None, daily_quota: bool = False):
         super().__init__(message)
         self.kind = kind
+        # For "busy": how long Gemini said to wait, and whether the day's quota
+        # is what ran out - so the queue waits as long as needed, no longer.
+        self.retry_after = retry_after
+        self.daily_quota = daily_quota
 
 
 class OCRProvider(ABC):

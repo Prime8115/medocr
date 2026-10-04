@@ -37,6 +37,11 @@ __all__ = ["process_document", "get_provider", "OCRError"]
 
 log = logging.getLogger(__name__)
 
+TYPE_UNSURE_WARNING = (
+    "We could not tell whether this is an invoice or a prescription, so it was read as an "
+    "invoice. If it is a prescription, scan it again with the type set to Prescription."
+)
+
 # List keys per doc type that accumulate across PDF page-chunks.
 _LIST_KEY = {"invoice": "line_items", "prescription": "medications"}
 
@@ -353,9 +358,19 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
             else:
                 classify_bytes = split_pdf(file_bytes, 1)[0]
         doc_type = provider.classify(classify_bytes, classify_ct)
-    resolved_type = doc_type if doc_type in ("prescription", "invoice") else "prescription"
+    # An unclear answer is never silently a prescription. It is read as an
+    # invoice - what this app is mostly sent, and the form with more fields to
+    # correct - and the pharmacist is told to check the type.
+    unsure = doc_type not in ("prescription", "invoice")
+    resolved_type = "invoice" if unsure else doc_type
+    if unsure:
+        log.warning("document %s: type unclear (%r); reading it as an invoice", document_id, doc_type)
 
     fields, failed_pages, total_pages = _extract_chunked(
         provider, file_bytes, content_type, resolved_type, on_progress=on_progress
     )
-    return _finalize(resolved_type, fields, provider.name, total_pages, failed_pages)
+    result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages)
+    if unsure:
+        result["meta"].setdefault("warnings", []).insert(0, TYPE_UNSURE_WARNING)
+        result["meta"]["type_unsure"] = True
+    return result
