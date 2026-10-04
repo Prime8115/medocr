@@ -62,3 +62,44 @@ def register_and_login(client, email="owner@shop.com", password="password123", s
     resp = client.post("/v1/auth/login", data={"username": email, "password": password})
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+def sample_image(marker: str = "") -> bytes:
+    """A real, readable PNG - uploads are checked now, so fake bytes are
+    refused. Each call gives a different file (uploading the same file twice
+    opens the earlier scan). `marker` (e.g. "INVOICE") is written into the
+    file where the mock OCR provider looks for it."""
+    import io
+    import uuid
+
+    from PIL import Image, ImageDraw
+    from PIL.PngImagePlugin import PngInfo
+
+    img = Image.new("RGB", (400, 300), "white")
+    draw = ImageDraw.Draw(img)
+    draw.text((20, 20), f"{marker or 'Rx'} {uuid.uuid4().hex[:8]}", fill="black")
+    draw.rectangle((20, 60, 380, 280), outline="black", width=3)
+    info = PngInfo()
+    info.add_text("m", f"{marker} {uuid.uuid4().hex}")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def sample_pdf(*pages: str) -> bytes:
+    """A real PDF with a page of text per argument (one unique page if none)."""
+    import io
+    import uuid
+
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    for text in pages or (f"Document {uuid.uuid4().hex}",):
+        y = 800
+        for line in text.splitlines() or [""]:
+            c.drawString(40, y, line)
+            y -= 16
+        c.showPage()
+    c.save()
+    return buf.getvalue()

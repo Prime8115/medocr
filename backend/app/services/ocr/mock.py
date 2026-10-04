@@ -16,7 +16,7 @@ class MockProvider(OCRProvider):
 
     def classify(self, file_bytes: bytes, content_type: str) -> str:
         # Heuristic for tests: callers can bias via a magic marker in the bytes.
-        if b"INVOICE" in file_bytes[:64].upper():
+        if b"INVOICE" in file_bytes.upper():
             return "invoice"
         return "prescription"
 

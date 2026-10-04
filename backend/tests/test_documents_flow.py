@@ -3,15 +3,15 @@ submit -> review -> correct (PATCH) -> approve -> push.
 """
 from app.config import settings
 from app.models.connector import Connector
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_image
 
 
 def _shop_id(client, headers):
     return client.get("/v1/auth/me", headers=headers).json()["shop_id"]
 
 
-def _submit(client, headers, content=b"fake-image", filename="rx.jpg", ctype="image/jpeg", doc_type=None):
-    files = {"file": (filename, content, ctype)}
+def _submit(client, headers, content=None, filename="rx.png", ctype="image/png", doc_type=None):
+    files = {"file": (filename, content if content is not None else sample_image(), ctype)}
     data = {"doc_type": doc_type} if doc_type else {}
     return client.post("/v1/documents/", files=files, data=data, headers=headers)
 
@@ -43,7 +43,7 @@ def test_submit_invoice_explicit_type(client, mock_ocr):
 def test_autodetect_invoice(client, mock_ocr):
     headers = register_and_login(client)
     # Mock classifier keys off an "INVOICE" marker in the bytes; no doc_type given.
-    doc_id = _submit(client, headers, content=b"INVOICE supplier bill data").json()["document_id"]
+    doc_id = _submit(client, headers, content=sample_image("INVOICE")).json()["document_id"]
     doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
     assert doc["doc_type"] == "invoice"
 

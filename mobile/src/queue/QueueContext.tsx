@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 
 import { uploadDocument } from '../api/documents';
+import { refusalMessage } from '../lib/upload';
 import {
   QueueItem,
   enqueue,
@@ -59,7 +60,7 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
         if (!item || !online.current) break;
         persist(updateItem(itemsRef.current, item.id, { status: 'uploading' }));
         try {
-          const documentId = await uploadDocument(
+          const { document_id: documentId } = await uploadDocument(
             { uri: item.uri, name: item.fileName, type: item.contentType },
             item.docType,
           );
@@ -69,7 +70,8 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
             updateItem(itemsRef.current, item.id, {
               status: 'error',
               attempts: item.attempts + 1,
-              error: e instanceof Error ? e.message : 'upload failed',
+              // A file the server refused says why; a dropped connection does not.
+              error: refusalMessage(e) ?? (e instanceof Error ? e.message : 'upload failed'),
             }),
           );
         }

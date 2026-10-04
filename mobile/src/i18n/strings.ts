@@ -21,6 +21,11 @@ const en = {
   cameraPermission: 'We need camera access to scan documents',
   grantPermission: 'Grant permission',
   framingHint: 'Fit the document inside the frame',
+  cannotRead: 'Cannot use this file',
+  alreadyScanned: 'Already scanned',
+  openEarlier: 'Open earlier scan',
+  scanAgain: 'Scan again anyway',
+  uploaded: 'Uploaded',
   // Review
   review: 'Review',
   patient: 'Patient',

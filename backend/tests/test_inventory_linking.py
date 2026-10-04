@@ -1,6 +1,6 @@
 """Approving a document links its line items to inventory SKUs (for stock update)."""
 from app.services.inventory.matching import enrich_payload_with_matches
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_image
 
 
 class FakeItem:
@@ -52,7 +52,7 @@ def test_approve_links_inventory_and_push_carries_sku(client, mock_ocr, db_sessi
         s.close()
 
     # Upload an invoice (mock), approve, and confirm the matched SKU is attached.
-    files = {"file": ("inv.jpg", b"INVOICE data", "image/jpeg")}
+    files = {"file": ("inv.png", sample_image("INVOICE"), "image/png")}
     doc_id = client.post("/v1/documents/", files=files, data={"doc_type": "invoice"}, headers=headers).json()["document_id"]
     assert client.get(f"/v1/documents/{doc_id}", headers=headers).json()["status"] == "needs_review"
 
