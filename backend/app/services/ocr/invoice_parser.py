@@ -830,6 +830,34 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     return None
 
 
+def _infer_description_column(rows, cols: dict, width: int) -> Optional[int]:
+    """The column holding the medicine name, when no header named it.
+
+    Judged on the data, not the heading: the description is the leftmost
+    unclaimed column whose cells are mostly words. Requires real evidence - at
+    least two rows and a clear majority - so a stray text cell in a numeric
+    column cannot be mistaken for the product name.
+    """
+    claimed = set(cols.values())
+    for idx in range(min(width, 6)):          # a product name is never far right
+        if idx in claimed:
+            continue
+        wordy = total = 0
+        for row in rows:
+            if idx >= len(row):
+                continue
+            cell = _clean(row[idx])
+            if not cell:
+                continue
+            total += 1
+            # "words" means letters that are not just a code or a figure.
+            if sum(c.isalpha() for c in cell) >= 3 and not _NUM.fullmatch(cell.replace(" ", "")):
+                wordy += 1
+        if total >= 2 and wordy * 2 > total:
+            return idx
+    return None
+
+
 def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
                       local: Optional[str] = None) -> List[dict]:
     """Line items from whichever of these tables is the line-item table."""
@@ -840,6 +868,16 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             continue
         header_row = table[hi]
         cols = _map_columns(header_row)
+        if "description" not in cols:
+            # OCR of a scan regularly loses one header word, and "Description"
+            # is a common casualty - Kanchan's whole table was rejected for it
+            # even though every row carried the product name. A line-item table
+            # always HAS a product name, and it is the leftmost column that
+            # holds words rather than figures, so infer it rather than discard
+            # the invoice.
+            inferred = _infer_description_column(table[hi + 1:], cols, len(header_row))
+            if inferred is not None:
+                cols = {**cols, "description": inferred}
         if "description" not in cols or ("quantity" not in cols and "batch_no" not in cols):
             continue  # not a line-item table we understand
         gst_cols = _gst_columns(header_row)
@@ -849,6 +887,85 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             if item:
                 out.append(item)
     return out
+
+
+def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
+    """Read a SCANNED invoice's table with Tesseract instead of the paid model.
+
+    Identical in shape to `parse_invoice_pdf`, and deliberately built from the
+    same pieces: Tesseract supplies positioned words, `tables_from_words`
+    rebuilds the columns, and `_rows_from_tables` turns them into line items -
+    the very code the digital invoices proved. Header fields come from the same
+    patterns too.
+
+    Returns None whenever it cannot do the job, and the caller then uses the AI
+    exactly as before. Declining is not a failure: a wrong number read off a
+    scan would become wrong stock, so the bar for keeping this reading is that
+    the invoice reconciles - which the caller checks.
+    """
+    from app.services.ocr import tesseract_table
+
+    if not tesseract_table.available():
+        return None
+
+    pages = tesseract_table.words_per_page(data, content_type)
+    if not pages or not any(pages):
+        return None
+
+    labels: dict = {}
+    line_items: List[dict] = []
+    meta = None
+    page_texts: List[str] = []
+    interstate: Optional[bool] = None
+    local_head: Optional[str] = None
+
+    for words in pages:
+        if not words:
+            page_texts.append("")
+            continue
+        text = tesseract_table.words_to_text(words)
+        page_texts.append(text)
+        if meta is None:
+            # The header is read from the OCR text. There is no x-column
+            # separation to lean on here, so the party blocks come from the flat
+            # text and may interleave - the reconciliation check below is what
+            # keeps a bad reading out.
+            meta = _extract_header_meta(text, [(0.0, ln) for ln in text.splitlines()])
+            local_head = local_tax_head(
+                (meta.get("supplier", {}).get("gstin") or {}).get("value"),
+                (meta.get("bill_to", {}).get("gstin") or {}).get("value"),
+            )
+            interstate = is_interstate(
+                (meta.get("supplier", {}).get("gstin") or {}).get("value"),
+                (meta.get("bill_to", {}).get("gstin") or {}).get("value"),
+            )
+        line_items.extend(
+            _rows_from_tables(
+                tesseract_table.tables_from_words(words), labels, interstate, local_head
+            )
+        )
+
+    if not line_items:
+        return None
+
+    fields = meta or {"supplier": {}, "invoice": {}}
+    full_text = "\n".join(page_texts)
+    if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
+        fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+
+    invoice_meta = fields.setdefault("invoice", {})
+    for key, value in sum_line_totals(line_items).items():
+        if not (invoice_meta.get(key) or {}).get("value"):
+            invoice_meta[key] = _f(value)
+
+    fields["line_items"] = line_items
+    fields["_hints"] = {
+        "copies_detected": 1,
+        "stated_item_count": _extract_item_count(full_text),
+        "price_labels": labels,
+        "document_text": full_text,
+    }
+    return fields
 
 
 def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[dict]:

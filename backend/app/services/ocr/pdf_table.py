@@ -191,7 +191,7 @@ def _is_record_start(cells: List[str], numeric_columns: Sequence[int]) -> bool:
 
 
 def extract_word_tables(page) -> List[List[List[str]]]:
-    """Rebuild line-item tables from word positions. Same shape as extract_tables()."""
+    """Rebuild line-item tables from a PDF page's word positions."""
     try:
         words = page.extract_words(
             keep_blank_chars=False, use_text_flow=False, x_tolerance=WORD_TOLERANCE
@@ -199,6 +199,20 @@ def extract_word_tables(page) -> List[List[List[str]]]:
     except Exception as exc:  # noqa: BLE001 - a page we cannot read is not fatal
         log.debug("pdf_table: extract_words failed (%s)", exc)
         return []
+    return tables_from_words(words)
+
+
+def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
+    """Rebuild line-item tables from positioned words. Same shape as extract_tables().
+
+    The words may come from anywhere that can say where each one sits - a
+    digital PDF's own text, or Tesseract reading a scan. Everything below works
+    on coordinates alone, so a scanned invoice goes through exactly the column
+    logic that was proven on the digital ones, rather than a second
+    implementation that would drift from it.
+
+    Each word needs `text`, `x0`, `x1` and `top`.
+    """
     if not words:
         return []
 
