@@ -33,7 +33,9 @@ from app.services.ocr.invoice_header import (
     party_regions,
     sum_line_totals,
     supplier_extras,
+    supplier_gstin_for_pan,
 )
+from app.services.ocr.invoice_checks import line_arithmetic_holds
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables
 
 log = logging.getLogger(__name__)
@@ -43,7 +45,8 @@ log = logging.getLogger(__name__)
 # Order of this dict matters: earlier fields claim their column first.
 _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "description": (
-        ["productname", "itemname", "description", "particulars", "product", "item", "goods", "medicine"],
+        ["productname", "itemname", "description", "proddesc", "particulars", "product",
+         "desc", "item", "goods", "medicine"],
         ["hsn", "code", "qty", "rate", "amount"],
     ),
     "hsn": (["hsncode", "hsn"], []),
@@ -51,7 +54,10 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "manufacturer": (["mfgname", "manufacturername", "manufacturer", "mfgco", "company"], ["code", "date", "cd"]),
     # Excludes "exp": Bharat heads one column "Exp.date / Mfg.date", and the
     # expiry is the field a pharmacist actually needs, so it claims that column.
-    "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp"]),
+    # Excludes "batch" too: Menarini stacks "Batch No" over "Mfg.Date" in ONE
+    # column, where the record line carries the BATCH and the wrapped line below
+    # carries the date. Letting mfg_date claim it left every batch number blank.
+    "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp", "batch"]),
     "uom": (["uom", "unitofmeasure"], []),
     "batch_no": (["batchno", "batch", "lotno", "lot", "bno", "btno"], ["bill", "sr", "inv"]),
     # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
@@ -65,7 +71,7 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "quantity": (["quantity", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
     "mrp": (["mrp"], ["%"]),
     "ptr": (["pricetoretailer", "retailerprice", "ptr"], ["%"]),
-    "pts": (["pricetostockist", "stockistprice", "pts"], ["%"]),
+    "pts": (["pricetostockist", "stockistprice", "distributorprice", "distprice", "pts"], ["%"]),
     # An explicit billed-rate column. "NIR" (Net Invoice Rate) is tried first
     # because Bharat prints it beside a bare CGST "Rate" column that would
     # otherwise win. GST rate columns are excluded outright.
@@ -82,8 +88,14 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "wp_amount": (["wpamt", "wpamount", "wpvalue"], ["%"]),
     "scheme": (["schemedesc", "schemedescription", "schemename", "scheme"], ["%", "qty", "amt", "value"]),
     "scheme_value": (["schemevalue", "schemeamt", "schemeamount"], ["%"]),
-    "gross_amount": (["grossamount", "grossamt", "grossvalue"], ["%"]),
-    "net_amount": (["netamount", "netamt", "netvalue"], ["%"]),
+    # "Sale Value" (Overseas) is the line BEFORE its discount - a gross figure.
+    # Left to `amount`, it overstated every line by the discount.
+    "gross_amount": (["grossamount", "grossamt", "grossvalue", "grosstotal", "gross",
+                      "salevalue"], ["%"]),
+    # "Total Amount" (Menarini) is the line INCLUDING tax - a net amount, not
+    # the taxable one. Excluded from anything taxable so the column the bill
+    # actually sums still goes to `amount`.
+    "net_amount": (["netamount", "netamt", "netvalue", "totalamount"], ["%", "taxable"]),
     "utgst_percent": (["utgst%", "utgstrate"], ["amt", "amount"]),
     "utgst_amount": (["utgstamt", "utgstamount"], ["%", "rate"]),
     "scheme_percent": (["sch%", "scheme%", "schemediscount"], ["amt", "qty"]),
@@ -103,7 +115,11 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # they are no longer allowed to stand in for this one.
     "amount": (
         ["taxableamount", "taxablevalue", "taxableamt", "amount", "value", "total"],
-        ["%", "gross", "net"],
+        # A tax column is not the line's own amount, and neither is a discount
+        # column. Overseas prints "Disc Value" and "CGST Amount" beside its
+        # taxable "Trans. Value"; without these, the sum of the invoice was the
+        # sum of its discounts.
+        ["%", "gross", "net", "disc", "cgst", "sgst", "igst", "utgst"],
     ),
 }
 
@@ -203,6 +219,15 @@ def _gst_columns(header_row) -> List[int]:
             continue
         if "%" in str(c) or "rate" in h:
             out.append(idx)
+        elif not any(w in h for w in ("amt", "amount", "value")):
+            # A BARE tax heading - V L Enterprises heads its pair just "CGST"
+            # and prints "9.00 655.67" beneath it, the rate and the tax in one
+            # cell. The heading cannot say which, so it goes through the same
+            # arithmetic as every other merged tax cell: a figure at or below
+            # the maximum GST rate is the rate, the next one is the amount.
+            # Mapping a bare heading straight to the amount would have posted
+            # 9% as nine rupees of tax on every line of that invoice.
+            out.append(idx)
     return out
 
 
@@ -298,11 +323,19 @@ _TOTAL_PATTERNS = [
     r"grand\s*total",
     r"bill\s*amount",
     r"invoice\s*(?:total|amount|value)",
+    r"total\s*invoice",
     r"net\s*amount",
     r"total\s*amount",
     r"amount\s*payable",
 ]
 _MONEY = r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]{2,})"
+
+# What a supplier may print between the label and the figure. Menarini heads its
+# grand total "Net Payable Amt : 54,058.00" - with "Amt" in the way, the label
+# did not match and the bill's TAXABLE total ("Net Amount 46870.98", 7,187 less)
+# was read as the amount due. Only these few words are allowed through, so the
+# pattern cannot skip across a label to a neighbouring column's figure.
+_TOTAL_TAIL = r"(?:\s*(?:amt|amount|value|payable|due|rs|inr)\.?){0,2}\s*[:\-]?\s*"
 
 
 def _extract_total(text: str) -> Optional[str]:
@@ -312,7 +345,7 @@ def _extract_total(text: str) -> Optional[str]:
     Serums) is the only place the grand total appears at all.
     """
     for pattern in _TOTAL_PATTERNS:
-        matches = re.findall(pattern + r"\s*[:\-]?\s*" + _MONEY, text or "", re.I)
+        matches = re.findall(pattern + _TOTAL_TAIL + _MONEY, text or "", re.I)
         if matches:
             # The last occurrence is the foot of the bill.
             return matches[-1].replace(",", "")
@@ -520,6 +553,19 @@ def _extract_header_meta(
     party_text = "\n".join((parties or {}).values())
     for key, value in supplier_extras(own or text, party_text).items():
         supplier[key] = _f(value)
+
+    # A GSTIN carries its owner's PAN in characters 3-12, so the supplier's two
+    # identifiers have to agree. Abbott prints the BUYER's GSTIN inside the
+    # supplier's own block and its own only in the page footer, so we filed
+    # Abbott's purchases under the pharmacy's own GSTIN - which corrupts both
+    # the purchase record and the input-tax credit claimed against it.
+    better = supplier_gstin_for_pan(
+        (supplier.get("pan") or {}).get("value"),
+        (supplier.get("gstin") or {}).get("value"),
+        text,
+    )
+    if better:
+        supplier["gstin"] = _f(better)
 
     # Bill-to and Ship-to, each read from its own column.
     regions = parties or {}
@@ -748,12 +794,19 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         if not numbers:
             continue
         rate = next((n for n in numbers if 0 <= n <= _MAX_GST_PERCENT), None)
+        head = _norm(header_row[gi]) if gi < len(header_row) else ""
+        which = _tax_head(head, interstate, local)
         if rate is None:
+            # No figure here can be a rate, so the cell holds the TAX ITSELF.
+            # Menarini heads its column just "CGST" and prints 28.08 under it,
+            # with the 2.50% on the wrapped line below; 28.08 exceeds India's
+            # top slab, so it is money, not a percentage. Dropping the cell for
+            # want of a rate lost the tax on every line of that invoice.
+            if not (item.get(f"{which}_amount") or {}).get("value"):
+                item[f"{which}_amount"] = _f(f"{numbers[-1]:.2f}")
             continue
         gst_vals.append(rate)
 
-        head = _norm(header_row[gi]) if gi < len(header_row) else ""
-        which = _tax_head(head, interstate, local)
         if not (item.get(f"{which}_percent") or {}).get("value"):
             item[f"{which}_percent"] = _f(f"{rate:g}")
         amounts = [n for n in numbers if n is not rate]
@@ -858,6 +911,75 @@ def _infer_description_column(rows, cols: dict, width: int) -> Optional[int]:
     return None
 
 
+def _better_reading(word_items: List[dict], ruled_items: List[dict]) -> bool:
+    """Whether the coordinate rebuild beat the ruled-table extraction.
+
+    Row count used to decide this, with ruled winning ties because it is exact
+    when the invoice really draws its grid. But a "table" found by its rules is
+    not necessarily the LINE-ITEM table. Overseas draws one box around the whole
+    page: `extract_tables()` hands back 25 rows of mostly empty cells that yield
+    exactly ONE item - tying with the rebuilder's one CORRECT item and winning
+    on the tie. That item had no quantity, the expiry in the mfg-date field, and
+    a 6.00 tax RATE where the amount belongs.
+
+    So the rows are judged on whether their arithmetic works - quantity x price
+    against the line amount, the same test `validate_line_arithmetic` applies -
+    and only then on how many there are. A page border cannot fake that.
+    """
+    def score(items: List[dict]) -> int:
+        return sum(1 for item in items if line_arithmetic_holds(item))
+
+    word_score, ruled_score = score(word_items), score(ruled_items)
+    if word_score != ruled_score:
+        return word_score > ruled_score
+    # Neither is more self-consistent: fall back to the old rule, which keeps
+    # the ruled path on Kanchan and Zydus where it has always been right.
+    return len(word_items) > len(ruled_items)
+
+
+# Words that only ever appear as a SUB-heading under another one, never as a
+# column heading in their own right. A row made of these is the second half of
+# a stacked header, not a line item.
+_SUBHEADINGS = ("%", "amount", "amt", "rate", "value", "qty", "no", "date", "free")
+
+
+def _merge_stacked_header(table, hi: int):
+    """A stacked ruled header as one header row, plus where the data starts.
+
+    V L Enterprises heads its tax pair across two ruled rows - "CGST" spanning
+    two cells on one row, then "%" and "AMOUNT" beneath them. Read as a single
+    row, both of its tax columns are headed just "CGST" and the amount is
+    indistinguishable from the rate. The word-coordinate path already stitches
+    stacked headers together; the ruled path did not, so the sub-heading row was
+    treated as a line item and the tax amounts reached no field at all.
+
+    The parent is carried across its children, so "AMOUNT" under "CGST" becomes
+    "CGST AMOUNT" - but only where a child actually exists, leaving the blank
+    cells a ruled grid is full of alone.
+    """
+    if hi + 1 >= len(table):
+        return table[hi], hi + 1
+    below = table[hi + 1]
+    cells = [str(c or "").strip() for c in below]
+    filled = [c for c in cells if c]
+    if not filled or len(filled) > len(cells):
+        return table[hi], hi + 1
+    # Every filled cell must be a sub-heading word, and none of them a figure.
+    if not all(_norm(c) in _SUBHEADINGS or _norm(c).strip("%") in _SUBHEADINGS
+               for c in filled):
+        return table[hi], hi + 1
+
+    header = [str(c or "").strip() for c in table[hi]]
+    merged, parent = [], ""
+    for i, own in enumerate(header):
+        child = cells[i] if i < len(cells) else ""
+        if own:
+            parent = own
+        label = f"{parent} {child}".strip() if child else own
+        merged.append(label)
+    return merged, hi + 2
+
+
 def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
                       local: Optional[str] = None) -> List[dict]:
     """Line items from whichever of these tables is the line-item table."""
@@ -866,7 +988,7 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
         hi = _find_header_row(table)
         if hi is None:
             continue
-        header_row = table[hi]
+        header_row, data_from = _merge_stacked_header(table, hi)
         cols = _map_columns(header_row)
         if "description" not in cols:
             # OCR of a scan regularly loses one header word, and "Description"
@@ -875,14 +997,14 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             # always HAS a product name, and it is the leftmost column that
             # holds words rather than figures, so infer it rather than discard
             # the invoice.
-            inferred = _infer_description_column(table[hi + 1:], cols, len(header_row))
+            inferred = _infer_description_column(table[data_from:], cols, len(header_row))
             if inferred is not None:
                 cols = {**cols, "description": inferred}
         if "description" not in cols or ("quantity" not in cols and "batch_no" not in cols):
             continue  # not a line-item table we understand
         gst_cols = _gst_columns(header_row)
         labels.update(price_labels(cols, header_row))
-        for row in table[hi + 1:]:
+        for row in table[data_from:]:
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
                 out.append(item)
@@ -1051,7 +1173,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                 word_labels: dict = {}
                 ruled_items = _rows_from_tables(page.extract_tables() or [], ruled_labels, interstate, local_head)
                 word_items = _rows_from_tables(extract_word_tables(page), word_labels, interstate, local_head)
-                if len(word_items) > len(ruled_items):
+                if _better_reading(word_items, ruled_items):
                     labels.update(word_labels)
                     page_items[page_no] = word_items
                 else:

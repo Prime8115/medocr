@@ -35,13 +35,23 @@ _NOISE = re.compile(
 _MAX_PLAUSIBLE_TOTAL = 100_000_000
 
 _LABEL = re.compile(
-    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*[:\-]\s*(?P<words>[A-Za-z \-]{10,200})"
+    # A COLON is required after the label, not a colon-or-dash. A bare hyphen is
+    # never a label separator on these bills, but it is everywhere inside the
+    # numbers themselves: on "RUPEES FIFTY-FOUR THOUSAND FIFTY-EIGHT ONLY" the
+    # old pattern took the hyphen in "FIFTY-FOUR" for the separator and read the
+    # remainder, "EIGHT ONLY", as the amount - 8 rupees for a 54,058 bill.
+    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*:-?\s*(?P<words>[A-Za-z \-]{10,200})"
     # Tally prints "Amount Chargeable (in words)" with the figure on the NEXT
     # line and no colon - MSV Lifesciences - and a scanner may garble the
     # words before "(in words)". The bracketed label alone is enough.
     r"|\(\s*in\s*words\s*\)\s*[:\-;]?\s*(?P<words2>[A-Za-z \-]{10,200})"
     # ...and with scanner noise after it on the same line ("oo an 7 E&OE").
-    r"|\(\s*in\s*words\s*\)[^\n]{0,40}\n\s*(?P<words3>[A-Za-z \-]{10,200})",
+    r"|\(\s*in\s*words\s*\)[^\n]{0,40}\n\s*(?P<words3>[A-Za-z \-]{10,200})"
+    # "RUPEES FIFTY-FOUR THOUSAND FIFTY-EIGHT ONLY" (Menarini) - the commonest
+    # Indian form, carrying no "in words" label and no colon at all. Without it
+    # the first alternative matched "rupees", then took the hyphen inside
+    # "FIFTY-FOUR" for the label separator, and the line parsed as 8.
+    r"|\brupees?\s+(?P<words4>[A-Za-z][A-Za-z \-]{9,200}?)\s+only\b",
     re.I,
 )
 
@@ -143,7 +153,8 @@ def total_from_words(text: str) -> Optional[str]:
         before = (text or "")[max(0, match.start() - 16):match.start()]
         if _TAX_LABEL.search(before):
             continue
-        words = match.group("words") or match.group("words2") or match.group("words3")
+        words = (match.group("words") or match.group("words2")
+                 or match.group("words3") or match.group("words4"))
         value = _words_to_int(words)
         # A pharmacy invoice below a rupee, or above ten crore, is a misparse
         # rather than a total. A wrong total is worse than no total: it would

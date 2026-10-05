@@ -105,15 +105,75 @@ _TOTALS: Dict[str, List[str]] = {
 }
 
 
+# Where a value ends because the next label has begun. The two party columns
+# flatten into one line of text, so a field's value runs straight into whatever
+# the column beside it says.
+_NEXT_LABEL = re.compile(
+    r"\s{2,}|\b(?:LR|L\.R|GSTIN|GST\s*NO|PAN|Invoice|Due|Cases|Date|Mode|Weight|"
+    r"Vehicle|Transporter|Transport|TEL|Phone|Mobile|FSSAI|DL|State|PO)\b",
+    re.I,
+)
+
+# A capture that is really a label. Where a field is blank on the bill, the
+# label printed after it becomes its "value": V L Enterprises prints
+# "L.R. NO. : DATE :" with both fields empty and we reported the lorry receipt
+# as "DATE"; Zydus gave transport as "PO Number". Inventing a transporter is
+# worse than leaving the field blank, which is what the bill itself does.
+_LABEL_WORDS = frozenset({
+    "date", "dt", "mode", "no", "number", "no.", "gstin", "gst", "pan", "tel",
+    "tel no", "phone", "mobile", "transporter", "transport", "transport mode",
+    "name", "weight", "vehicle", "cases", "state", "code", "address", "fssai",
+    "dl", "po number", "po no", "order no",
+})
+
+
+def _is_label_not_value(found: str, text: str) -> bool:
+    """Whether this capture is the next label rather than a value.
+
+    Three signatures, all seen on real bills:
+
+    * it IS a label word - "DATE", "TEL NO", "MODE", "PO Number";
+    * the page prints a colon straight after it, which a value does not carry;
+    * it is a short lowercase tail of a longer word ("ation" from
+      "TRANSPORTATION Mode", "er's" from "Transporter's") - the mark of two
+      columns colliding mid-word.
+    """
+    bare = found.strip(" .,-:").lower()
+    if not bare or bare in _LABEL_WORDS:
+        return True
+    if re.search(re.escape(found.strip()) + r"\s*:", text or ""):
+        return True
+    return bool(re.fullmatch(r"[a-z][a-z']{1,6}", found.strip()))
+
+
+def _is_reference_number(found: str) -> bool:
+    """Whether this could be a lorry-receipt or purchase-order number.
+
+    Both are document numbers of at least a few characters. Abbott's blank LR
+    field handed us "CC" (its copy marker) and Overseas's handed us "18/09" -
+    the start of the date printed beside it. Neither is a reference anyone can
+    chase, and a wrong one on a purchase record is worse than none.
+    """
+    bare = found.strip()
+    if len(bare.replace("/", "").replace("-", "")) < 4:
+        return False
+    # A date, or the start of one, is not a document number.
+    return not re.fullmatch(r"[0-3]?\d[./\-][0-1]?\d(?:[./\-]\d{2,4})?", bare)
+
+
 def extract_references(text: str) -> Dict[str, Optional[str]]:
     """Transport, order and statutory references from the page text."""
     out: Dict[str, Optional[str]] = {}
     for field, (labels, value) in _REFERENCES.items():
         found = _labelled(text, labels, value)
-        if found and field == "transport":
-            # Stop at the next label on the same line.
-            found = re.split(r"\s{2,}|\b(?:LR|GSTIN|PAN|Invoice|Due|Cases)\b", found)[0].strip(" .,-")
-            found = found or None
+        if found:
+            # Stop at the next label on the same line - for every reference,
+            # not just the transporter.
+            found = _NEXT_LABEL.split(found)[0].strip(" .,-:") or None
+        if found and _is_label_not_value(found, text):
+            found = None
+        if found and field in ("lr_no", "po_no") and not _is_reference_number(found):
+            found = None
         out[field] = found
     for field, labels in _DATES.items():
         out[field] = _labelled(text, labels, _DATE)
@@ -430,6 +490,31 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
             pan = candidate.group(1)
             break
     return {"name": name, "gstin": gstin.group(1) if gstin else None, "pan": pan, "address": address}
+
+
+def supplier_gstin_for_pan(pan: Optional[str], found: Optional[str],
+                           page_text: str) -> Optional[str]:
+    """A supplier GSTIN that agrees with the supplier's PAN, or None.
+
+    A GSTIN is two state digits, then the holder's PAN, then an entity digit,
+    "Z", and a checksum - so these two fields cannot disagree on a real bill.
+    When they do, the GSTIN belongs to somebody else: Abbott prints the BUYER's
+    GSTIN inside its own address block and its own only in the page footer, so
+    its invoices were filed under the pharmacy's GSTIN.
+
+    Returns a replacement only when the PAN is known, the GSTIN found does not
+    match it, and the page carries one that does. Otherwise None - keep what we
+    have rather than swap one guess for another.
+    """
+    if not pan or not found:
+        return None
+    pan = pan.strip().upper()
+    if found.strip().upper()[2:12] == pan:
+        return None
+    for candidate in _GSTIN_SHAPE.findall(page_text or ""):
+        if candidate.upper()[2:12] == pan:
+            return candidate.upper()
+    return None
 
 
 def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:

@@ -84,6 +84,36 @@ def dedupe_line_items(items: List[dict]) -> Tuple[List[dict], int]:
     return unique, removed
 
 
+# How far quantity x rate may stray from the line amount and still be the same
+# line. A discount or scheme shrinks the amount; a GST-inclusive amount inflates
+# it. Outside this band the columns were misread. Named because the table-source
+# choice in invoice_parser scores candidate readings by the same test - one
+# definition of "this row's arithmetic works", used everywhere.
+LINE_RATIO_LOW = 0.5
+LINE_RATIO_HIGH = 1.5
+
+
+def line_arithmetic_holds(item: dict) -> Optional[bool]:
+    """Whether quantity x unit price matches this line's amount.
+
+    None when the row does not print enough to tell. The unit price is whichever
+    of the price columns the row carries: `rate` is resolved later, from the
+    whole invoice, so during parsing PTS or PTR is all there is to go on.
+    """
+    qty, amount = _num(item.get("quantity")), _num(item.get("amount"))
+    price = next(
+        (p for p in (_num(item.get("rate")), _num(item.get("pts")), _num(item.get("ptr")))
+         if p),
+        None,
+    )
+    if not qty or not price or not amount or amount <= 0:
+        return None
+    expected = qty * price
+    if expected <= 0:
+        return None
+    return LINE_RATIO_LOW <= amount / expected <= LINE_RATIO_HIGH
+
+
 def validate_line_arithmetic(items: List[dict], low_confidence: float = 0.4) -> int:
     """Flag rows whose quantity x rate is nowhere near the line amount.
 
@@ -105,7 +135,7 @@ def validate_line_arithmetic(items: List[dict], low_confidence: float = 0.4) -> 
         ratio = amount / expected
         # Discounts/schemes shrink the amount, GST-inclusive amounts inflate it;
         # only a gross mismatch indicates a misread column.
-        if 0.5 <= ratio <= 1.5:
+        if LINE_RATIO_LOW <= ratio <= LINE_RATIO_HIGH:
             continue
         flagged += 1
         for key in ("quantity", "rate", "amount"):

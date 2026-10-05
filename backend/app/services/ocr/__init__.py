@@ -297,6 +297,40 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     return {"schema_version": SCHEMA_VERSION, "doc_type": resolved_type, "fields": fields, "meta": meta}
 
 
+# At or above this many lines, a parse is kept on its row count alone, as it
+# always was. Below it, the invoice's own total has to agree - see below.
+_SHORT_INVOICE_LINES = 3
+
+
+def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
+    """Whether to keep the deterministic parse rather than call the AI.
+
+    Row count was the old proxy for "did the table parse", and it was wrong in
+    both directions. It rejected invoices that genuinely bill ONE product -
+    Abbott bills a single kit, Overseas a single pack - sending bills whose
+    table we read perfectly to the paid model, which then read the figures by
+    eye and got the batch, PTR and PTS wrong. And it accepted any three rows of
+    nonsense.
+
+    So a short parse must reconcile against the total printed on the bill. That
+    is a far stronger test than counting rows: a one-line invoice whose line
+    equals its printed total is certainly read correctly.
+    """
+    items = parsed.get("line_items") or []
+    if not items:
+        return False
+    if len(items) >= _SHORT_INVOICE_LINES:
+        return True
+    report = reconcile_invoice(parsed)
+    if report.get("total_reconciles") is True:
+        return True
+    log.info(
+        "document %s: deterministic parse found only %d line(s) and they do not "
+        "reconcile - handing to the AI", document_id, len(items),
+    )
+    return False
+
+
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None) -> dict:
     # --- Tier 1: deterministic parse of digital PDF invoices (free, exact, unlimited
     # pages). Real (not mock) — runs whenever the input is a digital PDF and the
@@ -311,7 +345,7 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                 from app.services.ocr.invoice_parser import parse_invoice_pdf
 
                 parsed = parse_invoice_pdf(file_bytes)
-                if parsed and len(parsed.get("line_items", [])) >= 3:
+                if parsed and _parse_is_trustworthy_enough(parsed, document_id):
                     hints = parsed.pop("_hints", {})
                     fields = validate_fields("invoice", parsed)
                     result = _finalize(

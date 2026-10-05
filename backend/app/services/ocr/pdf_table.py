@@ -34,7 +34,11 @@ _MIN_HEADER_HITS = 4
 
 # A line that ends the line-item table.
 _FOOTER = re.compile(
-    r"\b(sub\s*total|grand\s*total|total\s*taxable|basic\s*amount|tax\s*summary|"
+    # "GST Summary (15621.50 @ 6.00% SGST=937.29,CGST=937.29)" - Overseas sets
+    # its summary block in the table's own columns, so every figure on that line
+    # read as a second line item and doubled the invoice.
+    r"\b(sub\s*total|grand\s*total|total\s*taxable|basic\s*amount|summary|"
+    r"in\s*words|"
     r"whether\s*tax|any\s*rcm|terms\s*(and|&)\s*cond|jurisdiction|rupees\s*:|"
     r"bank\s*(account|name)|for\s+stockist|e\s*&\s*o\.?e|subject\s+to|declaration|"
     # The warranty/declaration block JB prints under its last page. Left
@@ -110,6 +114,22 @@ def _looks_like_header_continuation(line: Line) -> bool:
     return numeric == 0 and all(len(w) <= 14 for w in words)
 
 
+def _contributes_to_header(line: Line) -> bool:
+    """Whether a stacked line adds anything to the header.
+
+    Usually that means a keyword of its own. But the last line of a stacked
+    header is often a lone fragment with no keyword at all - Abbott prints the
+    "%" of "CGST% / SGST/UTGST %" on its own line, and Menarini the "Taxes)" of
+    "MRP (Incl. Taxes)". Dropping it is not cosmetic: without the "%", a column
+    headed "SGST/UTGST" reads as an AMOUNT column, and a tax RATE of 6.00 would
+    be filed as six rupees of tax.
+    """
+    if _header_hits(line) > 0:
+        return True
+    words = [str(w["text"]) for w in line[1]]
+    return bool(words) and len(words) <= 4 and all(len(w) <= 7 for w in words)
+
+
 def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
     """(first, last) line indices of the column header, or None."""
     best: Optional[Tuple[int, int]] = None
@@ -125,8 +145,21 @@ def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
     start = best[0]
     end = start
     for j in range(start + 1, min(start + 3, len(lines))):
-        if _looks_like_header_continuation(lines[j]) and _header_hits(lines[j]) > 0:
+        if _looks_like_header_continuation(lines[j]) and _contributes_to_header(lines[j]):
             end = j
+        else:
+            break
+    # ...and upward. The line with the most keywords is not always the top of
+    # the header: Menarini stacks "MRP" and "HSN / Batch No / Gross / Taxable"
+    # ABOVE its widest heading line. Growing only downward left those columns
+    # untitled, so MRP's values fell into the Quantity column ("13.00 126.00")
+    # and, with no "Batch No" heading anywhere, the whole correctly-rebuilt
+    # table was rejected for want of a batch marker - sending the invoice to
+    # the AI. A data row cannot be swallowed here: it carries numbers, which
+    # `_looks_like_header_continuation` refuses.
+    for j in range(start - 1, max(-1, start - 3), -1):
+        if _looks_like_header_continuation(lines[j]) and _header_hits(lines[j]) > 0:
+            start = j
         else:
             break
     return start, end
@@ -256,7 +289,14 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
     start, end = band
 
     columns = _cluster_columns(lines[start:end + 1])
-    columns = _add_unheaded_leading_column(columns, lines[end + 1:])
+    # Only the real rows may vote on the column layout: the declaration and
+    # tax-summary prose beneath them aligns with nothing.
+    body = lines[end + 1:]
+    for i, line in enumerate(body):
+        if _FOOTER.search(_line_text(line)):
+            body = body[:i]
+            break
+    columns = _add_unheaded_leading_column(columns, body)
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)
