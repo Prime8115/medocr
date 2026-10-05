@@ -230,3 +230,19 @@ def test_an_odd_gap_is_not_taken_for_a_discount():
     wrong[0] = "6170.00"   # misread by 100 - lines 16,009: gap 10.56%, not round
     report = reconcile_invoice(_msv(amounts=wrong, total_discount_amount=None))
     assert report["total_reconciles"] is False
+
+
+# --- the warning must name the gap -----------------------------------------
+# "Short by 12,344.00" is what sends a reviewer to the line that is wrong.
+# Two totals alone leave them subtracting by hand on every mismatched bill.
+
+def test_the_mismatch_warning_names_the_gap():
+    report = reconcile_invoice(_fields([_item("A"), _item("A"), _item("A")], "200.00"))
+    warning = next(w for w in report["warnings"] if "add up to" in w)
+    assert "over by 400.00" in warning
+
+
+def test_the_gap_is_named_short_when_the_lines_fall_below_the_total():
+    report = reconcile_invoice(_fields([_item("A")], "500.00"))
+    warning = next(w for w in report["warnings"] if "add up to" in w)
+    assert "short by 300.00" in warning

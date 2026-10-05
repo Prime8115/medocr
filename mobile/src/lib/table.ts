@@ -50,6 +50,7 @@ const CATALOG: Column[] = [
   { key: 'discount_percent', label: 'Disc%', width: 56, numeric: true },
   { key: 'discount_amount', label: 'Disc amt', width: 76, numeric: true, money: true },
   { key: 'scheme', label: 'Scheme', width: 76, numeric: false },
+  { key: 'scheme_percent', label: 'Sch%', width: 56, numeric: true },
   { key: 'scheme_value', label: 'Sch val', width: 76, numeric: true, money: true },
   { key: 'cd_percent', label: 'CD%', width: 56, numeric: true },
   { key: 'cd_amount', label: 'CD amt', width: 76, numeric: true, money: true },

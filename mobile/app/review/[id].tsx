@@ -318,6 +318,7 @@ export default function ReviewScreen() {
         item_count?: number;
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
+        total_reconciled_by?: string | null;
         needs_manual_entry?: boolean;
         raw_text?: string | null;
       }
@@ -352,6 +353,9 @@ export default function ReviewScreen() {
 
   // Table mode is for invoices only; a prescription's fields are prose, not columns.
   const isInvoice = doc.doc_type === 'invoice';
+  // What the bill itself says is payable - the figure on the paper in the
+  // pharmacist's hand.
+  const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
   const showTable = isInvoice && viewMode === 'table' && itemSections.length > 0;
   const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
   const tableRows: TableRow[] = filtered.map(({ section, i }) => ({
@@ -547,13 +551,33 @@ export default function ReviewScreen() {
             meta?.total_reconciles === false && styles.totalsMismatch,
           ]}
         >
-          <Text style={styles.totalsItems}>
-            {itemSections.length} items
-            {filtered.length !== itemSections.length ? ` · ${filtered.length} shown` : ''}
-          </Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.totalsItems}>
+              {itemSections.length} items
+              {filtered.length !== itemSections.length ? ` · ${filtered.length} shown` : ''}
+            </Text>
+            {/* The lines' own sum, kept visible but clearly secondary. It is the
+                TAXABLE total, which on most bills is thousands less than the
+                payable one - shown as the headline it read as a mismatch. */}
+            {meta?.line_items_total ? (
+              <Text style={styles.totalsSub}>
+                items ₹{formatMoney(meta.line_items_total)} before tax
+                {/* A tick earned only against the printed TAXABLE total is a
+                    weaker one - the bill's own grand total was never reached,
+                    usually because a narrow tax column did not read. Say so,
+                    rather than letting it look like a full match. */}
+                {meta?.total_reconciles === true && /taxable/.test(meta.total_reconciled_by || '')
+                  ? ' · matched on the taxable total' : ''}
+              </Text>
+            ) : null}
+          </View>
+          {/* The headline figure is the total PRINTED ON THE BILL, because that
+              is the number the pharmacist is holding and comparing against.
+              The tick says our lines agree with it; it must never sit beside a
+              different number. */}
           <Text style={styles.totalsAmount}>
             {meta?.total_reconciles === true ? '✓ ' : meta?.total_reconciles === false ? '⚠ ' : ''}
-            ₹{meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
+            ₹{billTotal ? formatMoney(billTotal) : meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
           </Text>
         </View>
       )}
@@ -828,6 +852,7 @@ const styles = StyleSheet.create({
   totalsOk: { backgroundColor: colors.successTint },
   totalsMismatch: { backgroundColor: colors.warningTint },
   totalsItems: { ...font.caption, color: colors.textSecondary, fontWeight: '600' },
+  totalsSub: { ...font.caption, fontSize: 11, color: colors.textMuted, marginTop: 1 },
   totalsAmount: { ...font.h3, color: colors.text },
   warnBanner: { backgroundColor: colors.warningTint, padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
   warnText: { ...font.body, color: colors.warning },

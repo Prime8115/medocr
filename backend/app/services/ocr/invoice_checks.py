@@ -385,9 +385,15 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
                     reconciled_by = "the invoice's printed taxable total"
 
         if not reconciles:
+            # Name the gap. "Short by 12,344.00" is what sends a reviewer to the
+            # line that is wrong; two totals alone leave them doing the
+            # subtraction themselves on every mismatched bill.
+            gap = printed_total - best_value
+            direction = "short by" if gap > 0 else "over by"
             warnings.append(
-                f"Line items add up to {_fmt(line_total)}, which does not reach the invoice "
-                f"total of {_fmt(printed_total)} even after the discount and tax it states. "
+                f"Line items add up to {_fmt(line_total)} but the invoice total is "
+                f"{_fmt(printed_total)} - {direction} {_fmt(abs(gap))}, after the discount "
+                f"and tax the bill states ({best_name}). "
                 "Please check the items before approving."
             )
     elif printed_total is None:
