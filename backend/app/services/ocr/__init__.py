@@ -28,7 +28,9 @@ from app.services.ocr.postprocess import postprocess_fields
 from app.services.ocr.pdf_utils import (
     extract_text_pages,
     extract_text_sample,
+    image_only_pdf,
     is_digital_pdf,
+    is_scanned_pdf,
     page_count,
     split_pdf,
 )
@@ -111,6 +113,9 @@ def _build_units(file_bytes: bytes, content_type: str):
             units.append((_PAGE_SEP.join(group).encode("utf-8"), "text/plain", len(group)))
         return (units or [(b"", "text/plain", total)]), total, True
 
+    if is_scanned_pdf(file_bytes):
+        # Read the picture, not the scanner's guess at it (see is_scanned_pdf).
+        file_bytes = image_only_pdf(file_bytes)
     cs = settings.ocr_pdf_chunk_pages
     if total <= cs:
         return [(file_bytes, "application/pdf", total)], total, False
