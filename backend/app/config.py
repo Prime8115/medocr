@@ -35,8 +35,14 @@ class Settings(BaseSettings):
     ocr_max_concurrent_jobs: int = 6
     # Use high-throughput, low-latency Flash-Lite as primary (sub-2s latency, high quota)
     ocr_model: str = "gemini-flash-lite-latest"
-    # Fallback tried when the primary is overloaded or errors
-    ocr_fallback_model: Optional[str] = "gemini-2.5-flash"
+    # Fallback tried when the primary is overloaded or errors.
+    #
+    # gemini-2.5-flash sat here until it was RETIRED - Google answers 404 "no
+    # longer available to new users" - so for some time the fallback did nothing
+    # but add latency before failing. Pinned model versions go away; the live
+    # check now calls this model nightly so the next retirement surfaces within
+    # a day instead of being discovered by a pharmacist.
+    ocr_fallback_model: Optional[str] = "gemini-3.5-flash"
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
     # Requests per minute the app allows itself per key and model, so it paces

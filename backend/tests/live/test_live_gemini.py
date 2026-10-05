@@ -167,3 +167,33 @@ def test_response_schema_is_accepted_without_fallback(doc_type):
     text = SCANNED_INVOICE_TEXT if doc_type == "invoice" else PRESCRIPTION_TEXT
     _call(provider.extract, text.encode(), "text/plain", doc_type)
     assert provider.schema_fallbacks == 0, f"Gemini refused the {doc_type} response schema"
+
+
+def test_the_fallback_model_still_exists():
+    """The model we fall back to must actually be servable.
+
+    gemini-2.5-flash sat in the config as the fallback long after Google retired
+    it, answering 404 "no longer available to new users". Nothing noticed,
+    because every other test exercises the PRIMARY model - so whenever the
+    primary was overloaded, the fallback added a round trip and then failed too.
+
+    Pinned model versions get retired. This calls the configured fallback by
+    name, so the next retirement shows up in the morning's check.
+    """
+    from app.config import settings
+    from app.services.ocr.gemini import GeminiProvider
+
+    fallback = settings.ocr_fallback_model
+    if not fallback or fallback == settings.ocr_model:
+        pytest.skip("no distinct fallback model is configured")
+
+    provider = GeminiProvider()
+    # A 503 means the model exists and is merely busy, which the provider
+    # already retries; a 404 means it is gone, which is what we are hunting.
+    try:
+        provider._generate(fallback, ["Reply with the single word: ok"])
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).lower()
+        assert "404" not in message and "not_found" not in message, (
+            f"fallback model {fallback!r} no longer exists: {exc}"
+        )
