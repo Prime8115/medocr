@@ -272,6 +272,9 @@ class ExtractionMeta(BaseModel):
     # grand total is tax-inclusive, so this is usually the number that matches.
     line_items_total_with_gst: Optional[str] = None
     total_reconciles: Optional[bool] = None
+    # Which figure the lines were checked against: the grand total, that total
+    # with per-line GST added, or the invoice's own printed taxable total.
+    reconciled_against: Optional[str] = None
     # How the lines reach the printed total when they do, e.g.
     # "lines - bill discount + bill tax" - so a reviewer can see why it matched.
     total_reconciled_by: Optional[str] = None

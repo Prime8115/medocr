@@ -155,6 +155,39 @@ def _cluster_columns(band: List[Line]) -> List[dict]:
     return columns
 
 
+def _add_unheaded_leading_column(columns: List[dict], data: List[Line]) -> List[dict]:
+    """Recover a column whose heading was never read.
+
+    OCR of a scan drops the odd header word, and the leftmost one is a common
+    casualty: Kanchan's "Description" vanished, so "HSN Code" became the first
+    column and every product name - printed well to its left - was swept into
+    it, giving cells like "ENDOCAL D FORTE 30045090".
+
+    If the data rows consistently carry words to the LEFT of the first heading,
+    those words are their own column and it simply has no title. Adding it back
+    restores the alignment of every column after it, which no amount of
+    per-field guessing downstream can do.
+    """
+    if not columns or not data:
+        return columns
+    first_x = columns[0]["x0"]
+    # A gap big enough that the words cannot belong to the first heading.
+    margin = max(6.0, _COLUMN_GAP)
+
+    rows_with, left_x0, left_x1 = 0, [], []
+    for _, row in data:
+        outside = [w for w in row if float(w["x1"]) <= first_x - margin]
+        if outside:
+            rows_with += 1
+            left_x0.append(min(float(w["x0"]) for w in outside))
+            left_x1.append(max(float(w["x1"]) for w in outside))
+
+    # Needs to be the rule, not one stray word: most rows must show it.
+    if rows_with < 2 or rows_with * 2 <= len(data):
+        return columns
+    return [{"x0": min(left_x0), "x1": max(left_x1), "words": [], "label": ""}] + columns
+
+
 def _boundaries(columns: List[dict]) -> List[float]:
     """Split points between columns: the midpoint of the gap between them.
 
@@ -223,6 +256,7 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
     start, end = band
 
     columns = _cluster_columns(lines[start:end + 1])
+    columns = _add_unheaded_leading_column(columns, lines[end + 1:])
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)

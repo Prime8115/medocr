@@ -366,6 +366,25 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
         if reconciles:
             reconciled_by = best_name
         else:
+            # The invoice's own printed TAXABLE total is a second thing the lines
+            # can be checked against, and it still starts from the line sum - so
+            # it cannot hide a missing line, which is what this check is for.
+            #
+            # A scan needs it. OCR reads the money column reliably but often
+            # misses the narrow CGST/SGST columns, so the tax cannot be added
+            # back and the grand total is unreachable. Kanchan scanned: all 12
+            # lines read correctly, summing to exactly the 102,864.00 the bill
+            # prints as its basic amount, yet rejected for want of a tax column.
+            printed_taxable = _num(invoice.get("total_taxable_amount"))
+            if printed_taxable:
+                taxable_tolerance = max(
+                    _TOTAL_TOLERANCE_ABS, printed_taxable * _TOTAL_TOLERANCE_PCT
+                )
+                if abs(line_total - printed_taxable) <= taxable_tolerance:
+                    reconciles = True
+                    reconciled_by = "the invoice's printed taxable total"
+
+        if not reconciles:
             warnings.append(
                 f"Line items add up to {_fmt(line_total)}, which does not reach the invoice "
                 f"total of {_fmt(printed_total)} even after the discount and tax it states. "
