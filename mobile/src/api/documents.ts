@@ -18,13 +18,29 @@ export interface UploadFile {
   type: string;
 }
 
-export async function uploadDocument(file: UploadFile, docType?: string): Promise<string> {
+export interface UploadResult {
+  document_id: string;
+  status: string;
+  /** The same file was scanned before: document_id is that earlier scan. */
+  duplicate?: boolean;
+  /** Every document made - several when a PDF held several invoices. */
+  document_ids?: string[];
+  /** A short note for the user about their file, if any. */
+  message?: string | null;
+}
+
+export async function uploadDocument(
+  file: UploadFile,
+  docType?: string,
+  allowDuplicate = false,
+): Promise<UploadResult> {
   const form = new FormData();
   // React Native FormData file shape.
   form.append('file', { uri: file.uri, name: file.name, type: file.type } as unknown as Blob);
   if (docType) form.append('doc_type', docType);
+  if (allowDuplicate) form.append('allow_duplicate', 'true');
   const res = await api.post('/v1/documents/', form);
-  return res.data.document_id as string;
+  return res.data as UploadResult;
 }
 
 export async function getDocument(id: string): Promise<DocumentDto> {

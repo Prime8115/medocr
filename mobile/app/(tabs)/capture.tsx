@@ -5,9 +5,10 @@ import * as ImagePicker from 'expo-image-picker';
 import NetInfo from '@react-native-community/netinfo';
 import { router } from 'expo-router';
 import { useRef, useState } from 'react';
-import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { uploadDocument } from '@/src/api/documents';
+import { refusalMessage } from '@/src/lib/upload';
 import { useQueue } from '@/src/queue/QueueContext';
 import { Badge, Button, Screen } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
@@ -84,23 +85,50 @@ export default function CaptureScreen() {
 
   async function process() {
     if (!picked) return;
+    const file = { uri: picked.uri, name: picked.name, type: picked.type };
     setBusy(true);
     setNote(null);
     try {
       const net = await NetInfo.fetch();
       if (net.isConnected) {
-        const id = await uploadDocument({ uri: picked.uri, name: picked.name, type: picked.type }, docType);
+        const res = await uploadDocument(file, docType);
         setPicked(null);
-        router.push(`/review/${id}`);
+        router.push(`/review/${res.document_id}`);
+        if (res.duplicate) {
+          Alert.alert(t('alreadyScanned'), res.message ?? '', [
+            { text: t('openEarlier'), style: 'cancel' },
+            {
+              text: t('scanAgain'),
+              onPress: async () => {
+                try {
+                  const again = await uploadDocument(file, docType, true);
+                  router.replace(`/review/${again.document_id}`);
+                } catch (e) {
+                  Alert.alert(t('failed'), refusalMessage(e) ?? t('errorGeneric'));
+                }
+              },
+            },
+          ]);
+        } else if (res.message) {
+          Alert.alert(t('uploaded'), res.message);
+        }
       } else {
-        await add({ uri: picked.uri, fileName: picked.name, contentType: picked.type, docType });
+        await add({ uri: file.uri, fileName: file.name, contentType: file.type, docType });
         setPicked(null);
         setNote(t('offline'));
         router.push('/(tabs)/history');
       }
-    } catch {
+    } catch (e) {
+      const refused = refusalMessage(e);
+      if (refused) {
+        // The server read the file and cannot use it: say why. Queueing it
+        // would only have it refused again.
+        setPicked(null);
+        Alert.alert(t('cannotRead'), refused);
+        return;
+      }
       // Network hiccup mid-upload: fall back to the offline queue.
-      await add({ uri: picked.uri, fileName: picked.name, contentType: picked.type, docType });
+      await add({ uri: file.uri, fileName: file.name, contentType: file.type, docType });
       setPicked(null);
       setNote(t('offline'));
       router.push('/(tabs)/history');

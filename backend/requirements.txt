@@ -26,6 +26,7 @@ rapidfuzz>=3.9.0
 pypdf>=4.0.0
 pdfplumber>=0.11.0
 pypdfium2>=4.30.0   # renders scanned PDF pages for the local OCR fallback
+pillow-heif>=0.18.0  # iPhone HEIC/HEIF photos, converted to JPEG at upload
 
 # --- Storage (optional S3) ---
 boto3>=1.34.0

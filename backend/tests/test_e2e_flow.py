@@ -13,7 +13,7 @@ import pytest
 
 from app.config import settings
 from app.services.connectors.signing import verify
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_image
 
 RECEIVED: list[dict] = []
 SECRET = "e2e-shared-secret"
@@ -62,7 +62,7 @@ def test_full_scan_to_webhook_delivery(client, db_session, webhook_server, monke
     assert created.status_code == 201
 
     # 2. Submit a document (mock OCR runs in the background task).
-    files = {"file": ("rx.jpg", b"prescription bytes", "image/jpeg")}
+    files = {"file": ("rx.png", sample_image(), "image/png")}
     doc_id = client.post("/v1/documents/", files=files, headers=headers).json()["document_id"]
 
     # 3. It reaches needs_review with extracted fields.
@@ -106,7 +106,7 @@ def test_failed_extraction_never_delivers(client, webhook_server, monkeypatch):
         json={"type": "webhook", "name": "E2E", "config": {"url": webhook_server}, "secret": SECRET},
         headers=headers,
     )
-    files = {"file": ("rx.jpg", b"x", "image/jpeg")}
+    files = {"file": ("rx.png", sample_image(), "image/png")}
     doc_id = client.post("/v1/documents/", files=files, headers=headers).json()["document_id"]
 
     doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()

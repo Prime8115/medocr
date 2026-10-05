@@ -106,6 +106,11 @@ class Settings(BaseSettings):
 
     # --- Limits ---
     max_upload_mb: int = 25
+    # Photos larger than this (longest side, pixels) are scaled down at upload:
+    # sharper than any bill needs, and the AI and local OCR read them faster.
+    upload_max_image_side: int = 3000
+    # A PDF holding several separate invoices becomes one document per invoice.
+    upload_split_invoices: bool = True
     rate_limit_per_minute: int = 60
 
     @property

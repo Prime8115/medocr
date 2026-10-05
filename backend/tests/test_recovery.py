@@ -5,7 +5,7 @@ from app.models.document import Document
 from app.models.job import OcrJob
 from app.services import jobs
 from app.services.recovery import recover_stuck_documents
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_pdf
 
 RESULT = {"schema_version": "1.0", "doc_type": "invoice", "fields": {}, "meta": {}}
 
@@ -34,7 +34,7 @@ def test_a_scan_killed_mid_way_finishes_after_a_restart(client, db_session, monk
 
     monkeypatch.setattr(documents_api, "run_job", start_then_die)
     headers = register_and_login(client)
-    files = {"file": ("inv.pdf", b"%PDF-fake", "application/pdf")}
+    files = {"file": ("inv.pdf", sample_pdf(), "application/pdf")}
     assert client.post("/v1/documents/", headers=headers, files=files).status_code == 200
 
     s = db_session()

@@ -37,7 +37,7 @@ from app.schemas.document import (
     DocumentUpdate,
 )
 from app.schemas.extraction import validate_fields
-from app.services import jobs, lifecycle
+from app.services import intake, jobs, lifecycle
 from app.services.connectors import service as connector_service
 from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
@@ -50,7 +50,6 @@ router = APIRouter()
 
 log = logging.getLogger(__name__)
 
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 ALLOWED_DOC_TYPES = {"prescription", "invoice"}
 
 # Bounds how many scans are read at once in this process, so a burst of uploads
@@ -296,12 +295,17 @@ async def submit_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     doc_type: Optional[str] = Form(None),
+    allow_duplicate: bool = Form(False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Submit a document (image/PDF) for OCR. doc_type optional (auto-detected)."""
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid file type. Use JPEG/PNG/WebP/PDF.")
+    """Submit a document (image/PDF) for OCR. doc_type optional (auto-detected).
+
+    The file is checked first (services/intake.py): one that cannot be read is
+    refused now, with the reason, rather than failing later in the queue. The
+    same file uploaded again opens the earlier scan unless `allow_duplicate`.
+    A PDF holding several invoices becomes one document per invoice.
+    """
     if doc_type and doc_type not in ALLOWED_DOC_TYPES:
         raise HTTPException(status_code=400, detail="doc_type must be 'prescription' or 'invoice'.")
 
@@ -311,23 +315,69 @@ async def submit_document(
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"File exceeds {settings.max_upload_mb} MB.")
 
-    image_ref = storage.save(data, file.filename or "upload", file.content_type)
+    try:
+        prepared = intake.prepare(data, file.content_type, file.filename)
+    except intake.UploadRejected as exc:
+        log.info("upload refused (%s): %s", exc.reason, file.filename)
+        raise HTTPException(status_code=400, detail=exc.message)
+    if prepared.notes:
+        log.info("upload %s: %s", file.filename, "; ".join(prepared.notes))
 
-    doc = Document(
-        shop_id=user.shop_id,
-        doc_type=doc_type or "prescription",
-        requested_doc_type=doc_type,
-        status=lifecycle.QUEUED,
-        image_ref=image_ref,
-        created_by=user.id,
-    )
-    db.add(doc)
-    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.submitted", target=doc.id))
+    if not allow_duplicate:
+        earlier = _earlier_scan(db, user.shop_id, prepared.sha256)
+        if earlier is not None:
+            return DocumentResponse(
+                document_id=earlier.id, status=earlier.status, duplicate=True, document_ids=[earlier.id],
+                message="This file was already scanned - opening the earlier scan.",
+            )
+
+    parts = [prepared.data]
+    if prepared.content_type == intake.PDF and settings.upload_split_invoices:
+        groups = intake.invoice_groups(prepared.data)
+        if len(groups) > 1:
+            parts = [intake.pdf_pages(prepared.data, pages) for pages in groups]
+            log.info("upload %s: %d invoices in one PDF, one document each", file.filename, len(parts))
+
+    docs = []
+    for i, part in enumerate(parts):
+        name = prepared.filename if len(parts) == 1 else prepared.filename.replace(".pdf", f"_{i + 1}.pdf")
+        doc = Document(
+            shop_id=user.shop_id,
+            doc_type=doc_type or "prescription",
+            requested_doc_type=doc_type,
+            status=lifecycle.QUEUED,
+            image_ref=storage.save(part, name, prepared.content_type),
+            content_hash=prepared.sha256,
+            created_by=user.id,
+        )
+        db.add(doc)
+        db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.submitted", target=doc.id))
+        docs.append(doc)
     db.commit()
-    db.refresh(doc)
 
-    _enqueue_and_start(db, background_tasks, doc, file.content_type, doc_type)
-    return DocumentResponse(document_id=doc.id, status=doc.status)
+    for doc in docs:
+        db.refresh(doc)
+        _enqueue_and_start(db, background_tasks, doc, prepared.content_type, doc_type)
+    message = None
+    if len(docs) > 1:
+        message = f"This PDF held {len(docs)} invoices - each is scanned as its own document."
+    elif prepared.pages_removed:
+        message = f"{prepared.pages_removed} blank page(s) were left out."
+    return DocumentResponse(
+        document_id=docs[0].id, status=docs[0].status, document_ids=[d.id for d in docs], message=message,
+    )
+
+
+def _earlier_scan(db: Session, shop_id: str, sha256: str) -> Optional[Document]:
+    """This shop's earlier scan of the very same file - unless that one failed,
+    when scanning it again is the point."""
+    return (
+        db.query(Document)
+        .filter(Document.shop_id == shop_id, Document.content_hash == sha256,
+                Document.status != lifecycle.FAILED)
+        .order_by(Document.created_at.asc())
+        .first()
+    )
 
 
 @router.post("/{document_id}/retry", response_model=DocumentResponse)

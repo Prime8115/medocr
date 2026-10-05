@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel
 
@@ -7,6 +7,13 @@ from pydantic import BaseModel
 class DocumentResponse(BaseModel):
     document_id: str
     status: str
+    # The same file was uploaded before: document_id is that earlier scan.
+    duplicate: bool = False
+    # Every document this upload made - more than one when a PDF held
+    # several invoices (document_id is the first).
+    document_ids: List[str] = []
+    # A short note for the user about what happened to their file, if anything.
+    message: Optional[str] = None
 
 
 class DocumentUpdate(BaseModel):

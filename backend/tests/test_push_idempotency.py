@@ -1,10 +1,10 @@
 """Push delivery idempotency and multi-connector orchestration via the API."""
 from app.models.connector import Connector
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_image
 
 
 def _approved_doc(client, headers, mock=True):
-    files = {"file": ("rx.jpg", b"fake", "image/jpeg")}
+    files = {"file": ("rx.png", sample_image(), "image/png")}
     doc_id = client.post("/v1/documents/", files=files, headers=headers).json()["document_id"]
     client.post(f"/v1/documents/{doc_id}/approve", headers=headers)
     return doc_id

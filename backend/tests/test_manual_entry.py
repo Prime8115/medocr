@@ -12,7 +12,7 @@ import pytest
 from app.config import settings
 from app.services.ocr import fallback
 from app.services.ocr.fallback import MANUAL_ENTRY_WARNING
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_image
 
 needs_tesseract = pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract not installed")
 
@@ -129,17 +129,25 @@ def test_a_photo_the_ai_cannot_read_is_read_by_local_ocr(client):
     assert "Paracip" in meta["raw_text"]
 
 
-def test_even_an_unreadable_file_reaches_review_as_an_empty_form(client):
+def test_a_file_that_is_not_a_document_is_refused_at_upload(client):
+    # Not a dead end either: the user is told at once, in plain words.
     headers = register_and_login(client)
-    fields, meta = _manual(_upload(client, headers, b"not an image at all", "x.jpg", "image/jpeg", "invoice"))
-    assert meta["text_source"] == "none"
-    assert meta["raw_text"] is None
+    r = client.post("/v1/documents/", headers=headers,
+                    files={"file": ("x.jpg", b"not an image at all", "image/jpeg")}, data={"doc_type": "invoice"})
+    assert r.status_code == 400
+    assert "not supported" in r.json()["detail"]
+
+
+def test_a_photo_with_nothing_legible_reaches_review_as_an_empty_form(client):
+    headers = register_and_login(client)
+    fields, meta = _manual(_upload(client, headers, sample_image(), "x.png", "image/png", "invoice"))
     assert _v(fields, "invoice.invoice_no") is None
+    assert _v(fields, "supplier.gstin") is None
 
 
 def test_the_users_choice_of_type_is_kept(client):
     headers = register_and_login(client)
-    doc = _upload(client, headers, b"junk", "x.jpg", "image/jpeg", "prescription")
+    doc = _upload(client, headers, sample_image(), "x.png", "image/png", "prescription")
     _manual(doc)
     assert doc["doc_type"] == "prescription"
 

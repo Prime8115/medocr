@@ -5,11 +5,11 @@ reproduced from a description. A report records what the pipeline actually
 produced alongside the stored file, so it can become a fixture.
 """
 from app.models.audit_log import AuditLog
-from tests.conftest import register_and_login
+from tests.conftest import register_and_login, sample_image
 
 
 def _submit(client, headers, doc_type="invoice"):
-    files = {"file": ("inv.jpg", b"INVOICE fake", "image/jpeg")}
+    files = {"file": ("inv.png", sample_image("INVOICE"), "image/png")}
     return client.post("/v1/documents/", files=files, data={"doc_type": doc_type}, headers=headers)
 
 
