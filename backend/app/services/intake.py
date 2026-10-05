@@ -336,7 +336,7 @@ def invoice_groups(data: bytes) -> List[List[int]]:
     """The pages of each separate invoice in a PDF, when it plainly holds more
     than one; otherwise a single group of every page.
 
-    Only a PDF with a text layer is judged, and only when the evidence is
+    Only a PDF made by software is judged (never a scan's text layer), and only when the evidence is
     unambiguous: each page names at most one invoice number, a page naming
     none continues the invoice before it, and each number's pages are
     contiguous. Copies of one invoice (Original/Duplicate/Triplicate) share
@@ -352,7 +352,11 @@ def invoice_groups(data: bytes) -> List[List[int]]:
     except Exception:  # noqa: BLE001
         return []
     every = [list(range(len(texts)))] if texts else []
-    if len(texts) < 2 or sum(1 for t in texts if len(t.strip()) > 50) < len(texts) / 2:
+    from app.services.ocr.pdf_utils import is_scanned_pdf
+
+    # A scan's text is the scanner's guess: one misread digit would make two
+    # copies of an invoice look like two invoices. Never split on it.
+    if len(texts) < 2 or is_scanned_pdf(data) or sum(1 for t in texts if len(t.strip()) > 50) < len(texts) / 2:
         return every
 
     groups: List[List[int]] = []
