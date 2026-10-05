@@ -268,8 +268,11 @@ class GeminiProvider(OCRProvider):
             raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
 
     def classify(self, file_bytes: bytes, content_type: str) -> str:
+        from google.genai import types
+
         resp = self._generate_with_fallback(
-            self._content_parts(CLASSIFY_PROMPT, file_bytes, content_type)
+            self._content_parts(CLASSIFY_PROMPT, file_bytes, content_type),
+            config=types.GenerateContentConfig(temperature=settings.ocr_temperature),
         )
         return parse_classification(getattr(resp, "text", "") or "")
 
@@ -289,6 +292,7 @@ class GeminiProvider(OCRProvider):
                     response_mime_type="application/json",
                     response_json_schema=compact_schema(model_cls),
                     max_output_tokens=settings.ocr_max_output_tokens,
+                    temperature=settings.ocr_temperature,
                 ),
             )
         except OCRError as exc:
@@ -304,6 +308,7 @@ class GeminiProvider(OCRProvider):
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     max_output_tokens=settings.ocr_max_output_tokens,
+                    temperature=settings.ocr_temperature,
                 ),
             )
 

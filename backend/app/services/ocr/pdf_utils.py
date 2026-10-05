@@ -61,9 +61,9 @@ def is_scanned_pdf(data: bytes, sample_pages: int = 3) -> bool:
     when it also carries text.
 
     Scanners add a hidden text layer of their OWN reading of the picture (PDF
-    text render mode 3, invisible). That reading is often wrong: the MSV
-    Lifesciences bill's layer says GSTIN "33ABEFM031 5R128" and date
-    "5-Oct-25" where the paper says 33ABEFM0315R1Z8 and 6-Oct-25. Text taken
+    text render mode 3, invisible). That reading is often wrong: on a real
+    supplier's bill the layer had the "Z" of a GSTIN as "2", another GSTIN's
+    "2" as "Z", and the date a day out ("5-Oct-25" for 6-Oct-25). Text taken
     from such a file is the scanner's guess, not the document - so a scan is
     always read from its picture, never from that layer.
 

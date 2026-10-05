@@ -224,7 +224,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     return merged, failed_pages, total_pages
 
 
-def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None):
+def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None, extra_warnings=None):
     """Post-process, run integrity checks, and wrap the result.
 
     Invoice integrity (de-duplication, arithmetic, totals reconciliation) runs
@@ -233,7 +233,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     """
     hints = hints or {}
     integrity = {"duplicates_removed": 0, "copies_detected": hints.get("copies_detected")}
-    check_warnings = []
+    check_warnings = list(extra_warnings or [])
 
     if resolved_type == "invoice":
         items = fields.get("line_items") or []
@@ -374,7 +374,15 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     fields, failed_pages, total_pages = _extract_chunked(
         provider, file_bytes, content_type, resolved_type, on_progress=on_progress
     )
-    result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages)
+    party_warnings = []
+    if resolved_type == "invoice" and settings.ocr_party_check_enabled:
+        # A second, independent reading of the parties' GSTINs (party_check.py):
+        # a GSTIN the AI left blank or misread is caught, not silently lost.
+        from app.services.ocr.party_check import cross_check, first_page_text
+
+        party_warnings = cross_check(fields, first_page_text(file_bytes, content_type))
+    result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
+                       extra_warnings=party_warnings)
     if unsure:
         result["meta"].setdefault("warnings", []).insert(0, TYPE_UNSURE_WARNING)
         result["meta"]["type_unsure"] = True

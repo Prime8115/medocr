@@ -65,8 +65,8 @@ def _text_pdf() -> bytes:
     c = canvas.Canvas(buf)
     y = 800
     for line in [
-        "lnvoice No.", "M-544", "MSV LIFESCIENCES", "GSTIN/UIN: 33ABEFM0315R1Z8",
-        "Buyer", "Muthu Pharma", "GSTIN/UIN : 33AASCA3306L2ZK", "Dated", "5-Oct-25",
+        "lnvoice No.", "M-544", "MSV LIFESCIENCES", "GSTIN/UIN: 27ABCDE1234F1Z0",
+        "Buyer", "Muthu Pharma", "GSTIN/UIN : 27PQRST6789K1ZW", "Dated", "5-Oct-25",
         "Glimedose MP2 Tab 10's Batch : OVT-25327 Expiry : 31-May-27",
         "Amount Chargeable (in words)", "INR Fifteen Thousand Thirty Four Only",
     ]:
@@ -92,9 +92,9 @@ def test_a_pdf_the_ai_cannot_read_is_filled_from_its_own_text(client):
     assert meta["text_source"] == "pdf_text"
     assert _v(fields, "invoice.invoice_no") == "M-544"
     assert _v(fields, "invoice.invoice_date") == "5-Oct-25"
-    assert _v(fields, "supplier.gstin") == "33ABEFM0315R1Z8"
-    assert _v(fields, "bill_to.gstin") == "33AASCA3306L2ZK"
-    assert _v(fields, "supplier.pan") == "ABEFM0315R"
+    assert _v(fields, "supplier.gstin") == "27ABCDE1234F1Z0"
+    assert _v(fields, "bill_to.gstin") == "27PQRST6789K1ZW"
+    assert _v(fields, "supplier.pan") == "ABCDE1234F"
     assert float(_v(fields, "invoice.total_amount")) == 15034.0  # from the amount in words
     # A pattern match is a suggestion: every value is flagged for checking.
     assert fields["invoice"]["invoice_no"]["confidence"] < settings.low_confidence_threshold
