@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     # manual entry instead of failing it (services/ocr/fallback.py).
     ocr_fallback_enabled: bool = True
     ocr_fallback_max_pages: int = 10
+    # Read a SCANNED invoice's line-item table with Tesseract before spending an
+    # AI call. Default OFF: on real scans it currently recovers the totals and
+    # part of the table, but loses lines where OCR drops a header word and the
+    # columns shift. The reconciliation gate catches that and falls back to the
+    # AI, so nothing wrong is ever kept - but the OCR pass costs ~30s first, and
+    # a pharmacist waiting at a counter should not pay that for a fallback.
+    # Turn on to evaluate: OCR_TESSERACT_TABLES=true
+    ocr_tesseract_tables: bool = False
+
     tesseract_cmd: str = "tesseract"
     tesseract_lang: str = "eng"
     tesseract_timeout_seconds: float = 60.0

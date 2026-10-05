@@ -301,9 +301,13 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     # --- Tier 1: deterministic parse of digital PDF invoices (free, exact, unlimited
     # pages). Real (not mock) — runs whenever the input is a digital PDF and the
     # document isn't explicitly a prescription. ---
-    if content_type == "application/pdf" and doc_type in (None, "invoice"):
+    # Photographs come here too: a phone picture of a bill is exactly the case
+    # the Tesseract tier below is for, and it was previously AI-only.
+    if doc_type in (None, "invoice") and (
+        content_type == "application/pdf" or content_type.startswith("image/")
+    ):
         try:
-            if is_digital_pdf(file_bytes):
+            if content_type == "application/pdf" and is_digital_pdf(file_bytes):
                 from app.services.ocr.invoice_parser import parse_invoice_pdf
 
                 parsed = parse_invoice_pdf(file_bytes)
@@ -335,6 +339,36 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                             if retry_result["meta"].get("total_reconciles") is True:
                                 return retry_result
                     return result
+            # --- Tier 1b: a SCANNED invoice read by Tesseract, free and local.
+            # Tried before the paid model, and kept only when the lines add up
+            # to the total printed on the bill. That check is the whole safety
+            # argument: a misread digit shows up as a total that does not
+            # reconcile, so a reading we keep is one the invoice itself agrees
+            # with. Anything less goes to the AI exactly as before.
+            if settings.ocr_tesseract_tables and (
+                content_type.startswith("image/") or is_scanned_pdf(file_bytes)
+            ):
+                from app.services.ocr.invoice_parser import parse_scanned_invoice
+
+                scanned = parse_scanned_invoice(file_bytes, content_type)
+                if scanned and len(scanned.get("line_items", [])) >= 3:
+                    hints = scanned.pop("_hints", {})
+                    candidate = _finalize(
+                        "invoice", validate_fields("invoice", scanned), "tesseract",
+                        page_count(file_bytes) if content_type == "application/pdf" else 1,
+                        hints=hints,
+                    )
+                    if candidate["meta"].get("total_reconciles") is True:
+                        log.info(
+                            "document %s: scanned invoice read by tesseract, %d items, reconciled",
+                            document_id, candidate["meta"]["item_count"],
+                        )
+                        return candidate
+                    log.info(
+                        "document %s: tesseract read %s items but the total does not "
+                        "reconcile - using the AI instead",
+                        document_id, candidate["meta"]["item_count"],
+                    )
         except Exception as exc:  # noqa: BLE001 - any failure -> fall back to the AI pipeline
             # Never silent: a Tier-1 regression is invisible otherwise, because
             # the AI fallback still returns a plausible-looking result.
