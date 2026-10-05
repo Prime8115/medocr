@@ -210,6 +210,7 @@ const LINE_FIELDS = (i: number, fields: Fields): FieldSpec[] => {
     p('expiry', 'Expiry'),
     p('quantity', 'Qty'),
     p('free_quantity', 'Free qty'),
+    p('free_supply', 'Free supply'),
     p('mrp', 'MRP'),
     p('rate', rateLabel(fields, i)),
     p('amount', 'Amount'),

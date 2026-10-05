@@ -134,6 +134,7 @@ export default function DocumentDetail() {
         warnings?: string[];
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
+        total_reconciled_by?: string | null;
         copies_detected?: number | null;
         duplicates_removed?: number;
         needs_manual_entry?: boolean;
@@ -143,6 +144,8 @@ export default function DocumentDetail() {
   const matchFor = (i: number): MatchItem | undefined => (inv?.connected ? inv.items[i] : undefined);
 
   const isInvoice = doc.doc_type === 'invoice';
+  // What the bill itself says is payable - the figure on the paper.
+  const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
   const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
 
   const needsAttention = (i: number): boolean => {
@@ -343,10 +346,23 @@ export default function DocumentDetail() {
                 {itemSections.length} items
                 {tableRows.length !== itemSections.length ? ` · ${tableRows.length} shown` : ''}
                 {meta?.copies_detected && meta.copies_detected > 1 ? ` · ${meta.copies_detected} printed copies, read once` : ''}
+                {/* The lines' own sum, kept but clearly secondary: it is the
+                    TAXABLE total, thousands below the payable one on most
+                    bills, and as the headline it read as a mismatch. */}
+                {meta?.line_items_total ? ` · items ₹${formatMoney(meta.line_items_total)} before tax` : ''}
+                {/* A tick earned only against the printed TAXABLE total is a
+                    weaker one - the bill's own grand total was never reached,
+                    usually because a narrow tax column did not read. Say so,
+                    rather than letting it look like a full match. */}
+                {meta?.total_reconciles === true && /taxable/.test(meta.total_reconciled_by || '')
+                  ? ' · matched on the taxable total' : ''}
               </span>
+              {/* The headline is the total PRINTED ON THE BILL - the number the
+                  reviewer is comparing against. The tick says our lines agree
+                  with it, so it must never sit beside a different figure. */}
               <strong style={{ fontSize: 16, fontVariantNumeric: 'tabular-nums' }}>
                 {meta?.total_reconciles === true ? '✓ ' : meta?.total_reconciles === false ? '⚠ ' : ''}
-                ₹{meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
+                ₹{billTotal ? formatMoney(billTotal) : meta?.line_items_total ? formatMoney(meta.line_items_total) : '—'}
               </strong>
             </div>
           )}
