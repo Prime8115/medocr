@@ -231,7 +231,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
 # there, so an app build that predates the verdict banner still shows them.
 _NEW_CHECKS = frozenset({
     "cross_foot", "head_totals", "line_tax", "line_net", "line_discount",
-    "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan",
+    "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan", "printed_not_read",
 }) | frozenset({"cross_read"})
 
 
@@ -300,6 +300,11 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         # The verification layer: every identity the bill states, checked. Its
         # failures flag their fields (so review highlights them) and must each
         # be acknowledged before approval - see verify.py.
+        # The page's own text travels with the result, so the checks that read
+        # it - fields printed but not read - also run after a reviewer's edit,
+        # and corrections can be learned from it.
+        if hints.get("document_text"):
+            integrity["page_text"] = hints["document_text"]
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification

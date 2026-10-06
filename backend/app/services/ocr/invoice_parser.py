@@ -566,6 +566,9 @@ _CUSTOMER_NAME = re.compile(
 )
 
 
+_EMAIL_ANYWHERE = re.compile(r"([\w.+\-]+@[\w\-]+\.[A-Za-z][\w.\-]*[A-Za-z])")
+
+
 def _complete_legal_suffix(name: Optional[str], page_text: str) -> Optional[str]:
     """Finish a supplier name cut off after "PRIVATE" or "PVT".
 
@@ -1275,6 +1278,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
         return None
 
     line_items: List[dict] = []
+    party_text = ""
     page_items: Dict[int, List[dict]] = {}
     labels: dict = {}
     meta = None
@@ -1312,10 +1316,12 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                 # arrive run together on PDFs that carry no space characters.
                 page_texts[page_no] = page.extract_text(x_tolerance=WORD_TOLERANCE) or ""
                 if meta is None:
+                    regions = party_regions(page, WORD_TOLERANCE)
+                    party_text = "\n".join(regions.values())
                     meta = _extract_header_meta(
                         page_texts[page_no],
                         supplier_region_lines(page),
-                        party_regions(page, WORD_TOLERANCE),
+                        regions,
                     )
                     # Decided once, from the two GSTINs: an intra-state sale is
                     # CGST + SGST, an inter-state one is IGST. Suppliers head a
@@ -1374,6 +1380,20 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     # A total printed only on the last page won't be in the first page's text.
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
         fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+    # Nor will references printed only on a later page: Kanchan and Zydus print
+    # their IRN in the foot of the last page. Read from every page of the copy,
+    # filling only what the first page left blank.
+    for key, value in extract_references(full_text).items():
+        if value and not (fields.setdefault("invoice", {}).get(key) or {}).get("value"):
+            fields["invoice"][key] = _f(value)
+    # ...and the supplier's e-mail, which JB prints in its last page's footer.
+    # An address that sits in the buyer's blocks is the buyer's.
+    supplier = fields.setdefault("supplier", {})
+    if not (supplier.get("email") or {}).get("value"):
+        for m in _EMAIL_ANYWHERE.finditer(full_text):
+            if m.group(1).lower() not in party_text.lower():
+                supplier["email"] = _f(m.group(1))
+                break
     # Any invoice-level total the bill did not print is summed from the lines,
     # so the tax split always reaches the shop's accounts.
     invoice_meta = fields.setdefault("invoice", {})

@@ -912,6 +912,11 @@ def supplier_extras(text: str, exclude: Optional[str] = None,
             break
     out["pan"] = pan
     email = _EMAIL.search(text or "")
+    if not email and page_text:
+        # JB prints its e-mail in the page footer, outside its address block.
+        # Any address the buyer's blocks carry is the buyer's, not the supplier's.
+        email = next((m for m in _EMAIL.finditer(page_text)
+                      if m.group(1).lower() not in (exclude or "").lower()), None)
     out["email"] = email.group(1) if email else None
     index = 0
     taken = set()

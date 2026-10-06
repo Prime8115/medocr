@@ -290,6 +290,8 @@ class ExtractionMeta(BaseModel):
     # Fields the bill gives two answers to, for the reviewer to decide - see
     # services/ocr/choices.py.
     choices: Optional[list] = None
+    # The document's own text, as read - for the checks and learning that need it.
+    page_text: Optional[str] = None
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None

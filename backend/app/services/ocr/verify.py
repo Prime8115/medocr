@@ -389,7 +389,7 @@ def _verdict(c: _Checks, check_id: str, label: str, tested: int, bad: list, prob
 # -------------------------------------------------------------------- entry ---
 
 def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
-                   extra: Optional[List[dict]] = None) -> dict:
+                   extra: Optional[List[dict]] = None, page_text: Optional[str] = None) -> dict:
     """Run every check. `report` is reconcile_invoice's result (as stored in
     meta); `extra` adds checks computed elsewhere - the scan cross-read."""
     items = fields.get("line_items") or []
@@ -410,6 +410,10 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_hsn(c, items)
     _check_gstins(c, fields)
     _check_supplier_pan(c, fields)
+    # Whatever the bill prints that we did not read (missed_fields.py).
+    from app.services.ocr.missed_fields import missed_check
+
+    c.items.append(missed_check(fields, page_text or report.get("page_text") or ""))
     for check in extra or []:
         c.items.append(check)
 
