@@ -17,6 +17,7 @@ from app.schemas.extraction import (
 from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
+    complete_from_the_bill,
     dedupe_line_items,
     flag_invalid_gstins,
     mark_free_supplies,
@@ -236,6 +237,9 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     check_warnings = []
 
     if resolved_type == "invoice":
+        # Facts the bill fixes without printing them - a PAN inside its
+        # GSTIN, a zero head the sale cannot carry - for either reader.
+        complete_from_the_bill(fields)
         items = fields.get("line_items") or []
         before = len(items)
         items, removed = dedupe_line_items(items)

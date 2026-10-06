@@ -502,3 +502,74 @@ def flag_invalid_gstins(fields: dict) -> List[str]:
             leaf["confidence"] = min(leaf.get("confidence") or 0.3, 0.3)
             warnings.append(f"The {label} GSTIN {value} is not a valid GSTIN - please check it against the invoice.")
     return warnings
+
+
+# ------------------------- fields the bill already states -------------------------
+# GSTIN = 2-digit state code + the holder's 10-character PAN + entity + Z + check.
+_GSTIN = re.compile(r"^\d{2}([A-Z]{5}\d{4}[A-Z])[A-Z0-9]Z[A-Z0-9]$")
+# Union Territories without a legislature, where UTGST replaces SGST.
+_UT_STATE_CODES = frozenset({"04", "25", "26", "31", "35", "38"})
+_HEADS = ("cgst", "sgst", "igst", "utgst")
+
+
+def _leaf(value: str, confidence: float = 1.0) -> dict:
+    return {"value": value, "confidence": confidence}
+
+
+def complete_from_the_bill(fields: dict) -> List[str]:
+    """Fill fields that the bill states implicitly, for EITHER reader.
+
+    None of this is guessed - each is a fact the printed invoice already fixes:
+
+    * A party's PAN is characters 3-12 of its GSTIN. MSV prints both GSTINs and
+      neither PAN, and the export had blank PAN columns for figures sitting in
+      plain sight.
+    * The total GST is the sum of the heads the bill prints.
+    * A tax head that cannot apply to the sale is zero. An intra-state sale in a
+      state carries no IGST and no UTGST; an inter-state one no CGST, SGST or
+      UTGST. The tester read a blank UTGST on Tamil Nadu and Maharashtra bills
+      as "missing" - it is 0.00, and saying so is accurate.
+
+    Returns the dotted paths filled, for the log.
+    """
+    filled: List[str] = []
+    for party in ("supplier", "bill_to", "ship_to"):
+        block = fields.get(party)
+        if not isinstance(block, dict):
+            continue
+        gstin = _v(block.get("gstin")).upper().replace(" ", "")
+        m = _GSTIN.match(gstin)
+        if m and not _v(block.get("pan")):
+            block["pan"] = _leaf(m.group(1))
+            filled.append(f"{party}.pan")
+
+    invoice = fields.get("invoice")
+    if not isinstance(invoice, dict):
+        return filled
+
+    supplier = _v((fields.get("supplier") or {}).get("gstin"))
+    buyer = _v((fields.get("bill_to") or {}).get("gstin")) or _v((fields.get("ship_to") or {}).get("gstin"))
+    if _GSTIN.match(supplier.upper()) and _GSTIN.match(buyer.upper()):
+        inter = supplier[:2] != buyer[:2]
+        ut = supplier[:2] in _UT_STATE_CODES
+        if inter:
+            absent = ("cgst", "sgst", "utgst")
+        else:
+            absent = ("igst", "sgst") if ut else ("igst", "utgst")
+        # Only once the heads that DO apply are known - a zero beside a blank
+        # would read as "this bill carries no tax".
+        present = [h for h in _HEADS if h not in absent]
+        if any(_num(invoice.get(f"total_{h}_amount")) is not None for h in present):
+            for head in absent:
+                key = f"total_{head}_amount"
+                if not _v(invoice.get(key)):
+                    invoice[key] = _leaf("0.00")
+                    filled.append(f"invoice.{key}")
+
+    if not _v(invoice.get("total_gst_amount")):
+        heads = [_num(invoice.get(f"total_{h}_amount")) for h in _HEADS]
+        known = [h for h in heads if h is not None]
+        if known and any(known):
+            invoice["total_gst_amount"] = _leaf(_fmt(sum(known)))
+            filled.append("invoice.total_gst_amount")
+    return filled

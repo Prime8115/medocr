@@ -8,6 +8,14 @@ from app.config import settings
 from app.services.ocr.base import OCRError
 
 
+@pytest.fixture(autouse=True)
+def _fresh_schema_memory():
+    """Each test starts as a fresh worker that has seen no schema refusals."""
+    gem._SCHEMA_REFUSED.clear()
+    yield
+    gem._SCHEMA_REFUSED.clear()
+
+
 class Overloaded(Exception):
     code = 503
 
@@ -252,3 +260,16 @@ def test_a_bad_key_is_not_retried_without_the_schema(monkeypatch):
     with pytest.raises(OCRError):
         p.extract(b"text", "text/plain", "invoice")
     assert len(p._client.models.calls) == 1
+
+
+def test_a_refused_schema_is_not_sent_again_by_the_same_worker(monkeypatch):
+    """Once the model refuses the invoice schema, later invoices skip straight
+    to the request that works - instead of paying for a call that can only
+    fail first, on every invoice."""
+    payload = json.dumps({"invoice": {"invoice_no": {"value": "M-544", "confidence": 0.9}}})
+    p = _provider(monkeypatch, [SchemaTooComplex(), payload, payload], retries=2)
+    p.extract(b"text", "text/plain", "invoice")
+    p.extract(b"text", "text/plain", "invoice")
+    configs = p._client.models.configs
+    assert len(configs) == 3          # refused, retried - then one call only
+    assert configs[2].response_json_schema is None

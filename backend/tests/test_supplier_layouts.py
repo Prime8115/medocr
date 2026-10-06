@@ -240,3 +240,55 @@ def test_a_supplier_name_cut_at_the_column_edge_is_completed():
     page = "OVERSEAS HEALTH CARE PRIVATE LIMITED\nC/O HSS ENTER"
     assert _complete_legal_suffix("OVERSEAS HEALTH CARE PRIVATE", page) == \
         "OVERSEAS HEALTH CARE PRIVATE LIMITED"
+
+
+# --- facts the bill states without printing them --------------------------------
+
+from app.services.ocr.invoice_checks import complete_from_the_bill  # noqa: E402
+
+
+def _msv_like():
+    # MSV Lifesciences: both GSTINs, no PANs; CGST and SGST totals printed.
+    return {
+        "supplier": {"gstin": _leaf("33ABEFM0315R1Z8")},
+        "bill_to": {"gstin": _leaf("33AASCA3306L2ZK")},
+        "ship_to": {},
+        "invoice": {"total_cgst_amount": _leaf("357.96"), "total_sgst_amount": _leaf("357.96")},
+    }
+
+
+def test_a_pan_is_read_out_of_its_gstin():
+    f = _msv_like()
+    complete_from_the_bill(f)
+    assert _v(f["supplier"], "pan") == "ABEFM0315R"
+    assert _v(f["bill_to"], "pan") == "AASCA3306L"
+
+
+def test_an_intra_state_bill_carries_zero_igst_and_utgst_and_a_total_gst():
+    f = _msv_like()
+    complete_from_the_bill(f)
+    inv = f["invoice"]
+    assert _v(inv, "total_igst_amount") == "0.00"
+    assert _v(inv, "total_utgst_amount") == "0.00"
+    assert _v(inv, "total_gst_amount") == "715.92"
+
+
+def test_an_inter_state_bill_carries_zero_cgst_and_sgst():
+    f = {
+        "supplier": {"gstin": _leaf("24AAACZ1234A1Z5")},
+        "bill_to": {"gstin": _leaf("27AAECD7847H1ZC")},
+        "invoice": {"total_igst_amount": _leaf("1200.00")},
+    }
+    complete_from_the_bill(f)
+    inv = f["invoice"]
+    assert _v(inv, "total_cgst_amount") == "0.00"
+    assert _v(inv, "total_sgst_amount") == "0.00"
+    assert _v(inv, "total_gst_amount") == "1200.00"
+
+
+def test_no_zero_is_written_beside_a_tax_that_was_not_read():
+    # Zero IGST next to a BLANK CGST/SGST would read as "this bill has no tax".
+    f = _msv_like()
+    f["invoice"] = {}
+    complete_from_the_bill(f)
+    assert "total_igst_amount" not in f["invoice"]
