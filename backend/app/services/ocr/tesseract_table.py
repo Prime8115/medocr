@@ -135,14 +135,11 @@ def page_words(image, dpi: int = RENDER_DPI) -> List[Word]:
 def _page_images(data: bytes, content_type: str, max_pages: int):
     """The document's pages as images, whatever it arrived as."""
     if content_type == "application/pdf":
-        import pypdfium2 as pdfium
+        # Rendered together under the PDFium lock (see pdfium_safe); the
+        # Tesseract reading that follows runs outside it.
+        from app.services.ocr.pdfium_safe import render_pages
 
-        pdf = pdfium.PdfDocument(data)
-        try:
-            for i in range(min(len(pdf), max_pages)):
-                yield pdf[i].render(scale=RENDER_DPI / _POINTS_PER_INCH).to_pil()
-        finally:
-            pdf.close()
+        yield from render_pages(data, RENDER_DPI / _POINTS_PER_INCH, max_pages=max_pages)
     else:
         from PIL import Image
 

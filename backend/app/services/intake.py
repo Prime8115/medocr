@@ -208,51 +208,35 @@ def _open_pdf(data: bytes, notes: List[str]):
 def _repair_pdf(data: bytes) -> Optional[bytes]:
     """PDFium opens many files other readers refuse (a broken cross-reference
     table, a truncated tail); saving from it writes a sound file."""
-    try:
-        import pypdfium2 as pdfium
+    from app.services.ocr.pdfium_safe import resave
 
-        pdf = pdfium.PdfDocument(data)
+    try:
+        return resave(data)
     except Exception as exc:  # noqa: BLE001
         if "password" in str(exc).lower():
             raise UploadRejected(MSG_PDF_PASSWORD, "pdf_password")
         return None
-    try:
-        if len(pdf) == 0:
-            return None
-        buf = io.BytesIO()
-        pdf.save(buf)
-        return buf.getvalue()
-    except Exception:  # noqa: BLE001
-        return None
-    finally:
-        pdf.close()
 
 
 def _blank_pages(data: bytes, texts: List[str]) -> List[int]:
     """Indexes of the pages with no text and next to no ink."""
+    from app.services.ocr.pdfium_safe import page_total, render_pages
+
     try:
-        import pypdfium2 as pdfium
-    except ImportError:  # pragma: no cover
-        return []
-    blank = []
-    try:
-        pdf = pdfium.PdfDocument(data)
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        for i in range(min(len(pdf), _MAX_PAGES_CHECKED_FOR_BLANKS)):
-            if i < len(texts) and texts[i].strip():
-                continue
-            grey = pdf[i].render(scale=_BLANK_RENDER_SCALE, grayscale=True).to_pil().convert("L")
-            hist = grey.histogram()
-            ink = sum(hist[:160])  # clearly darker than paper
-            if ink <= _BLANK_INK_FRACTION * grey.width * grey.height:
-                blank.append(i)
+        total = min(page_total(data), _MAX_PAGES_CHECKED_FOR_BLANKS)
+        candidates = [i for i in range(total) if not (i < len(texts) and texts[i].strip())]
+        if not candidates:
+            return []
+        images = render_pages(data, _BLANK_RENDER_SCALE, grayscale=True, only=candidates)
     except Exception as exc:  # noqa: BLE001 - never refuse a file over this check
         log.info("upload: blank-page check skipped: %s", exc)
         return []
-    finally:
-        pdf.close()
+    blank = []
+    for i, image in zip(candidates, images):
+        grey = image.convert("L")
+        ink = sum(grey.histogram()[:160])  # clearly darker than paper
+        if ink <= _BLANK_INK_FRACTION * grey.width * grey.height:
+            blank.append(i)
     return blank
 
 
