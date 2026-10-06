@@ -133,7 +133,19 @@ def test_rate_source_does_not_dilute_confidence():
     result = _run(n_items=10, copies=1)
     item = result["fields"]["line_items"][0]
     assert item["rate_source"]["confidence"] is None
-    assert result["meta"]["overall_confidence"] == 1.0
+    # The fixture prints tax as rates only, so its tax amounts are worked out
+    # and held below full confidence. What this test guards is that rate_source
+    # - a label with no confidence of its own - is left out of the average
+    # rather than counted as zero, which would have dragged it far lower.
+    confs = [
+        leaf["confidence"]
+        for line in result["fields"]["line_items"]
+        for leaf in line.values()
+        if isinstance(leaf, dict) and leaf.get("value") not in (None, "")
+        and leaf.get("confidence") is not None
+    ]
+    assert result["meta"]["overall_confidence"] >= min(confs)
+    assert result["meta"]["overall_confidence"] > 0.95
 
 
 # ------------------------------ quantity vs free quantity ------------------------------

@@ -258,11 +258,13 @@ def test_net_amount_is_computed_when_the_invoice_prints_no_net_column():
     row = ["MED 1", "B1", "01/2028", "10", "100.00", "1000.00", "6.00", "6.00"]
     cols = _map_columns(header)
     item = _build_item(row, cols, header, _gst_columns(header))
-    # Rates alone, with no tax amounts to add: net stays unset rather than
-    # wrong. `_build_item` returns a raw row, so an unset field is absent; the
-    # schema fills it with None afterwards.
+    # Rates alone: the tax is the taxable value at that rate, which is what GST
+    # is, so it is worked out - and the net built from it is held at the same
+    # lower confidence, so a reviewer sees it was computed rather than read.
     assert item["amount"]["value"] == "1000.00"
-    assert not (item.get("net_amount") or {}).get("value")
+    assert item["cgst_amount"]["value"] == "60.00"
+    assert item["net_amount"]["value"] == "1120.00"
+    assert item["net_amount"]["confidence"] < 1.0
 
     # The same invoice with the tax amounts printed beside the rates.
     row2 = ["MED 2", "B2", "01/2028", "10", "100.00", "1000.00", "6.00 60.00", "6.00 60.00"]

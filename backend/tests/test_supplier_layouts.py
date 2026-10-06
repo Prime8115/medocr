@@ -177,8 +177,23 @@ def test_a_blank_reference_does_not_swallow_the_next_label():
     assert refs["po_no"] == "4608"
 
 
-def test_a_date_fragment_is_not_a_lorry_receipt():
-    assert extract_references("LR No 18/09 Date 18/09/2025")["lr_no"] is None
+def test_a_short_lorry_receipt_that_is_really_printed_is_kept():
+    # These look like noise and are exactly what the bills print: Abbott
+    # "LR No.:CC", Overseas "GR/LR No. :18/09". Only a captured LABEL is
+    # rejected, never an odd-looking value.
+    assert extract_references("LR No.:CC WT.:2.01")["lr_no"] == "CC"
+    assert extract_references("GR/LR No. :18/09\nGR/LR Date : 18/09/2025")["lr_no"] == "18/09"
+
+
+def test_a_tax_printed_only_as_a_rate_is_worked_out_and_marked():
+    # Abbott prints 6.00 / 6.00 per line and the tax only in its footer.
+    header = ["Prod.Desc.", "Batch No", "Billed Qty", "CGST%", "SGST/ UTGST %", "Value INR"]
+    row = ["Retelex Kit", "TPV1A24A16", "10", "6.00", "6.00", "128700.00"]
+    item = _build_item(row, _map_columns(header), header, _gst_columns(header),
+                       interstate=False, local="sgst")
+    assert _v(item, "cgst_amount") == "7722.00"
+    assert _v(item, "sgst_amount") == "7722.00"
+    assert item["cgst_amount"]["confidence"] < 1.0
 
 
 def test_named_month_dates_are_read():

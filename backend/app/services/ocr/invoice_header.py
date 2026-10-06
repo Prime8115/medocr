@@ -164,21 +164,9 @@ def _is_label_not_value(found: str, text: str) -> bool:
     return bool(re.fullmatch(r"[a-z][a-z']{1,6}", found.strip()))
 
 
-def _is_reference_number(found: str) -> bool:
-    """Whether this could be a lorry-receipt or purchase-order number.
-
-    Both are document numbers of at least a few characters. Abbott's blank LR
-    field handed us "CC" (its copy marker) and Overseas's handed us "18/09" -
-    the start of the date printed beside it. Neither is a reference anyone can
-    chase, and a wrong one on a purchase record is worse than none.
-    """
-    bare = found.strip()
-    if len(bare.replace("/", "").replace("-", "")) < 4:
-        return False
-    # A date, or the start of one, is not a document number.
-    return not re.fullmatch(r"[0-3]?\d[./\-][0-1]?\d(?:[./\-]\d{2,4})?", bare)
-
-
+# No length or shape test on the reference numbers themselves: Abbott really
+# prints "LR No.:CC" and Overseas "GR/LR No. :18/09". Those look like noise and
+# are exactly what is on the bill - only a captured LABEL is rejected.
 def extract_references(text: str) -> Dict[str, Optional[str]]:
     """Transport, order and statutory references from the page text."""
     out: Dict[str, Optional[str]] = {}
@@ -189,8 +177,6 @@ def extract_references(text: str) -> Dict[str, Optional[str]]:
             # not just the transporter.
             found = _NEXT_LABEL.split(found)[0].strip(" .,-:") or None
         if found and _is_label_not_value(found, text):
-            found = None
-        if found and field in ("lr_no", "po_no") and not _is_reference_number(found):
             found = None
         out[field] = found
     for field, labels in _DATES.items():

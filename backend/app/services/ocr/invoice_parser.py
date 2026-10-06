@@ -135,6 +135,23 @@ _COPY_MARKERS = (
 # India's highest GST slab. Anything above it is a misread cell, not a rate.
 _MAX_GST_PERCENT = 28.0
 
+# The rates GST is actually charged at - whole, and split into CGST + SGST
+# halves - plus the small special rates. A figure that is not one of these is
+# tax, not a rate. "Below 28" was not enough: Menarini's single-figure CGST
+# cells carry 27.77 and 11.89 rupees, which read as 27.77% and 11.89% and left
+# both lines with no tax, so the bill's CGST total came out 39.66 short.
+_GST_RATES = (0.0, 0.1, 0.125, 0.25, 0.5, 1.0, 1.5, 2.5, 3.0, 5.0, 6.0, 7.5, 9.0,
+              12.0, 14.0, 18.0, 28.0)
+
+
+# Confidence for a figure computed from others on the bill rather than read off
+# it. Below the review threshold's "certain", so it is marked for a glance.
+_DERIVED_CONFIDENCE = 0.85
+
+
+def _is_gst_rate(n: float) -> bool:
+    return any(abs(n - r) < 0.001 for r in _GST_RATES)
+
 # No real pharmacy line carries more units than this. A bigger number in the
 # quantity column means we picked up an invoice or IRN number from a footer.
 _MAX_LINE_QUANTITY = 1_000_000
@@ -841,7 +858,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         numbers = [float(n.replace(",", "")) for n in _NUM.findall(str(row[gi] or ""))]
         if not numbers:
             continue
-        rate = next((n for n in numbers if 0 <= n <= _MAX_GST_PERCENT), None)
+        rate = next((n for n in numbers if _is_gst_rate(n)), None)
         head = _norm(header_row[gi]) if gi < len(header_row) else ""
         which = _tax_head(head, interstate, local)
         if rate is None:
@@ -860,8 +877,26 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         amounts = [n for n in numbers if n is not rate]
         if amounts and not (item.get(f"{which}_amount") or {}).get("value"):
             item[f"{which}_amount"] = _f(f"{amounts[-1]:.2f}")
+        elif rate == 0 and not (item.get(f"{which}_amount") or {}).get("value"):
+            # A head charged at 0% carries no tax. Saying so lets the invoice
+            # total for that head read 0.00 - Menarini prints "IGST 0.00" - not
+            # blank, which the export reads as "not captured".
+            item[f"{which}_amount"] = _f("0.00")
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
+
+    # A bill that prints each head's RATE on the line but its tax only in the
+    # footer (Abbott: "6.00 | 6.00" per line, "7,722.00" twice at the foot) has
+    # still stated the line's tax - it is the taxable value at that rate, which
+    # is what GST is. Computed, so held below full confidence: the reviewer can
+    # see it was worked out rather than read.
+    taxable = _num((item.get("amount") or {}).get("value"))
+    if taxable is not None:
+        for head in ("cgst", "sgst", "igst", "utgst"):
+            pct = _num((item.get(f"{head}_percent") or {}).get("value"))
+            if pct and not (item.get(f"{head}_amount") or {}).get("value"):
+                item[f"{head}_amount"] = _f(f"{float(taxable) * float(pct) / 100:.2f}",
+                                            confidence=_DERIVED_CONFIDENCE)
 
     # `amount` is the line value everything reconciles against. Many invoices
     # print only one value column and head it "Net Amount" or "Gross Amount";
@@ -902,7 +937,13 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             ]
             known = [float(t) for t in taxes if t is not None]
             if known:
-                item["net_amount"] = _f(f"{float(taxable) + sum(known):.2f}")
+                # As sure as the least sure figure it was added up from.
+                sure = min(
+                    (item.get(k) or {}).get("confidence") or 1.0
+                    for k in ("cgst_amount", "sgst_amount", "igst_amount", "utgst_amount")
+                    if (item.get(k) or {}).get("value")
+                )
+                item["net_amount"] = _f(f"{float(taxable) + sum(known):.2f}", confidence=sure)
 
     # A footer line that slips past the text filters gives itself away here: its
     # "quantity" is an IRN or invoice number a dozen digits long. Kanchan's IRN
