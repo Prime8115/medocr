@@ -15,6 +15,7 @@ import { addLineItem, buildSections, confidencePercent, extraColumns, getLeaf, i
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import { formatMoney } from '../lib/table';
+import { openChecks, verdictOf, verificationOf, type Check as VerifyCheck } from '../lib/verification';
 import type { Leaf } from '../api/documents';
 
 type Fields = Record<string, unknown>;
@@ -38,6 +39,9 @@ export default function DocumentDetail() {
   const [editItem, setEditItem] = useState<number | null>(null);
   const [itemSearch, setItemSearch] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
+  // The confirm-before-approve checklist: failed checks, and which are ticked.
+  const [ackChecks, setAckChecks] = useState<VerifyCheck[]>([]);
+  const [acked, setAcked] = useState<Set<string>>(new Set());
   const [rawTextOpen, setRawTextOpen] = useState(false);
   const [reportNote, setReportNote] = useState('');
 
@@ -62,26 +66,45 @@ export default function DocumentDetail() {
     })();
   }, [id, apply]);
 
-  async function save(): Promise<boolean> {
+  async function save(): Promise<DocumentDto | null> {
     setBusy('save');
     try {
-      apply(await patchDocument(id, fields));
+      const saved = await patchDocument(id, fields);
+      apply(saved);
       setToast({ text: 'Saved', ok: true });
-      return true;
+      return saved;
     } catch {
       setToast({ text: 'Save failed', ok: false });
-      return false;
+      return null;
     } finally {
       setBusy(null);
     }
   }
 
+  // Approval confirms every failed check against the paper first. Saving
+  // re-runs the checks on the server, so the list comes from what it returns.
   async function approve() {
+    const saved = await save();
+    if (!saved) return;
+    const open = openChecks(verificationOf(saved.payload));
+    if (open.length > 0) {
+      setAckChecks(open);
+      setAcked(new Set());
+      return;
+    }
+    await finishApprove([]);
+  }
+
+  async function finishApprove(acknowledged: string[]) {
     setBusy('approve');
     try {
-      if (!(await save())) return;
-      apply(await approveDocument(id));
+      apply(await approveDocument(id, acknowledged));
+      setAckChecks([]);
       setToast({ text: 'Approved', ok: true });
+    } catch (e: unknown) {
+      const raw = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      const text = typeof raw === 'string' ? raw : (raw as { message?: string })?.message ?? 'Approve failed';
+      setToast({ text, ok: false });
     } finally {
       setBusy(null);
     }
@@ -207,10 +230,47 @@ export default function DocumentDetail() {
       {/* Integrity warnings are full sentences ("the invoice states 143 items but
           429 were read"); low-confidence warnings are dotted field paths. Show
           the sentences verbatim — they are the ones that change a decision. */}
+      {/* The verdict: every check the bill's own figures allow, passed or not.
+          Each failed check names what it is about, with the fields marked below. */}
+      {(() => {
+        const v = verificationOf(doc.payload);
+        const verdict = verdictOf(v);
+        if (!verdict) return null;
+        const failed = (v?.checks ?? []).filter((c) => c.status === 'fail');
+        return (
+          <div
+            className="glass-card"
+            style={{
+              marginBottom: 16,
+              borderColor: verdict.ok ? 'rgba(34,197,94,0.45)' : 'rgba(245,158,11,0.45)',
+              background: verdict.ok ? 'rgba(34,197,94,0.08)' : 'rgba(245,158,11,0.08)',
+            }}
+          >
+            <strong style={{ color: verdict.ok ? 'var(--success)' : 'var(--warning)' }}>
+              {verdict.ok ? '✓ ' : '⚠ '}
+              {verdict.title}
+            </strong>
+            {verdict.ok ? (
+              <div className="text-muted" style={{ marginTop: 4 }}>{verdict.detail}</div>
+            ) : (
+              <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                {failed.map((c) => (
+                  <li key={c.id} style={{ marginBottom: 4 }}>
+                    <strong>{c.label}</strong>
+                    {c.message ? <span className="text-muted"> — {c.message}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })()}
+
       {(() => {
         const all = meta?.warnings ?? [];
         const sentences = all.filter((w) => w.includes(' '));
-        if (all.length === 0) return null;
+        // The verdict above already says all of this when the server sent one.
+        if (all.length === 0 || verificationOf(doc.payload)) return null;
         return (
           <div className="glass-card" style={{ borderColor: 'rgba(245,158,11,0.4)', marginBottom: 16 }}>
             {sentences.length > 0 ? (
@@ -378,6 +438,50 @@ export default function DocumentDetail() {
       )}
 
       {/* Report-a-problem modal */}
+      {ackChecks.length > 0 && (
+        <div onClick={() => setAckChecks([])} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+          <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ width: 560, maxWidth: '90vw', padding: 24 }}>
+            <h3 style={{ marginTop: 0 }}>Check against the paper</h3>
+            <p className="text-muted" style={{ fontSize: 14 }}>
+              These didn't add up on this bill. Look at each on the paper, then tick it to confirm what is shown is right.
+            </p>
+            <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+              {ackChecks.map((c) => (
+                <label key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={acked.has(c.id)}
+                    onChange={(e) =>
+                      setAcked((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(c.id);
+                        else next.delete(c.id);
+                        return next;
+                      })
+                    }
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    <strong>{c.label}</strong>
+                    {c.message ? <div className="text-muted" style={{ fontSize: 13 }}>{c.message}</div> : null}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button className="btn-secondary" onClick={() => setAckChecks([])}>Cancel</button>
+              <button
+                className="btn-primary"
+                disabled={acked.size < ackChecks.length || busy === 'approve'}
+                onClick={() => finishApprove(ackChecks.map((c) => c.id))}
+              >
+                {busy === 'approve' ? 'Approving…' : 'Confirm & approve'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {reportOpen && (
         <div onClick={() => setReportOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
           <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ width: 520, maxWidth: '90vw', padding: 24 }}>

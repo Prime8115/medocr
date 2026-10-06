@@ -32,6 +32,7 @@ import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/c
 import { isRetryableFailure, isWaitingForAi } from '@/src/lib/failure';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
+import { Check, openChecks, verdictOf, verificationOf } from '@/src/lib/verification';
 
 const POLL_MS = 2000;
 const MAX_AUTO_RETRIES = 3;
@@ -60,6 +61,10 @@ export default function ReviewScreen() {
   const [rawTextOpen, setRawTextOpen] = useState(false);
   const [reportNote, setReportNote] = useState('');
   const [reporting, setReporting] = useState(false);
+  // The confirm-before-approve checklist: which failed checks, which are ticked.
+  const [ackAction, setAckAction] = useState<'approve' | 'push' | null>(null);
+  const [ackChecks, setAckChecks] = useState<Check[]>([]);
+  const [acked, setAcked] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     AsyncStorage.getItem(VIEW_MODE_KEY)
@@ -164,46 +169,64 @@ export default function ReviewScreen() {
     ]);
   }
 
-  async function save(): Promise<boolean> {
+  async function save(): Promise<DocumentDto | null> {
     setSaving(true);
     try {
-      applyDoc(await patchDocument(id, fields));
-      return true;
+      const saved = await patchDocument(id, fields);
+      applyDoc(saved);
+      return saved;
     } catch {
       Alert.alert(t('errorGeneric'));
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
   }
 
-  async function approveOnly() {
-    setBusy('approve');
+  // Approval confirms every failed check against the paper first. Saving
+  // re-runs the checks on the server, so the list is taken from what it
+  // returns, never from the screen's older copy.
+  async function startApproval(action: 'approve' | 'push') {
+    setBusy(action);
     try {
-      if (!(await save())) return;
-      applyDoc(await approveDocument(id));
-    } catch {
-      Alert.alert(t('errorGeneric'));
+      const saved = await save();
+      if (!saved) return;
+      const open = openChecks(verificationOf(saved.payload));
+      if (open.length > 0) {
+        setAckChecks(open);
+        setAcked(new Set());
+        setAckAction(action);
+        return;
+      }
+      await finishApproval(action, []);
     } finally {
       setBusy(null);
     }
   }
 
-  async function approveAndSend() {
-    setBusy('push');
+  async function finishApproval(action: 'approve' | 'push', acknowledged: string[]) {
+    setBusy(action);
     try {
-      if (!(await save())) return;
-      await approveDocument(id);
+      const approved = await approveDocument(id, acknowledged);
+      setAckAction(null);
+      if (action === 'approve') {
+        applyDoc(approved);
+        return;
+      }
       const result = await pushDocument(id);
       applyDoc(result);
       Alert.alert(t('pushed'), `${result.deliveries.length} delivery(ies)`);
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? t('errorGeneric');
+      const raw = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      const detail = typeof raw === 'string' ? raw : (raw as { message?: string })?.message ?? t('errorGeneric');
       Alert.alert(t('failed'), detail);
     } finally {
       setBusy(null);
     }
   }
+
+  const approveOnly = () => startApproval('approve');
+  const approveAndSend = () => startApproval('push');
 
   /**
    * Every defect so far reached us as a WhatsApp message that had to be
@@ -326,6 +349,7 @@ export default function ReviewScreen() {
       }
     | undefined;
   const warnings = meta?.warnings ?? [];
+  const verdict = verdictOf(verificationOf(payload));
 
   const matchForIndex = (i: number): MatchItem | undefined =>
     inv?.connected ? inv.items[i] : undefined;
@@ -422,7 +446,25 @@ export default function ReviewScreen() {
         {/* Integrity warnings are full sentences ("the invoice states 143 items
             but 429 were read"); low-confidence warnings are dotted field paths.
             Show the sentences — they are the ones that change a decision. */}
-        {warnings.length > 0 &&
+        {/* The verdict: every check the bill's own figures allow, passed or
+            not. Tapping a failing verdict shows just the lines to check. */}
+        {verdict && (
+          <TouchableOpacity
+            activeOpacity={verdict.ok ? 1 : 0.7}
+            onPress={() => {
+              if (!verdict.ok) setAttentionOnly(true);
+            }}
+            style={[styles.verdict, verdict.ok ? styles.verdictOk : styles.verdictWarn]}
+          >
+            <Text style={[styles.verdictTitle, { color: verdict.ok ? colors.success : colors.warning }]}>
+              {verdict.ok ? '✓ ' : '⚠ '}
+              {verdict.title}
+            </Text>
+            <Text style={styles.verdictDetail}>{verdict.detail}</Text>
+          </TouchableOpacity>
+        )}
+
+        {!verdict && warnings.length > 0 &&
           (() => {
             const sentences = warnings.filter((w) => w.includes(' ')).slice(0, 2);
             const shown = sentences.length > 0 ? sentences : [t('lowConfidence')];
@@ -608,6 +650,56 @@ export default function ReviewScreen() {
           <Text style={styles.sentText}>✓ {t('pushed')}</Text>
         </View>
       )}
+
+      {/* Confirm-before-approve: each failed check ticked against the paper. */}
+      <Modal visible={ackAction !== null} animationType="slide" transparent onRequestClose={() => setAckAction(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setAckAction(null)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>Check against the paper</Text>
+            <TouchableOpacity onPress={() => setAckAction(null)}>
+              <Text style={styles.modalDone}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.reportHelp}>
+            These didn't add up on this bill. Look at each on the paper, then tick it to confirm what the app shows is right.
+          </Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            {ackChecks.map((check) => {
+              const on = acked.has(check.id);
+              return (
+                <TouchableOpacity
+                  key={check.id}
+                  style={styles.ackRow}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: on }}
+                  onPress={() =>
+                    setAcked((prev) => {
+                      const next = new Set(prev);
+                      if (on) next.delete(check.id);
+                      else next.add(check.id);
+                      return next;
+                    })
+                  }
+                >
+                  <Text style={[styles.ackBox, on && styles.ackBoxOn]}>{on ? '✓' : ''}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.ackLabel}>{check.label}</Text>
+                    {check.message ? <Text style={styles.ackMessage}>{check.message}</Text> : null}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+          <Button
+            title={ackAction === 'push' ? 'Confirm, approve & send' : 'Confirm & approve'}
+            variant="success"
+            disabled={acked.size < ackChecks.length}
+            loading={busy === ackAction}
+            onPress={() => ackAction && finishApproval(ackAction, ackChecks.map((c) => c.id))}
+          />
+        </View>
+      </Modal>
 
       {/* Report-a-problem sheet */}
       <Modal visible={reportOpen} animationType="slide" transparent onRequestClose={() => setReportOpen(false)}>
@@ -883,6 +975,16 @@ const styles = StyleSheet.create({
   actions: { gap: spacing.md, marginTop: spacing.lg },
   invSummary: { ...font.caption, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.sm },
   modalBackdrop: { flex: 1, backgroundColor: colors.overlay },
+  verdict: { padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
+  verdictOk: { backgroundColor: colors.successTint },
+  verdictWarn: { backgroundColor: colors.warningTint },
+  verdictTitle: { ...font.body, fontWeight: '700' },
+  verdictDetail: { ...font.body, color: colors.textMuted, marginTop: 2 },
+  ackRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, paddingVertical: spacing.md, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
+  ackBox: { width: 24, height: 24, borderRadius: 6, borderWidth: 2, borderColor: colors.border, textAlign: 'center', lineHeight: 20, fontWeight: '700', color: '#fff' },
+  ackBoxOn: { backgroundColor: colors.success, borderColor: colors.success },
+  ackLabel: { ...font.body, fontWeight: '600' },
+  ackMessage: { ...font.body, color: colors.textMuted, marginTop: 2 },
   modalSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, maxHeight: '85%', backgroundColor: colors.bg, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
   modalHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   modalTitle: { ...font.h2, color: colors.text },
