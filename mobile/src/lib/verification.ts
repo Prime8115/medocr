@@ -35,7 +35,8 @@ export function verificationOf(payload: unknown): Verification | null {
 export function openChecks(v: Verification | null): Check[] {
   if (!v) return [];
   const done = new Set((v.acknowledged ?? []).map((a) => a.id));
-  return v.checks.filter((c) => c.status === 'fail' && !done.has(c.id));
+  // A pending choice is answered by choosing, never by ticking it off.
+  return v.checks.filter((c) => c.status === 'fail' && !done.has(c.id) && !c.id.startsWith('choice_'));
 }
 
 /** Whether the scan was confirmed by a second, independent reading. */
@@ -68,4 +69,43 @@ export function verdictOf(v: Verification | null): Verdict | null {
     title: `${failed.length} ${failed.length === 1 ? 'check needs' : 'checks need'} a look`,
     detail: failed.map((c) => c.label).join(' · '),
   };
+}
+
+/**
+ * A field the bill gives two answers to, for the reviewer to decide
+ * (backend/app/services/ocr/choices.py). Approval waits until each is chosen;
+ * a choice marked `remember` is kept for the supplier, so its next bill
+ * arrives decided - and shows here as remembered, still changeable.
+ */
+export interface ChoiceOption {
+  label: string;
+  values: Record<string, string | null>;
+}
+
+export interface Choice {
+  id: string;
+  label: string;
+  question: string;
+  fields: string[];
+  options: ChoiceOption[];
+  default: number;
+  chosen: number | null;
+  remember: boolean;
+  remembered?: boolean;
+}
+
+export function choicesOf(payload: unknown): Choice[] {
+  const meta = (payload as { meta?: { choices?: Choice[] } } | null)?.meta;
+  return Array.isArray(meta?.choices) ? meta!.choices! : [];
+}
+
+export function pendingChoices(payload: unknown): Choice[] {
+  return choicesOf(payload).filter((c) => c.chosen === null || c.chosen === undefined);
+}
+
+/** "GN-15912-1068-SHREE" / "100178296 · 30.06.2025" - an option's values, plainly. */
+export function optionText(option: ChoiceOption): string {
+  return Object.values(option.values)
+    .filter((v) => v !== null && v !== undefined && v !== '')
+    .join(' · ');
 }

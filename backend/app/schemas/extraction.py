@@ -287,6 +287,9 @@ class ExtractionMeta(BaseModel):
     # Every check run on this extraction, pass/fail/skipped, with the fields a
     # failure implicates and any acknowledgements - see services/ocr/verify.py.
     verification: Optional[dict] = None
+    # Fields the bill gives two answers to, for the reviewer to decide - see
+    # services/ocr/choices.py.
+    choices: Optional[list] = None
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None

@@ -4,6 +4,7 @@ import { ArrowLeft, Check, Flag, Save, Send } from 'lucide-react';
 
 import {
   approveDocument,
+  chooseOption,
   getDocument,
   patchDocument,
   pushDocument,
@@ -15,7 +16,16 @@ import { addLineItem, buildSections, confidencePercent, extraColumns, getLeaf, i
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import { formatMoney } from '../lib/table';
-import { openChecks, verdictOf, verificationOf, type Check as VerifyCheck } from '../lib/verification';
+import {
+  choicesOf,
+  openChecks,
+  optionText,
+  pendingChoices,
+  verdictOf,
+  verificationOf,
+  type Check as VerifyCheck,
+  type Choice,
+} from '../lib/verification';
 import type { Leaf } from '../api/documents';
 
 type Fields = Record<string, unknown>;
@@ -86,6 +96,11 @@ export default function DocumentDetail() {
   async function approve() {
     const saved = await save();
     if (!saved) return;
+    const undecided = pendingChoices(saved.payload);
+    if (undecided.length > 0) {
+      setToast({ text: `Choose first: ${undecided.map((c) => c.label).join(', ')}`, ok: false });
+      return;
+    }
     const open = openChecks(verificationOf(saved.payload));
     if (open.length > 0) {
       setAckChecks(open);
@@ -93,6 +108,21 @@ export default function DocumentDetail() {
       return;
     }
     await finishApprove([]);
+  }
+
+  // A choice is made on the server: save any edits first so none are lost.
+  async function pick(choice: Choice, option: number) {
+    const saved = await save();
+    if (!saved) return;
+    setBusy('choose');
+    try {
+      apply(await chooseOption(id, choice.id, option, choice.remember));
+      setToast({ text: `${choice.label}: ${choice.options[option].label}`, ok: true });
+    } catch {
+      setToast({ text: 'Could not save the choice', ok: false });
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function finishApprove(acknowledged: string[]) {
@@ -265,6 +295,42 @@ export default function DocumentDetail() {
           </div>
         );
       })()}
+
+      {/* Fields the bill gives two answers to: the reviewer decides. A
+          remembered decision shows as such and can still be changed. */}
+      {choicesOf(doc.payload).map((choice) => (
+        <div
+          key={choice.id}
+          className="glass-card"
+          style={{
+            marginBottom: 16,
+            borderColor: choice.chosen == null ? 'rgba(245,158,11,0.45)' : undefined,
+          }}
+        >
+          <strong>
+            {choice.label}
+            {choice.chosen == null ? ' — choose one' : choice.remembered ? ' · remembered for this supplier' : ''}
+          </strong>
+          <div className="text-muted" style={{ margin: '4px 0 10px' }}>{choice.question}</div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {choice.options.map((opt, i) => {
+              const on = choice.chosen === i;
+              return (
+                <button
+                  key={opt.label}
+                  className={on ? 'btn-primary' : 'btn-secondary'}
+                  disabled={busy !== null}
+                  onClick={() => pick(choice, i)}
+                  style={{ textAlign: 'left' }}
+                >
+                  <div style={{ fontWeight: 600 }}>{on ? '● ' : '○ '}{opt.label}</div>
+                  <div style={{ fontSize: 13, opacity: 0.85 }}>{optionText(opt) || 'blank on the bill'}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
 
       {(() => {
         const all = meta?.warnings ?? [];

@@ -26,6 +26,7 @@ from app.services.ocr.invoice_checks import (
     validate_line_arithmetic,
 )
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.choices import apply_default, reference_choices, settle_checks, total_choice
 from app.services.ocr.verify import flag_failed_fields, verify_invoice
 from app.services.ocr.pdf_utils import (
     extract_text_pages,
@@ -302,6 +303,14 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification
+
+        # Where the bill itself gives two answers, the reviewer decides
+        # (choices.py) - offered with every option and a default meanwhile.
+        offered = (reference_choices(hints.get("document_text") or "", fields)
+                   + total_choice(integrity))
+        if offered:
+            apply_default(fields, offered)
+            integrity["choices"] = offered
         for check in verification["checks"]:
             if check["status"] == "fail" and check["id"] in _NEW_CHECKS:
                 check_warnings.append(f"{check['label']}: {check['message']}")
@@ -318,6 +327,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     ).model_dump()
     meta["pages"] = pages
     meta["item_count"] = item_count
+    settle_checks(meta)
     meta["pages_failed"] = failed_pages
     return {"schema_version": SCHEMA_VERSION, "doc_type": resolved_type, "fields": fields, "meta": meta}
 

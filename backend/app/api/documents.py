@@ -36,6 +36,7 @@ from app.schemas.document import (
     DocumentResponse,
     DocumentUpdate,
     ApproveRequest,
+    ChooseRequest,
 )
 from app.schemas.extraction import validate_fields
 from app.services import intake, jobs, lifecycle
@@ -44,7 +45,9 @@ from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
 from app.services.ocr.key_pool import next_quota_reset
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.choices import pending as pending_choices
 from app.services.ocr.verify import open_checks, reverify
+from app.services.supplier_choices import apply_remembered, decide
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
 
@@ -164,6 +167,9 @@ def _process_job(db: Session, job: OcrJob) -> None:
             log.warning("document %s: lease lost while reading; result discarded", document_id)
             return
         doc = db.get(Document, document_id)
+        # Choices this shop already decided for this supplier, decided again.
+        if result.get("doc_type") == "invoice":
+            result = apply_remembered(db, doc.shop_id, "invoice", result)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
@@ -597,6 +603,31 @@ def report_document(
     )
 
 
+@router.post("/{document_id}/choose", response_model=DocumentOut)
+def choose_option(
+    document_id: str,
+    body: ChooseRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Answer one of the bill's ambiguous fields - see services/ocr/choices.py."""
+    doc = _get_owned_document(document_id, db, user)
+    if doc.status not in (lifecycle.NEEDS_REVIEW, lifecycle.APPROVED):
+        raise HTTPException(status_code=409, detail=f"Cannot change a document in '{doc.status}' state.")
+    try:
+        doc.payload = decide(db, user.shop_id, doc.doc_type, doc.payload or {}, body.choice,
+                             body.option, user.id, remember=body.remember)
+    except (StopIteration, IndexError, KeyError):
+        raise HTTPException(status_code=422, detail="No such choice or option on this document.")
+    doc.status = lifecycle.NEEDS_REVIEW
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.choice_made",
+                    target=doc.id, detail={"choice": body.choice, "option": body.option,
+                                           "remember": body.remember}))
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
 @router.post("/{document_id}/approve", response_model=DocumentOut)
 def approve_document(
     document_id: str,
@@ -614,9 +645,19 @@ def approve_document(
     # be acknowledged by the reviewer - "I checked this against the paper" - and
     # each acknowledgement is recorded with who made it, and when.
     meta = (doc.payload or {}).get("meta") or {}
+    # A choice is a decision, not a confirmation: it cannot be ticked away.
+    undecided = pending_choices(meta)
+    if undecided:
+        names = "; ".join(c["label"] for c in undecided)
+        raise HTTPException(status_code=409, detail={
+            "message": f"Choose before approving: {names}.",
+            "open_choices": [{"id": c["id"], "label": c["label"]} for c in undecided],
+            "open_checks": [],
+        })
     verification = meta.get("verification")
     acknowledged = set((body.acknowledged if body else []) or [])
-    still_open = [c for c in open_checks(verification) if c["id"] not in acknowledged]
+    still_open = [c for c in open_checks(verification)
+                  if c["id"] not in acknowledged and not c["id"].startswith("choice_")]
     if still_open:
         names = "; ".join(c["label"] for c in still_open)
         raise HTTPException(status_code=409, detail={

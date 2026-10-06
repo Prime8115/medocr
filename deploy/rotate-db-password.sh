@@ -76,10 +76,12 @@ fi
 
 log "waiting for the API to report healthy"
 for _ in $(seq 1 30); do
-  if curl -fsS -m 5 http://127.0.0.1:8000/health >/dev/null 2>&1 \
-     || docker compose exec -T backend python -c \
-          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=5).status==200 else 1)" \
-          >/dev/null 2>&1; then
+  # Asked from inside the container, on the port it actually listens on
+  # (backend/Dockerfile: ${PORT:-8080}) - nothing assumed about what the host
+  # publishes.
+  if docker compose exec -T backend python -c \
+       "import os,urllib.request,sys; port=os.environ.get('PORT','8080'); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+port+'/health',timeout=5).status==200 else 1)" \
+       >/dev/null 2>&1; then
     # Healthy is not enough: prove the API can actually reach the database.
     if docker compose exec -T backend python -c \
         "from app.database import SessionLocal; from sqlalchemy import text; s=SessionLocal(); s.execute(text('select 1')); s.close()" \

@@ -1387,5 +1387,6 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
         "stated_item_count": stated_count,
         "price_labels": labels,
         "total_in_words": total_from_words(full_text),
+        "document_text": full_text,
     }
     return fields

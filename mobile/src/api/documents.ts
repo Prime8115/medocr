@@ -75,6 +75,12 @@ export async function approveDocument(id: string, acknowledged: string[] = []): 
   return res.data as DocumentDto;
 }
 
+/** Answer one of the bill's ambiguous fields; `remember` keeps it for the supplier. */
+export async function chooseOption(id: string, choice: string, option: number, remember = true): Promise<DocumentDto> {
+  const res = await api.post(`/v1/documents/${id}/choose`, { choice, option, remember });
+  return res.data as DocumentDto;
+}
+
 export interface PushResult extends DocumentDto {
   deliveries: { id: string; connector_id: string; status: string; response_body?: string }[];
 }

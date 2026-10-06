@@ -21,6 +21,17 @@ class DocumentUpdate(BaseModel):
     fields: dict
 
 
+class ChooseRequest(BaseModel):
+    """A reviewer's answer to one of the bill's ambiguous fields.
+
+    `remember` keeps the decision for this supplier, so its next bill arrives
+    decided - for choices that are the supplier's habit, not one bill's quirk.
+    """
+    choice: str
+    option: int
+    remember: bool = True
+
+
 class ApproveRequest(BaseModel):
     """Approval, with the failed checks the reviewer has checked against the paper.
 

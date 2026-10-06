@@ -17,6 +17,7 @@ import {
 import {
   DocumentDto,
   approveDocument,
+  chooseOption,
   getDocument,
   patchDocument,
   pushDocument,
@@ -32,7 +33,16 @@ import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/c
 import { isRetryableFailure, isWaitingForAi } from '@/src/lib/failure';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
-import { Check, openChecks, verdictOf, verificationOf } from '@/src/lib/verification';
+import {
+  Check,
+  Choice,
+  choicesOf,
+  openChecks,
+  optionText,
+  pendingChoices,
+  verdictOf,
+  verificationOf,
+} from '@/src/lib/verification';
 
 const POLL_MS = 2000;
 const MAX_AUTO_RETRIES = 3;
@@ -191,6 +201,11 @@ export default function ReviewScreen() {
     try {
       const saved = await save();
       if (!saved) return;
+      const undecided = pendingChoices(saved.payload);
+      if (undecided.length > 0) {
+        Alert.alert('Choose first', undecided.map((c) => c.question).join('\n\n'));
+        return;
+      }
       const open = openChecks(verificationOf(saved.payload));
       if (open.length > 0) {
         setAckChecks(open);
@@ -220,6 +235,21 @@ export default function ReviewScreen() {
       const raw = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
       const detail = typeof raw === 'string' ? raw : (raw as { message?: string })?.message ?? t('errorGeneric');
       Alert.alert(t('failed'), detail);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // A choice is made on the server, so any edits on screen are saved first and
+  // nothing typed is lost when the answer comes back.
+  async function pick(choice: Choice, option: number) {
+    setBusy('choose');
+    try {
+      const saved = await save();
+      if (!saved) return;
+      applyDoc(await chooseOption(id, choice.id, option, choice.remember));
+    } catch {
+      Alert.alert(t('errorGeneric'));
     } finally {
       setBusy(null);
     }
@@ -350,6 +380,7 @@ export default function ReviewScreen() {
     | undefined;
   const warnings = meta?.warnings ?? [];
   const verdict = verdictOf(verificationOf(payload));
+  const choices = choicesOf(payload);
 
   const matchForIndex = (i: number): MatchItem | undefined =>
     inv?.connected ? inv.items[i] : undefined;
@@ -463,6 +494,38 @@ export default function ReviewScreen() {
             <Text style={styles.verdictDetail}>{verdict.detail}</Text>
           </TouchableOpacity>
         )}
+
+        {/* Fields the bill gives two answers to: the reviewer decides. A
+            remembered decision (from this supplier's earlier bills) shows as
+            such and can still be changed. */}
+        {choices.map((choice) => (
+          <View key={choice.id} style={[styles.choiceCard, choice.chosen == null && styles.choicePending]}>
+            <Text style={styles.choiceTitle}>
+              {choice.label}
+              {choice.chosen == null ? ' - choose one' : choice.remembered ? ' · remembered for this supplier' : ''}
+            </Text>
+            <Text style={styles.choiceQuestion}>{choice.question}</Text>
+            {choice.options.map((opt, i) => {
+              const on = choice.chosen === i;
+              return (
+                <TouchableOpacity
+                  key={opt.label}
+                  style={[styles.choiceOption, on && styles.choiceOptionOn]}
+                  onPress={() => pick(choice, i)}
+                  disabled={busy !== null}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: on }}
+                >
+                  <Text style={styles.choiceOptionLabel}>
+                    {on ? '● ' : '○ '}
+                    {opt.label}
+                  </Text>
+                  <Text style={styles.choiceOptionValue}>{optionText(opt) || 'blank on the bill'}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ))}
 
         {!verdict && warnings.length > 0 &&
           (() => {
@@ -976,6 +1039,14 @@ const styles = StyleSheet.create({
   invSummary: { ...font.caption, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.sm },
   modalBackdrop: { flex: 1, backgroundColor: colors.overlay },
   verdict: { padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
+  choiceCard: { padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg, borderWidth: 1, borderColor: colors.border },
+  choicePending: { borderColor: colors.warning, backgroundColor: colors.warningTint },
+  choiceTitle: { ...font.body, fontWeight: '700' },
+  choiceQuestion: { ...font.body, color: colors.textMuted, marginTop: 2, marginBottom: spacing.sm },
+  choiceOption: { padding: spacing.md, borderRadius: spacing.sm, borderWidth: 1, borderColor: colors.border, marginTop: spacing.sm, backgroundColor: '#fff' },
+  choiceOptionOn: { borderColor: colors.success, backgroundColor: colors.successTint },
+  choiceOptionLabel: { ...font.body, fontWeight: '600' },
+  choiceOptionValue: { ...font.body, color: colors.textMuted, marginTop: 2 },
   verdictOk: { backgroundColor: colors.successTint },
   verdictWarn: { backgroundColor: colors.warningTint },
   verdictTitle: { ...font.body, fontWeight: '700' },

@@ -473,6 +473,9 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         "line_items_total_with_gst": _fmt(gross_total) if gross_total is not None else None,
         "total_in_words": _fmt(spelled) if spelled is not None else None,
         "total_in_words_disagrees": words_disagrees,
+        # What the bill's own lines and stated tax add up to - the other side of
+        # a words-versus-figures disagreement, offered to the reviewer as a choice.
+        "total_built_from_lines": _fmt(built_from_lines) if built_from_lines is not None else None,
         "total_reconciles": reconciles,
         "total_reconciled_by": reconciled_by,
         "stated_item_count": stated_item_count,

@@ -498,6 +498,9 @@ def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     verification = verify_invoice(fields, meta, extra=carried)
     flag_failed_fields(fields, verification)
     meta["verification"] = verification
+    from app.services.ocr.choices import settle_checks
+
+    settle_checks(meta)
     meta["warnings"] = [f"{c['label']}: {c['message']}" for c in verification["checks"]
                         if c["status"] == "fail"]
     return meta
