@@ -66,7 +66,17 @@ _PAN_SHAPE = re.compile(r"\b([A-Z]{5}\d{4}[A-Z])\b")
 _EMAIL = re.compile(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b")
 
 # Drug licence numbers: "20B-MH-MZ5-190671", "MH-TZ5-353350", "20B/MH/1234".
-_DL_SHAPE = re.compile(r"\b((?:\d{2}[A-Z]?[-/])?[A-Z]{2,3}[-/][A-Z]{1,4}\d?[-/]?\d{4,8})\b")
+# A drug licence: "20B-MH-MZ5-190671", "MH-TZ5-379188" - or just its form and
+# number, "20B-541751", which is how V L Enterprises prints its own. Never the
+# middle of a longer token: V L's transaction number "SPD/2526/IPM/PTB/00558"
+# contains a licence-shaped "IPM/PTB/00558", which we filed as its licence.
+_DL_SHAPE = re.compile(
+    r"(?<![\w/\-])"
+    r"((?:\d{2}[A-Z]?[-/])?[A-Z]{2,3}[-/][A-Z]{1,4}\d?[-/]?\d{4,8}"
+    r"|2[01][A-D][-/]\d{4,8})"
+    # A following "/" is allowed: Kanchan writes "20B-MH-TZ2-521007/521025".
+    r"(?!\w)"
+)
 
 
 def _labelled(text: str, labels: List[str], value: str) -> Optional[str]:

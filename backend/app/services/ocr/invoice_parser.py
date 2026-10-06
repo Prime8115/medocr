@@ -381,15 +381,25 @@ def _extract_item_count(text: str) -> Optional[int]:
 # supplier - the two are side-by-side columns that flatten into interleaved text.
 _BUYER_HEADING = re.compile(r"\b(bill(?:ed)?\s*to|ship\s*to|sold\s*to|buyer|consignee|customer)\b", re.I)
 
+# Several of these are STEMS - AGENC(IES), LABORATOR(IES), ENTERPRISE(S) - so
+# the pattern must not demand a word boundary after them. With one, "V L
+# ENTERPRISES" was not recognised as a company at all and the supplier was read
+# as "Due Date : 12/09/2025 Division : PHARMA".
 _COMPANY = re.compile(
     r"\b(LIMITED|LTD|PVT|PRIVATE|DISTRIBUTOR|PHARMA|HEALTHCARE|ENTERPRISE|AGENC|LABORATOR|"
-    r"INDUSTRIES|REMEDIES|BIOTECH|LIFESCIENCE|LOGISTICS|MARKETING|TRADERS)\b",
+    r"INDUSTRIES|REMEDIES|BIOTECH|LIFESCIENCE|LOGISTICS|MARKETING|TRADERS)\w*",
     re.I,
 )
 # "C.A. of X" / "C&F of X" names the principal a carrying agent acts for. The
 # invoicing party - the one whose GSTIN is on the bill, and the one the pharmacy
 # actually buys from - is the agent itself, printed separately.
-_AGENT_OF = re.compile(r"^\s*(c\.?\s*a\.?|c\s*&\s*f|c\.?f\.?a\.?|agent|stockist)\s*(of|for)\b", re.I)
+# ...and "Super Stockiest of Tablets (India) Limited" (V L Enterprises, spelling
+# theirs) names the principal a stockist buys from, not the stockist itself.
+_AGENT_OF = re.compile(
+    r"^\s*(?:super\s*)?(c\.?\s*a\.?|c\s*&\s*f|c\.?f\.?a\.?|agent|stocki?e?st|distributor)"
+    r"\s*(of|for)\b",
+    re.I,
+)
 
 _DOC_WORDS = re.compile(r"\b(TAX\s*INVOICE|INVOICE|ORIGINAL|DUPLICATE|TRIPLICATE|CREDIT\s*NOTE)\b", re.I)
 # Lines that are details about a party, not part of its address.
@@ -529,6 +539,21 @@ def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
     return name, address
 
 
+def _complete_legal_suffix(name: Optional[str], page_text: str) -> Optional[str]:
+    """Finish a supplier name cut off after "PRIVATE" or "PVT".
+
+    The supplier's block is cut at the x where the buyer's column begins, and a
+    large title can run past that line: Overseas's "OVERSEAS HEALTH CARE
+    PRIVATE LIMITED" came back without its "LIMITED". The full line is still in
+    the page text, so the missing word is read from there - only ever the legal
+    suffix, nothing else from the buyer's side.
+    """
+    if not name or not re.search(r"\b(private|pvt\.?)\s*$", name, re.I):
+        return name
+    m = re.search(re.escape(name) + r"\s+(limited|ltd\.?)\b", page_text or "", re.I)
+    return f"{name} {m.group(1)}" if m else name
+
+
 def _extract_header_meta(
     text: str,
     supplier_lines: Optional[List[Tuple[float, str]]] = None,
@@ -548,6 +573,7 @@ def _extract_header_meta(
     name, address = _supplier_details(lines)
     if name is None:
         name, address = _supplier_details([(0.0, ln) for ln in (text or "").splitlines()])
+    name = _complete_legal_suffix(name, text)
 
     gstin = (
         _GSTIN_SHAPE.search(own or "")
