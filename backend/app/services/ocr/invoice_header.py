@@ -306,6 +306,16 @@ _NAMEISH = re.compile(
 
 
 _INLINE_LABEL = re.compile(r"\b(?:address|name|state|code|city|pin)\s*:", re.I)
+_LEADING_LABEL = re.compile(r"^\s*(?:name|party\s*name|address|add)\s*:\s*", re.I)
+_ADDRESS_LABEL = re.compile(r"^\s*(?:address|add)\s*:", re.I)
+# Labels of the column printed BESIDE a party's block, which run on into its
+# lines when the two flatten into one: "DESTINATION" (V L), "Dt:", "Case:",
+# "Loose:" (Zydus), "LR Date" (Bharat).
+_BESIDE_ADDRESS = re.compile(
+    r"\b(?:destination|distance|vehicle\b|cases?\s*:|cases\b|loose\s*:|dt\s*:|"
+    r"l\.?\s*r\.?\s*(?:no|date)|transport(?:er)?|place\s*of\s*supply|name\s+of\s+carrier)",
+    re.I,
+)
 
 
 def _has_doubled_glyphs(text: str) -> bool:
@@ -325,7 +335,138 @@ def _is_only_legal_suffix(name: Optional[str]) -> bool:
 # Labels that mark the invoice-reference column - the one printed to the right
 # of Ship-to on most layouts. Needed as a boundary, or the Ship-to block runs on
 # and swallows the invoice number, dates and IRN.
-_REF_COLUMN = re.compile(r"\b(invoice\s*(no|date)|due\s*date|ord\.?\s*ref|e\s*way\s*bill)\b", re.I)
+# "DELIVERY DETAILS" (V L) heads a transport column beside Ship-to; without it
+# as a boundary the consignee's block ran on into "DESTINATION :", "L.R. NO."...
+_REF_COLUMN = re.compile(
+    r"\b(invoice\s*(no|date)|due\s*date|ord\.?\s*ref|e\s*way\s*bill|"
+    r"delivery\s*details|dispatch\s*details|despatch\s*details|transport\s*details)\b",
+    re.I,
+)
+
+
+# A run of blank page this wide between two words on a line separates columns.
+_COLUMN_GUTTER = 20.0
+# How close two column starts must be to count as the same alignment.
+_ALIGN_TOLERANCE = 3.0
+# How far below the headings the party blocks reach, in points.
+_BLOCK_DEPTH = 110.0
+# The furthest a centred heading sits right of its column's left edge. V L's
+# is 73pt; anything much further is a different column.
+_MAX_CENTRING_SHIFT = 120.0
+
+
+def _align_to_content(ordered, words, limit: float, visual_lines):
+    """Move each column's left edge from its heading to where its text starts.
+
+    Headings are often CENTRED over their columns while the details beneath are
+    left-aligned. V L Enterprises centres "Details of Consignee (Shiped to)"
+    at x=334 while every line of the consignee's details starts at x=282, so
+    cutting at the heading sliced "EASTERN AGENCIES HEALTHCARE PVT LTD" in half
+    and handed most of it to the Bill-to column.
+
+    A column's real left edge is the x at which line after line begins a run of
+    text. For each heading, the most common such start between the previous
+    column and the heading itself is taken - and only when enough lines agree,
+    so a single indented line cannot move a column.
+    """
+    if not ordered:
+        return ordered
+    # The parties' own headings - the reference column often starts higher up.
+    head_top = min((top for key, (_, top) in ordered if key != "_refs"),
+                   default=min(top for _, (_, top) in ordered))
+    # Only the party blocks themselves: the line-item table further down has
+    # columns of its own that say nothing about where these begin.
+    below = [w for w in words if head_top + 3 < float(w["top"]) <= min(limit, head_top + _BLOCK_DEPTH)]
+    starts: List[float] = []
+    for _, line in visual_lines(below):
+        prev_x1 = None
+        for w in line:
+            x0 = float(w["x0"])
+            if prev_x1 is None or x0 - prev_x1 >= _COLUMN_GUTTER:
+                starts.append(x0)
+            prev_x1 = float(w["x1"])
+    starts.sort()
+
+    def lines_starting_near(x: float) -> int:
+        return sum(1 for s in starts if abs(s - x) <= _ALIGN_TOLERANCE)
+
+    refined = []
+    floor = -1.0
+    for key, (x0, top) in ordered:
+        if key == "_refs" or lines_starting_near(x0) >= 3:
+            # Text already starts under the heading - an ordinary left-aligned
+            # column. Nothing to correct, and every invoice but V L is this.
+            refined.append((key, (x0, top)))
+            floor = x0 + 10
+            continue
+        window = [s for s in starts if max(floor, x0 - _MAX_CENTRING_SHIFT) < s <= x0 + 2]
+        best: List[float] = []
+        group: List[float] = []
+        for s in window:
+            if group and s - group[0] > _ALIGN_TOLERANCE:
+                if len(group) > len(best):
+                    best = group
+                group = []
+            group.append(s)
+        if len(group) > len(best):
+            best = group
+        new_x = min(best) if len(best) >= 3 else x0
+        refined.append((key, (new_x, top)))
+        floor = new_x + 10
+    return refined
+
+
+def _without_overprint(page, limit: float):
+    """The page with any second, over-printed copy of a text run removed.
+
+    Overseas draws its consignee block twice, the copies a couple of points
+    apart - one a baseline lower, or one in the bold face - so as text the two
+    interleave letter by letter: "AAdddd r:e sAs-2 FIRST :FLAO-2O RFI TROSTB".
+    Each copy on its own reads perfectly ("Address:A-2 FIRST FLOOR TOBACCO
+    HOUSE"). A run of characters - one font, one baseline - that lies on top of
+    a longer run within a few points is that second copy, and is dropped.
+
+    Exact duplicates (faux-bold) are removed by pdfplumber's dedupe_chars
+    first. Runs merely side by side on a line never overlap, so ordinary text
+    is untouched; and only the header area is considered, never the table.
+    """
+    try:
+        page = page.dedupe_chars(tolerance=1)
+    except Exception:  # noqa: BLE001 - older pdfplumber: carry on undeduped
+        pass
+    runs: Dict[Tuple[str, float], List[dict]] = {}
+    for ch in page.chars:
+        if float(ch["top"]) > limit or not str(ch.get("text", "")).strip():
+            continue
+        runs.setdefault((ch.get("fontname", ""), round(float(ch["top"]), 1)), []).append(ch)
+
+    spans = []
+    for key, chars in runs.items():
+        x0 = min(float(c["x0"]) for c in chars)
+        x1 = max(float(c["x1"]) for c in chars)
+        spans.append((key, x0, x1, len(chars)))
+
+    dropped = set()
+    for i, (ka, a0, a1, na) in enumerate(spans):
+        for kb, b0, b1, nb in spans[i + 1:]:
+            if abs(ka[1] - kb[1]) > 3.0 or ka == kb:
+                continue
+            overlap = min(a1, b1) - max(a0, b0)
+            shorter = min(a1 - a0, b1 - b0)
+            if shorter <= 0 or overlap < 0.5 * shorter:
+                continue
+            # Keep the longer run; on a tie, the upper one (printed first).
+            if (na, -ka[1]) >= (nb, -kb[1]):
+                dropped.add(kb)
+            else:
+                dropped.add(ka)
+    if not dropped:
+        return page
+    return page.filter(
+        lambda obj: obj.get("object_type") != "char"
+        or (obj.get("fontname", ""), round(float(obj["top"]), 1)) not in dropped
+        or float(obj["top"]) > limit
+    )
 
 
 def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
@@ -341,16 +482,16 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
     It also starts at the heading's own line, so the page title and "Page 1 of 3"
     above it are not mistaken for the party's name.
     """
+    # Deliberately generous: a party's GSTIN is often printed several lines below
+    # its address, and a tighter window cut it off on every invoice we have.
+    limit = float(page.height) * 0.55
     try:
+        page = _without_overprint(page, limit)
         words = page.extract_words(keep_blank_chars=False, x_tolerance=word_tolerance)
     except Exception:  # noqa: BLE001
         return {}
     if not words:
         return {}
-
-    # Deliberately generous: a party's GSTIN is often printed several lines below
-    # its address, and a tighter window cut it off on every invoice we have.
-    limit = float(page.height) * 0.55
     anchors: List[Tuple[float, float, str]] = []   # (x0, top, key)
     for i, word in enumerate(words):
         top = float(word["top"])
@@ -381,6 +522,12 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
     if not parties:
         return {}
 
+    # A reference label well ABOVE the party headings is not the column beside
+    # them: V L prints "IRN No." mid-page over its consignee's details, and
+    # taking that as the boundary cut "PVT LTD" off the consignee's name.
+    party_top = min(top for _, top, _ in parties)
+    anchors = [a for a in anchors if a[2] != "_refs" or a[1] >= party_top - 15]
+
     # Leftmost occurrence of each anchor, since a heading can repeat down the page.
     firsts: Dict[str, Tuple[float, float]] = {}
     for x0, top, key in anchors:
@@ -389,6 +536,8 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
     ordered = sorted(firsts.items(), key=lambda kv: kv[1][0])
 
     from app.services.ocr.pdf_table import _visual_lines
+
+    ordered = _align_to_content(ordered, words, limit, _visual_lines)
 
     out: Dict[str, str] = {}
     for idx, (key, (start_x, start_top)) in enumerate(ordered):
@@ -448,7 +597,10 @@ def _tidy_name(raw: str) -> str:
             if current == previous or (len(current) >= 2 and previous.startswith(current)):
                 continue
         out.append(word)
-    return " ".join(out).strip(" ,.-")
+    # The supplier's own account code for the buyer, printed against the name
+    # ("EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED[8482]", Menarini), is not
+    # part of the company's name.
+    return re.sub(r"\s*[\[(]\s*\d{2,}\s*[\])]\s*$", "", " ".join(out)).strip(" ,.-")
 
 
 # GSTIN state codes for the Union Territories that levy UTGST - those WITHOUT
@@ -518,6 +670,15 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
         # column cut falls mid-heading: V L's bill-to block opens "Receiver
         # (Billed to) Details of", its ship-to block "Consignee (Shiped".
         without = _PARTY_PROSE.sub(" ", without)
+        # A field label that OPENS the line is just that field's name
+        # ("Name : EASTERN AGENCIES...", Overseas); one in the middle is two
+        # columns colliding, and is handled below.
+        if _ADDRESS_LABEL.match(without) and address_opens_at is None:
+            # "Address : SHOP NO-14..." - the address starts here, so nothing
+            # from this line on is the name (Abbott's consignee).
+            address_opens_at = len(cleaned)
+        without = _LEADING_LABEL.sub("", without)
+        without = _BESIDE_ADDRESS.split(without)[0]
         without = _STOP.split(without)[0]
         # A party's name often continues straight into its address on the same
         # visual line, so cut at the first address-looking token rather than
@@ -565,8 +726,11 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
             # Join wrapped continuations, stopping once the name looks complete
             # or the next line is clearly the address.
             if not _NAME_TAIL.search(line):
-                for follow in cleaned[i + 1:i + 3]:
-                    if not follow or _ADDRESS_LIKE.search(follow) or len(follow) < 3:
+                for j, follow in enumerate(cleaned[i + 1:i + 3], start=i + 1):
+                    if (not follow or _ADDRESS_LIKE.search(follow) or len(follow) < 3
+                            or _INLINE_LABEL.search(follow)
+                            or (address_opens_at is not None and j >= address_opens_at)):
+                        # "Address: SHOP NO-14..." is not the rest of the name.
                         break
                     parts.append(follow)
                     if _NAME_TAIL.search(follow):
@@ -581,15 +745,27 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
             break
 
     address = None
+    if index is None and address_opens_at is not None:
+        # No name in the block (Abbott's Billed To), but its address is there.
+        index = address_opens_at - 1
     if index is not None:
         parts = []
         for line in lines[index + 1:index + 5]:
-            if _STOP.search(line):
-                continue
-            candidate = re.sub(r"\s+", " ", line).strip()
+            line = _PARTY_LABEL_RUN.sub("", line)
+            # The address, not the label in front of it or the column printed
+            # beside it ("DISTANCE : 0" on V L, "LR Date" on Bharat, "Tel. No."
+            # and "D.L. No." on Kanchan). Cut at those rather than dropping the
+            # line: Kanchan's street is on the same line as its phone number,
+            # and skipping the whole line lost "A-2 FIRST FLOOR TOBACCO HOUSE".
+            line = _LEADING_LABEL.sub("", line)
+            line = _BESIDE_ADDRESS.split(line)[0]
+            line = _STOP.split(line)[0]
+            candidate = re.sub(r"\s+", " ", line).strip(" ,:")
             if candidate:
                 parts.append(candidate)
-        address = ", ".join(parts).strip(" ,") or None
+        # The same word ending one wrapped line and starting the next ("GOLDEN
+        # TOBACCO LIMITED" / "LIMITED S.V.ROAD", JB) is one word, not two.
+        address = _tidy_name(", ".join(parts)) or None
 
     gstin = _GSTIN_SHAPE.search(text or "")
     pan = None

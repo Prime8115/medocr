@@ -471,3 +471,19 @@ def test_no_party_name_is_label_prose(case, results):
         low = name.lower()
         for prose in ("details of", "receiver", "consignee", "address:", "shiped", "nnaammee"):
             assert prose not in low, f"{party}.name = {name!r}"
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_both_parties_are_read_as_printed(case, results):
+    """Bill-to and Ship-to name and GSTIN, exactly as each bill prints them.
+
+    These broke in four different ways across the real invoices: a centred
+    heading over left-aligned details (V L), a block drawn twice over
+    (Overseas), a buyer named only on a "Cust.Code & Name:" line with a
+    different consignee (Abbott), and a name cut at the column edge (JB).
+    """
+    fields = results[case["file"]]["fields"]
+    for party in ("bill_to", "ship_to"):
+        block = fields.get(party) or {}
+        assert (block.get("name") or {}).get("value") == case[f"{party}_name"], party
+        assert (block.get("gstin") or {}).get("value") == case[f"{party}_gstin"], party

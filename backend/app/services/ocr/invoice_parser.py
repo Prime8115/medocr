@@ -556,6 +556,16 @@ def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
     return name, address
 
 
+# "Cust.Code & Name: 10023867-EASTERN AGENCIES HEALTHCARE PVT. LTD." - the
+# buyer's name with the supplier's account code in front, ending where the next
+# label on the line begins.
+_CUSTOMER_NAME = re.compile(
+    r"\bcust(?:omer)?\.?\s*(?:code\s*&\s*)?name\s*:\s*(?:\d+\s*-\s*)?"
+    r"([A-Za-z][^\n]*?)(?=\s+(?:ship(?:p?ed)?\s*to|billed\s*to|address|gstin|pan)\b|\s*$)",
+    re.I | re.M,
+)
+
+
 def _complete_legal_suffix(name: Optional[str], page_text: str) -> Optional[str]:
     """Finish a supplier name cut off after "PRIVATE" or "PVT".
 
@@ -638,6 +648,24 @@ def _extract_header_meta(
             detail["name"] = None
             detail["address"] = None
         party_fields[key] = {k: _f(v) for k, v in detail.items()}
+
+    # Some bills name the buyer on a labelled line of its own rather than in
+    # the Bill-to block: Abbott prints "Cust.Code & Name: 10023867-EASTERN
+    # AGENCIES HEALTHCARE PVT. LTD." and then goes from "Billed To:" straight
+    # into the street address.
+    if not (party_fields.get("bill_to", {}).get("name") or {}).get("value"):
+        labelled = _CUSTOMER_NAME.search(text or "")
+        if labelled:
+            party_fields.setdefault("bill_to", {})["name"] = _f(labelled.group(1).strip(" .,-"))
+
+    # A buyer's name cut at its column's edge after "PVT" (JB) is finished the
+    # same way as the supplier's - from the full line, legal suffix only.
+    for key in ("bill_to", "ship_to"):
+        leaf = party_fields.get(key, {}).get("name") or {}
+        if leaf.get("value"):
+            done = _complete_legal_suffix(leaf["value"], "\n".join([text or ""] + list(regions.values())))
+            if done != leaf["value"]:
+                party_fields[key]["name"] = _f(done)
 
     # Bill-to and Ship-to are usually the same company, and several suppliers
     # print its GSTIN or PAN only once. Share a value between them when the names

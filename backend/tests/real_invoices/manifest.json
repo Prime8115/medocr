@@ -24,7 +24,11 @@
       "supplier_name": "Zydus Healthcare Limited",
       "supplier_gstin": "27AAACG1895Q1ZY",
       "invoice_no": "2299707688",
-      "invoice_date": "30.06.2025"
+      "invoice_date": "30.06.2025",
+      "bill_to_name": "SHREE SIMBA CHEMIST (UNIT OF ASCENT",
+      "ship_to_name": "SHREE SIMBA CHEMIST (UNIT OF ASCENT",
+      "bill_to_gstin": "27AASCA3306L1ZE",
+      "ship_to_gstin": "27AASCA3306L1ZE"
     },
     {
       "file": "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf",
@@ -41,7 +45,11 @@
       "supplier_name": "J.B.CHEMICALS & PHARMA LTD MUMBAI",
       "supplier_gstin": "27AAACJ1482G1ZP",
       "invoice_no": "1253709366",
-      "invoice_date": "10.09.2025"
+      "invoice_date": "10.09.2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
+      "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": "27AAECD7847H1ZC"
     },
     {
       "file": "KANCHAN PHARMA PVT. LTD(PRECIA).pdf",
@@ -58,7 +66,11 @@
       "supplier_name": "KANCHAN PHARMA PVT.LTD",
       "supplier_gstin": "27AABCK6444J1ZC",
       "invoice_no": "MUMSI/0138/25-26",
-      "invoice_date": "10/07/2025"
+      "invoice_date": "10/07/2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT. LTD",
+      "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT. LTD",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": "27AAECD7847H1ZC"
     },
     {
       "file": "BHARAT SERUMS AND VACCINES LIMITED.pdf",
@@ -77,7 +89,11 @@
       "supplier_name": "BHARAT SERUMS AND VACCINES LIMITED",
       "supplier_gstin": "27AAACA5081C1Z3",
       "invoice_no": "9017115014",
-      "invoice_date": "21.08.2025"
+      "invoice_date": "21.08.2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
+      "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": "27AAECD7847H1ZC"
     },
     {
       "file": "A.MENARINI INDIA.pdf",
@@ -94,7 +110,11 @@
       "supplier_name": "A.Menarini India Pvt.Ltd",
       "supplier_gstin": "27AAACI9822K1Z9",
       "invoice_no": "MUM25INIA02645",
-      "invoice_date": "22-Sep-2025"
+      "invoice_date": "22-Sep-2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
+      "ship_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": "27AAECD7847H1ZC"
     },
     {
       "file": "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf",
@@ -111,7 +131,11 @@
       "supplier_name": "Abbott Healthcare Pvt. Ltd",
       "supplier_gstin": "27AAACK3935D1ZS",
       "invoice_no": "3168532914",
-      "invoice_date": "14.08.2025"
+      "invoice_date": "14.08.2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT. LTD",
+      "ship_to_name": "DIAL HEALTH MEDICAL",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": null
     },
     {
       "file": "OVERSEAS HEALTH CARE PRIVATE LIMITED.pdf",
@@ -128,7 +152,11 @@
       "supplier_name": "OVERSEAS HEALTH CARE PRIVATE LIMITED",
       "supplier_gstin": "27AAACO1558J1ZC",
       "invoice_no": "MUMGST2526/3104",
-      "invoice_date": "16/09/2025"
+      "invoice_date": "16/09/2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
+      "ship_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": "27AAECD7847H1ZC"
     },
     {
       "file": "V L ENTERPRISES.pdf",
@@ -145,7 +173,11 @@
       "supplier_name": "V L ENTERPRISES",
       "supplier_gstin": "27AAAPL4760A1Z5",
       "invoice_no": "SPD2526/I0100558",
-      "invoice_date": "22/08/2025"
+      "invoice_date": "22/08/2025",
+      "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
+      "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
+      "bill_to_gstin": "27AAECD7847H1ZC",
+      "ship_to_gstin": "27AAECD7847H1ZC"
     },
     {
       "file": "MSV LIFESCIENCES.pdf",
