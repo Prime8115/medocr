@@ -49,6 +49,22 @@ def test_two_order_references_become_a_choice():
     assert choice["default"] == 1
 
 
+def test_a_reference_printed_below_its_label_is_offered():
+    # JB: the contract PO sits two lines under its label, with the address
+    # column's text interleaved; its own order reference dates itself on a
+    # separate "Ord. Ref. Date" line.
+    text = ("Ord. Ref. No.: 30426170\nOrd. Ref. Date: 10.09.2025\n"
+            "S.V.ROAD , Order No./Contract Ref PO -\n"
+            "KALHER, Thane District,Bhiwandi : 421302\n"
+            "S.V.ROAD , MUMBAI - 400056 5248 09.09.2025\n")
+    [choice] = ch.reference_choices(text, _fields("30426170"))
+    assert [o["values"] for o in choice["options"]] == [
+        {"invoice.po_no": "5248", "invoice.po_date": "09.09.2025"},
+        {"invoice.po_no": "30426170", "invoice.po_date": "10.09.2025"},
+    ]
+    assert choice["default"] == 1
+
+
 def test_one_reference_is_no_choice():
     assert ch.reference_choices("Order No. : 4608 Date :20/08/2025", _fields("4608")) == []
 

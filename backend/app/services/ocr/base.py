@@ -34,6 +34,11 @@ class OCRProvider(ABC):
     def classify(self, file_bytes: bytes, content_type: str) -> str:
         """Return 'prescription' or 'invoice'."""
 
+    def complete_json(self, prompt: str) -> dict:
+        """Answer a plain-text prompt with a JSON object. Used to fill specific
+        gaps in a reading (gap_fill.py). Providers that cannot, return {}."""
+        return {}
+
     @abstractmethod
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
         """Return the type-specific `fields` dict for the given doc_type."""

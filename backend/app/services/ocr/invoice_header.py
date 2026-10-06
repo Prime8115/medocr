@@ -175,6 +175,34 @@ def _is_label_not_value(found: str, text: str) -> bool:
 # No length or shape test on the reference numbers themselves: Abbott really
 # prints "LR No.:CC" and Overseas "GR/LR No. :18/09". Those look like noise and
 # are exactly what is on the bill - only a captured LABEL is rejected.
+_IRN_LENGTH = 64
+
+
+def _complete_irn(found: str, text: str) -> str:
+    """An IRN wrapped across lines, put back together.
+
+    A GST IRN is always 64 hex characters. Printed in a narrow column it wraps:
+    Menarini's breaks after 45 characters and JB's after 34, and we were storing
+    the first piece alone - an IRN that matches nothing on the GST portal. The
+    rest is a hex run of EXACTLY the missing length on one of the next few
+    lines; anything else is left alone.
+    """
+    if len(found) >= _IRN_LENGTH:
+        return found
+    at = (text or "").find(found)
+    if at < 0:
+        return found
+    need = _IRN_LENGTH - len(found)
+    following = text[at + len(found):].split("\n")[1:4]
+    for line in following:
+        for m in re.finditer(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{%d})(?![0-9A-Fa-f])" % need, line):
+            piece = m.group(1)
+            # The same case as the first piece - an IRN is printed one way.
+            if piece.islower() == found.islower() or piece.isdigit():
+                return found + piece
+    return found
+
+
 def _is_address_not_carrier(found: str) -> bool:
     """A "carrier" that is really the parties' address flowing under the label.
 
@@ -218,6 +246,8 @@ def extract_references(text: str, exclude: Optional[str] = None) -> Dict[str, Op
                 continue
             if field == "transport" and _is_address_not_carrier(found):
                 continue
+            if field == "irn":
+                found = _complete_irn(found, text)
             out[field] = found
             break
     for field, labels in _DATES.items():

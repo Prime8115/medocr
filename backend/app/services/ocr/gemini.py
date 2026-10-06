@@ -281,6 +281,26 @@ class GeminiProvider(OCRProvider):
         )
         return parse_classification(getattr(resp, "text", "") or "")
 
+    def complete_json(self, prompt: str) -> dict:
+        """A JSON answer to a plain-text prompt - for filling named gaps in a
+        reading (gap_fill.py). The whole document is never re-sent as an image;
+        only its text and the few fields wanted."""
+        from google.genai import types
+
+        resp = self._generate_with_fallback(
+            [prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                max_output_tokens=2048,
+            ),
+        )
+        raw = (getattr(resp, "text", "") or "").strip()
+        try:
+            out = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise OCRError(f"Model returned unreadable output: {exc}", kind="output") from exc
+        return out if isinstance(out, dict) else {}
+
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
         prompt = EXTRACTION_PROMPT.get(doc_type)
         model_cls = FIELDS_MODEL.get(doc_type)

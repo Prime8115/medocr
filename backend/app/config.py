@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # AI's reading, field by field (services/ocr/cross_read.py). A checker,
     # not a reader - on wherever Tesseract is installed.
     ocr_cross_read: bool = True
+    # Ask the AI, from the page text, for fields a reading left blank - only
+    # when one is printed but unread or essential, and only keeping answers
+    # printed on the page word for word (services/ocr/gap_fill.py).
+    ocr_gap_fill: bool = True
 
     tesseract_cmd: str = "tesseract"
     tesseract_lang: str = "eng"

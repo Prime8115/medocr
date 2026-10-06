@@ -497,6 +497,9 @@ def test_both_parties_are_read_as_printed(case, results):
 _EXPECTED_FAILED_CHECKS = {
     "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf": {"total_in_words", "choice_total"},
     "Zydus PDF(1).pdf": {"choice_po"},
+    # JB prints its own "Ord. Ref. No." and, under a second label, the
+    # customer's "Contract Ref PO".
+    "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf": {"choice_po"},
 }
 
 

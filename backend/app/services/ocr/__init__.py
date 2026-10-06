@@ -231,7 +231,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
 # there, so an app build that predates the verdict banner still shows them.
 _NEW_CHECKS = frozenset({
     "cross_foot", "head_totals", "line_tax", "line_net", "line_discount",
-    "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan", "printed_not_read",
+    "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan", "printed_not_read", "irn",
 }) | frozenset({"cross_read"})
 
 
@@ -305,6 +305,19 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         # and corrections can be learned from it.
         if hints.get("document_text"):
             integrity["page_text"] = hints["document_text"]
+            # A new supplier's layout can leave fields our reader missed. The
+            # AI is asked for just those, from the text, and only answers
+            # printed on the page word for word are kept (gap_fill.py). A
+            # reading already complete never calls it.
+            if pipeline in ("pdf_parser", "tesseract"):
+                from app.services.ocr.gap_fill import fill as fill_gaps
+                from app.services.ocr.missed_fields import find_missed
+
+                filled = fill_gaps(fields, hints["document_text"],
+                                   find_missed(fields, hints["document_text"]))
+                if filled:
+                    integrity["gap_filled"] = filled
+                    complete_from_the_bill(fields)
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification

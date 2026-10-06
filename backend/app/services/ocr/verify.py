@@ -358,6 +358,20 @@ def _check_dates(c: _Checks, fields: dict, items: List[dict], today: _dt.date) -
         c.add("dates", "Dates are possible", "pass")
 
 
+def _check_irn(c: _Checks, fields: dict) -> None:
+    """A GST IRN is exactly 64 hex characters; anything else was cut short -
+    usually wrapped across lines in a narrow column, as Menarini's and JB's
+    were - and would match nothing on the GST portal."""
+    irn = _v((fields.get("invoice") or {}).get("irn"))
+    if not irn:
+        c.add("irn", "IRN is complete", "skipped")
+    elif re.fullmatch(r"[0-9A-Fa-f]{64}", irn):
+        c.add("irn", "IRN is complete", "pass")
+    else:
+        c.add("irn", "IRN is complete", "fail",
+              f"The IRN read has {len(irn)} characters; a GST IRN has 64.", ["invoice.irn"])
+
+
 def _check_hsn(c: _Checks, items: List[dict]) -> None:
     bad, tested = [], 0
     for i, it in enumerate(items):
@@ -408,6 +422,7 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_gst_rates(c, items)
     _check_dates(c, fields, items, today)
     _check_hsn(c, items)
+    _check_irn(c, fields)
     _check_gstins(c, fields)
     _check_supplier_pan(c, fields)
     # Whatever the bill prints that we did not read (missed_fields.py).

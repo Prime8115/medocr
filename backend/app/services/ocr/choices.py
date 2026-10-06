@@ -34,33 +34,61 @@ from app.services.ocr.invoice_header import (
     _labelled_all,
 )
 
-# Where a purchase-order reference is printed, by what it is.
+# Where an order reference is printed: (what to call it, labels for the number,
+# labels for its own date). A reference's date is read from its own date label
+# when it is not printed right after the number, so choosing an option never
+# blanks a date the bill does print - JB's "Ord. Ref. No.: 30426170" has its
+# date on the next line as "Ord. Ref. Date: 10.09.2025".
 _ORDER_SOURCES = (
     ("PO Number", ["PO Number", "Purchase Order No", "Purchase Order Number", "Customer PO No",
-                   "Buyer's Order No", "Buyers Order No"]),
-    ("Order No", ["Order No", "Sales Order No", "SO No", "Ord Ref No"]),
+                   "Buyer's Order No", "Buyers Order No"], ["PO Date", "Purchase Order Date"]),
+    ("Contract / PO ref", ["Order No./Contract Ref PO", "Contract Ref PO", "Contract Ref No"], []),
+    ("Order No", ["Order No", "Sales Order No", "SO No", "Ord Ref No"],
+     ["Ord Ref Date", "Order Date", "SO Date"]),
 )
 _DATE_AFTER = re.compile(r"\s*(?:date|dt)\.?\s*[:\-]?\s*" + _DATE, re.I)
+# A value printed BELOW its label, as a reference followed by its date at the
+# end of one of the next two lines: JB heads a column "Order No./Contract Ref
+# PO -" and prints "5248 09.09.2025" beneath it - with the address column's
+# text interleaved on the lines between, which is why the date is required.
+_BELOW = (r"[ \t]*[:\-]?[ \t]*\n(?:[^\n]*\n)??[^\n]*?\b([A-Za-z0-9][A-Za-z0-9\-/]{1,40})"
+          r"[ \t]+" + _DATE + r"[ \t]*$")
 
 
-def _first_reference(text: str, labels: List[str]) -> Optional[tuple]:
+def _loose(label: str) -> str:
+    return r"[\s.:\-]*".join(re.escape(w) for w in label.split())
+
+
+def _first_reference(text: str, labels: List[str], date_labels: List[str]) -> Optional[tuple]:
     """(value, date or None) for the first real value after any of these labels."""
     for label in labels:
-        loose = r"[\s.:\-]*".join(re.escape(w) for w in label.split())
-        for m in re.finditer(loose + r"[\s.:#\-]*" + _TOKEN, text or "", re.I):
+        for m in re.finditer(_loose(label) + r"[ \t.:#\-]*" + _TOKEN, text or "", re.I):
             value = _NEXT_LABEL.split(m.group(1))[0].strip(" .,-:/")
             if len(value) < 2 or _is_label_not_value(value, text):
                 continue
             date = _DATE_AFTER.match(text, m.end(1))
-            return value, (date.group(1) if date else None)
+            return value, (date.group(1) if date else _labelled_date(text, date_labels))
+        # The label ends its line and the value sits below it.
+        for m in re.finditer(_loose(label) + _BELOW, text or "", re.I | re.M):
+            value = m.group(1)
+            if len(value) >= 2 and not _is_label_not_value(value, text):
+                return value, (m.group(2) or _labelled_date(text, date_labels))
+    return None
+
+
+def _labelled_date(text: str, labels: List[str]) -> Optional[str]:
+    for label in labels:
+        m = re.search(_loose(label) + r"[ \t.:#\-]*" + _DATE, text or "", re.I)
+        if m:
+            return m.group(1)
     return None
 
 
 def reference_choices(text: str, fields: dict) -> List[dict]:
     """A choice for the PO when the bill prints two different references."""
     options = []
-    for label, labels in _ORDER_SOURCES:
-        found = _first_reference(text, labels)
+    for label, labels, date_labels in _ORDER_SOURCES:
+        found = _first_reference(text, labels, date_labels)
         if found and all(found[0] != o["values"]["invoice.po_no"] for o in options):
             options.append({"label": label, "values": {"invoice.po_no": found[0],
                                                        "invoice.po_date": found[1]}})
