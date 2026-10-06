@@ -565,6 +565,18 @@ def complete_from_the_bill(fields: dict) -> List[str]:
                 if not _v(invoice.get(key)):
                     invoice[key] = _leaf("0.00")
                     filled.append(f"invoice.{key}")
+        # ...and on each line whose applicable heads were read, so its UTGST %
+        # and amount read 0 like the bill's total does, rather than blank.
+        for i, item in enumerate(fields.get("line_items") or []):
+            if not any(_num(item.get(f"{h}_{k}")) is not None
+                       for h in present for k in ("percent", "amount")):
+                continue
+            for head in absent:
+                for kind, zero in (("percent", "0"), ("amount", "0.00")):
+                    key = f"{head}_{kind}"
+                    if not _v(item.get(key)):
+                        item[key] = _leaf(zero)
+                        filled.append(f"line_items[{i}].{key}")
 
     if not _v(invoice.get("total_gst_amount")):
         heads = [_num(invoice.get(f"total_{h}_amount")) for h in _HEADS]
