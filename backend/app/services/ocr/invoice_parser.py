@@ -91,7 +91,7 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "scheme_value": (["schemevalue", "schemeamt", "schemeamount"], ["%"]),
     # "Sale Value" (Overseas) is the line BEFORE its discount - a gross figure.
     # Left to `amount`, it overstated every line by the discount.
-    "gross_amount": (["grossamount", "grossamt", "grossvalue", "grosstotal", "gross",
+    "gross_amount": (["grossamount", "grossamt", "grossvalue", "grosstotal", "totalbasic", "gross",
                       "salevalue"], ["%"]),
     # "Total Amount" (Menarini) is the line INCLUDING tax - a net amount, not
     # the taxable one. Excluded from anything taxable so the column the bill
@@ -619,7 +619,7 @@ def _extract_header_meta(
     # PAN, e-mail and drug licences come from the supplier's own block, so the
     # buyer's equivalents cannot be mistaken for the vendor's.
     party_text = "\n".join((parties or {}).values())
-    for key, value in supplier_extras(own or text, party_text).items():
+    for key, value in supplier_extras(own or text, party_text, text).items():
         supplier[key] = _f(value)
 
     # A GSTIN carries its owner's PAN in characters 3-12, so the supplier's two
@@ -686,7 +686,7 @@ def _extract_header_meta(
             elif there and not here:
                 bill[key] = _f(there)
 
-    references = extract_references(text)
+    references = extract_references(text, "\n".join(regions.values()))
     totals = extract_totals(text)
     return {
         **party_fields,

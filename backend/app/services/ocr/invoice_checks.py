@@ -578,6 +578,26 @@ def complete_from_the_bill(fields: dict) -> List[str]:
                         item[key] = _leaf(zero)
                         filled.append(f"line_items[{i}].{key}")
 
+    # A bill-level discount the lines settle: zero when every line's discount
+    # is printed as zero (Menarini's "0.00%") or its gross equals its taxable
+    # value (V L's TOTAL BASIC = TAXABLE AMOUNT). Left blank, the export read it
+    # as not captured.
+    if not _v(invoice.get("total_discount_amount")):
+        items = fields.get("line_items") or []
+
+        def settled_zero(it: dict) -> bool:
+            pct, amt = _num(it.get("discount_percent")), _num(it.get("discount_amount"))
+            if amt is not None:
+                return amt == 0
+            if pct is not None:
+                return pct == 0
+            gross, taxable = _num(it.get("gross_amount")), _num(it.get("amount"))
+            return gross is not None and taxable is not None and abs(gross - taxable) < 0.01
+
+        if items and all(settled_zero(it) for it in items):
+            invoice["total_discount_amount"] = _leaf("0.00")
+            filled.append("invoice.total_discount_amount")
+
     if not _v(invoice.get("total_gst_amount")):
         heads = [_num(invoice.get(f"total_{h}_amount")) for h in _HEADS]
         known = [h for h in heads if h is not None]

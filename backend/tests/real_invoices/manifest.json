@@ -28,7 +28,28 @@
       "bill_to_name": "SHREE SIMBA CHEMIST (UNIT OF ASCENT",
       "ship_to_name": "SHREE SIMBA CHEMIST (UNIT OF ASCENT",
       "bill_to_gstin": "27AASCA3306L1ZE",
-      "ship_to_gstin": "27AASCA3306L1ZE"
+      "ship_to_gstin": "27AASCA3306L1ZE",
+      "header_expect": {
+        "invoice.lr_no": "5140404",
+        "invoice.lr_date": null,
+        "invoice.po_no": "100178296",
+        "invoice.po_date": "30.06.2025",
+        "invoice.due_date": null,
+        "invoice.irn": null,
+        "invoice.transport": null,
+        "supplier.dl_no_1": "MH-TZ5210091",
+        "supplier.dl_date_1": null,
+        "supplier.dl_no_2": "MH-TZ5210092",
+        "supplier.dl_date_2": null,
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "6.00",
+        "sgst_percent": "6.00",
+        "batch_no": "TB-022501",
+        "expiry": "01/2027",
+        "mfg_date": "02/2025"
+      }
     },
     {
       "file": "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf",
@@ -49,7 +70,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
       "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": "27AAECD7847H1ZC"
+      "ship_to_gstin": "27AAECD7847H1ZC",
+      "header_expect": {
+        "invoice.lr_no": null,
+        "invoice.lr_date": null,
+        "invoice.po_no": "30426170",
+        "invoice.po_date": "10.09.2025",
+        "invoice.due_date": "01.10.2025",
+        "invoice.irn": "d7c4eed7d3ff34acf46c45252b5e0b1ac0",
+        "invoice.transport": null,
+        "supplier.dl_no_1": "MH-TZ5-353350",
+        "supplier.dl_date_1": null,
+        "supplier.dl_no_2": "MH-TZ5-353351",
+        "supplier.dl_date_2": null,
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "6",
+        "sgst_percent": "6",
+        "batch_no": "TMET6",
+        "expiry": "04.2028",
+        "mfg_date": null
+      }
     },
     {
       "file": "KANCHAN PHARMA PVT. LTD(PRECIA).pdf",
@@ -70,7 +112,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT. LTD",
       "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT. LTD",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": "27AAECD7847H1ZC"
+      "ship_to_gstin": "27AAECD7847H1ZC",
+      "header_expect": {
+        "invoice.lr_no": "2035873",
+        "invoice.lr_date": "11/07/2025",
+        "invoice.po_no": null,
+        "invoice.po_date": null,
+        "invoice.due_date": "21/07/2025",
+        "invoice.irn": null,
+        "invoice.transport": "QUICK INDIA LOGISTICS PRIVATE LIMITED",
+        "supplier.dl_no_1": "20B-MH-TZ2-521007",
+        "supplier.dl_date_1": null,
+        "supplier.dl_no_2": "21B-MH-TZ2-521008",
+        "supplier.dl_date_2": null,
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "6",
+        "sgst_percent": "6",
+        "batch_no": "EDC12402",
+        "expiry": "Oct-26",
+        "mfg_date": null
+      }
     },
     {
       "file": "BHARAT SERUMS AND VACCINES LIMITED.pdf",
@@ -93,7 +156,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
       "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": "27AAECD7847H1ZC"
+      "ship_to_gstin": "27AAECD7847H1ZC",
+      "header_expect": {
+        "invoice.lr_no": "690017",
+        "invoice.lr_date": "21.08.2025",
+        "invoice.po_no": "4519",
+        "invoice.po_date": "21.08.2025",
+        "invoice.due_date": null,
+        "invoice.irn": "DDE3F825D6EC277E8B61933B29E6EF0BB64624EAE181772009DA7433F09C35D1",
+        "invoice.transport": "QUICK COURIER",
+        "supplier.dl_no_1": "MH-TZ5-379188",
+        "supplier.dl_date_1": null,
+        "supplier.dl_no_2": "MH-TZ5-379189",
+        "supplier.dl_date_2": null,
+        "supplier.dl_no_3": "20B-MH-TZ5-473312"
+      },
+      "first_line_expect": {
+        "cgst_percent": "6.00",
+        "sgst_percent": "6.00",
+        "batch_no": "B26825005",
+        "expiry": "05/27",
+        "mfg_date": "06/25"
+      }
     },
     {
       "file": "A.MENARINI INDIA.pdf",
@@ -114,7 +198,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
       "ship_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": "27AAECD7847H1ZC"
+      "ship_to_gstin": "27AAECD7847H1ZC",
+      "header_expect": {
+        "invoice.lr_no": "LOCAL",
+        "invoice.lr_date": "22 Sep 25",
+        "invoice.po_no": "MUM25NODM01080",
+        "invoice.po_date": "22-Sep-2025",
+        "invoice.due_date": "29-Sep-2025",
+        "invoice.irn": "d53355f50eca36d02ddd2300d5f5345328b950f9e5f1b",
+        "invoice.transport": "SIDHHI ROADWAYS",
+        "supplier.dl_no_1": "20B-MH-TZ3-82629",
+        "supplier.dl_date_1": "27-Apr-2028",
+        "supplier.dl_no_2": "21B-MH-TZ3-82630",
+        "supplier.dl_date_2": "27-Apr-2028",
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "2.5",
+        "sgst_percent": "2.5",
+        "batch_no": "ABO31ABA",
+        "expiry": "Oct-27",
+        "mfg_date": "May-25"
+      }
     },
     {
       "file": "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf",
@@ -135,7 +240,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT. LTD",
       "ship_to_name": "DIAL HEALTH MEDICAL",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": null
+      "ship_to_gstin": null,
+      "header_expect": {
+        "invoice.lr_no": "CC",
+        "invoice.lr_date": null,
+        "invoice.po_no": "1017143491",
+        "invoice.po_date": "12.08.2025",
+        "invoice.due_date": "22.08.2025",
+        "invoice.irn": null,
+        "invoice.transport": null,
+        "supplier.dl_no_1": "MH-TZ2-491363",
+        "supplier.dl_date_1": "11.09.2027",
+        "supplier.dl_no_2": "MH-TZ2-491364",
+        "supplier.dl_date_2": "11.09.2027",
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "6.00",
+        "sgst_percent": "6.00",
+        "batch_no": "TPV1A24A16",
+        "expiry": "10/2027",
+        "mfg_date": null
+      }
     },
     {
       "file": "OVERSEAS HEALTH CARE PRIVATE LIMITED.pdf",
@@ -156,7 +282,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
       "ship_to_name": "EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": "27AAECD7847H1ZC"
+      "ship_to_gstin": "27AAECD7847H1ZC",
+      "header_expect": {
+        "invoice.lr_no": "18/09",
+        "invoice.lr_date": "18/09/2025",
+        "invoice.po_no": null,
+        "invoice.po_date": null,
+        "invoice.due_date": "09/10/2025",
+        "invoice.irn": "af84ef7ba89cf13e393a3503ca996b36ae174d8cfab82419129f11503cddb742",
+        "invoice.transport": "BY HAND DELIVERY",
+        "supplier.dl_no_1": "MH-MZ4-33204",
+        "supplier.dl_date_1": null,
+        "supplier.dl_no_2": "MH-MZ4-33205",
+        "supplier.dl_date_2": null,
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "6",
+        "sgst_percent": "6",
+        "batch_no": "25S2GTB977",
+        "expiry": "Jul-27",
+        "mfg_date": "Aug-25"
+      }
     },
     {
       "file": "V L ENTERPRISES.pdf",
@@ -177,7 +324,28 @@
       "bill_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
       "ship_to_name": "EASTERN AGENCIES HEALTHCARE PVT LTD",
       "bill_to_gstin": "27AAECD7847H1ZC",
-      "ship_to_gstin": "27AAECD7847H1ZC"
+      "ship_to_gstin": "27AAECD7847H1ZC",
+      "header_expect": {
+        "invoice.lr_no": null,
+        "invoice.lr_date": null,
+        "invoice.po_no": "4608",
+        "invoice.po_date": "20/08/2025",
+        "invoice.due_date": "12/09/2025",
+        "invoice.irn": null,
+        "invoice.transport": null,
+        "supplier.dl_no_1": "20B-541751",
+        "supplier.dl_date_1": null,
+        "supplier.dl_no_2": "21B-541752",
+        "supplier.dl_date_2": null,
+        "supplier.dl_no_3": null
+      },
+      "first_line_expect": {
+        "cgst_percent": "9.00",
+        "sgst_percent": "9.00",
+        "batch_no": "25CDLJ01",
+        "expiry": "11/2026",
+        "mfg_date": "06/2025"
+      }
     },
     {
       "file": "MSV LIFESCIENCES.pdf",

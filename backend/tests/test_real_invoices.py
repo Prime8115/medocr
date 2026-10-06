@@ -506,3 +506,28 @@ def test_every_real_invoice_verifies(case, results):
     assert failed == _EXPECTED_FAILED_CHECKS.get(case["file"], set()), [
         c for c in verification["checks"] if c["status"] == "fail"
     ]
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_header_fields_read_as_printed(case, results):
+    """LR, PO, due date, IRN, transport, discount and drug licences, exactly
+    as each bill prints them - or blank where the bill leaves them blank.
+
+    Each value here was checked against the printed invoice. These broke one
+    supplier at a time (Menarini's "L.R. No. : LOCAL Date : 22 Sep 25" and
+    "Valid till - 27-Apr-2028", Abbott's footer licences, Bharat's carrier),
+    so every field is pinned for every supplier.
+    """
+    fields = results[case["file"]]["fields"]
+    for path, expected in case["header_expect"].items():
+        section, key = path.split(".")
+        got = ((fields.get(section) or {}).get(key) or {}).get("value")
+        assert got == expected, f"{path}: {got!r} != {expected!r}"
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_first_line_tax_and_dates_read_as_printed(case, results):
+    line = results[case["file"]]["fields"]["line_items"][0]
+    for key, expected in case["first_line_expect"].items():
+        got = (line.get(key) or {}).get("value")
+        assert got == expected, f"{key}: {got!r} != {expected!r}"

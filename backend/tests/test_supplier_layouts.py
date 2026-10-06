@@ -295,13 +295,15 @@ def test_no_zero_is_written_beside_a_tax_that_was_not_read():
 
 
 def test_menarini_specific_fields():
-    import pathlib
     """Verify that Menarini's LR Date, PO Date, DL Date 1/2, and line tax percentages
     are extracted and verified, not left blank."""
+    import pathlib
+
+    import pytest
     from app.services.ocr import process_document
     p = pathlib.Path(__file__).parent / "real_invoices" / "A.MENARINI INDIA.pdf"
     if not p.exists():
-        return
+        pytest.skip("the Menarini PDF is a customer document, kept out of the repo")
     res = process_document("menarini_test", p.read_bytes(), "application/pdf", doc_type="invoice")
     fields = res["fields"]
     inv = fields["invoice"]
@@ -331,3 +333,95 @@ def test_menarini_specific_fields():
     verif = res.get("meta", {}).get("verification", {})
     assert verif.get("verdict") == "verified"
     assert verif.get("failed") == 0
+
+
+# --- header references, as the suppliers print them ------------------------------
+
+from app.services.ocr.invoice_header import drug_licences, extract_totals  # noqa: E402
+
+
+def test_lr_and_order_dates_printed_after_their_numbers():
+    # Menarini: "L.R. No. : LOCAL Date : 22 Sep 25", "Order No. : X Date : 22-Sep-2025".
+    text = ("L.R. No. : LOCAL Date : 22 Sep 25\n"
+            "Order No. : MUM25NODM01080 Date : 22-Sep-2025")
+    refs = extract_references(text)
+    assert refs["lr_no"] == "LOCAL"
+    assert refs["lr_date"] == "22 Sep 25"
+    assert refs["po_no"] == "MUM25NODM01080"
+    assert refs["po_date"] == "22-Sep-2025"
+
+
+def test_a_licence_validity_after_valid_till():
+    text = "D.L. No.1 - 20B-MH-TZ3-82629 Valid till - 27-Apr-2028"
+    assert drug_licences(text)[0] == ("20B-MH-TZ3-82629", "27-Apr-2028")
+
+
+def test_a_licence_never_takes_a_date_that_merely_follows_later():
+    # The e-way bill date further along the line is not the licence's validity.
+    text = "DL No 1 : 20B-MH-MZ5-190671 Weight : 12.88 E-way Bill Gen.Date : 22-Sep-2025"
+    assert drug_licences(text)[0] == ("20B-MH-MZ5-190671", None)
+
+
+def test_a_licence_printed_validity_first():
+    # Abbott: form 20B, valid till 11.09.2027, number MH-TZ2-491363.
+    text = "DL No.-20B11.09.2027/MH-TZ2-491363\nDL No.-21B11.09.2027/MH-TZ2-491364"
+    assert drug_licences(text)[:2] == [("MH-TZ2-491363", "11.09.2027"),
+                                        ("MH-TZ2-491364", "11.09.2027")]
+
+
+def test_an_irn_labelled_irn_no():
+    text = "IRN No.: DDE3F825D6EC277E8B61933B29E6EF0BB64624EAE181772009DA7433F09C35D1 Cheque No :"
+    assert extract_references(text)["irn"].startswith("DDE3F825D6EC")
+
+
+def test_a_carrier_is_never_the_address_flowing_under_its_label():
+    # Bharat: the header's "Name of Carrier" has the buyers' address beneath;
+    # the footer's has the carrier.
+    text = ("GOLDEN TOBACCO LTD S.V.ROAD GOLDEN TOBACCO LTD S.V.ROAD Name of Carrier\n"
+            "VILE PARLE WEST VILE PARLE WEST\n"
+            "...\n"
+            "Name of Carrier\nQUICK COURIER")
+    assert extract_references(text)["transport"] == "QUICK COURIER"
+
+
+def test_a_transport_mode_when_no_transporter_is_named():
+    text = "Tax is Payable On Reverse Charge : No Transportation Mode : BY HAND DELIVERY"
+    assert extract_references(text)["transport"] == "BY HAND DELIVERY"
+
+
+def test_a_discount_total_with_a_currency_mark():
+    assert extract_totals("Less Disc. :Rs. 0.00")["total_discount_amount"] == "0.00"
+
+
+def test_a_zero_discount_is_settled_by_the_lines():
+    f = _msv_like()
+    f["line_items"] = [{"discount_percent": _leaf("0.00")}, {"discount_percent": _leaf("0")}]
+    complete_from_the_bill(f)
+    assert _v(f["invoice"], "total_discount_amount") == "0.00"
+
+
+def test_an_unknown_discount_is_left_blank():
+    f = _msv_like()
+    f["line_items"] = [{"discount_percent": _leaf("0.00")}, {"amount": _leaf("100.00")}]
+    complete_from_the_bill(f)
+    assert "total_discount_amount" not in f["invoice"]
+
+
+def test_a_rate_printed_on_the_wrapped_line_beneath_its_tax():
+    # Menarini: "CGST" over 28.08, and "2.50 %" on the wrapped line below.
+    words = [
+        _word("Batch", 200, 90), _word("Product", 40, 100), _word("Name", 80, 100),
+        _word("HSN", 160, 100), _word("Qty", 280, 100), _word("Amount", 330, 100),
+        _word("CGST", 400, 100), _word("SGST", 450, 100),
+        _word("A-RET", 40, 130), _word("30049099", 160, 130), _word("ABO31ABA", 200, 130),
+        _word("13.00", 280, 130), _word("1123.20", 330, 130),
+        _word("28.08", 400, 130), _word("28.08", 450, 130),
+        _word("2.50", 400, 142), _word("%", 425, 142), _word("2.50", 450, 142), _word("%", 475, 142),
+    ]
+    table = tables_from_words(words)[0]
+    header, row = table[0], table[1]
+    item = _build_item(row, _map_columns(header), header, _gst_columns(header),
+                       interstate=False, local="sgst")
+    assert _v(item, "cgst_percent") == "2.5"
+    assert _v(item, "cgst_amount") == "28.08"
+    assert _v(item, "sgst_percent") == "2.5"

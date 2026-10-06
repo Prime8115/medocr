@@ -92,10 +92,15 @@ def _labelled(text: str, labels: List[str], value: str) -> Optional[str]:
 
 
 _REFERENCES: Dict[str, Tuple[List[str], str]] = {
-    "irn": (["IRN"], r"([A-Fa-f0-9]{16,64})"),
+    # "IRN No.: DDE3F8..." (Bharat), "IRN No. af84ef..." (Overseas): the "No."
+    # stopped a bare "IRN" label reaching the value.
+    "irn": (["IRN No", "IRN Number", "IRN"], r"([A-Fa-f0-9]{16,64})"),
     "eway_bill_no": (["E Way Bill No", "EwayBill No", "E Way Bill", "Eway Bill"], r"(\d{10,16})"),
     "lr_no": (["LR No", "L R No", "LR RR No", "LR/RR No", "Lorry Receipt No"], _TOKEN),
-    "transport": (["Transport Name", "Transporter", "Transport", "Carrier", "Name of Carrier"],
+    # A transporter's name first; the mode only where no name is printed -
+    # Overseas states just "Transportation Mode : BY HAND DELIVERY".
+    "transport": (["Transport Name", "Transporter", "Name of Carrier", "Carrier",
+                   "Transportation Mode", "Transport Mode", "Mode of Transport", "Transport"],
                   r"([A-Za-z][A-Za-z0-9 .,&\-']{2,48})"),
     "po_no": (["PO No", "P O No", "Order No", "Purchase Order No", "Ord Ref No"], _TOKEN),
 }
@@ -117,7 +122,7 @@ _TOTALS: Dict[str, List[str]] = {
     "total_taxable_amount": ["Total Taxable Value", "Total Taxable Amount", "Total Taxable",
                              "Taxable Value Total", "Basic Amount", "Total Basic"],
     "total_discount_amount": ["Total Discount", "Discount Total", "SD Discount",
-                              "Total Disc Amt", "Total Disc"],
+                              "Total Disc Amt", "Total Disc", "Less Discount", "Less Disc"],
     "total_cgst_amount": ["Total CGST Amt", "Total CGST Amount", "Total CGST", "CGST Total"],
     "total_sgst_amount": ["Total SGST Amt", "Total SGST Amount", "Total SGST", "SGST Total",
                           "Total UTGST Amt"],
@@ -144,7 +149,7 @@ _LABEL_WORDS = frozenset({
     "date", "dt", "mode", "no", "number", "no.", "gstin", "gst", "pan", "tel",
     "tel no", "phone", "mobile", "transporter", "transport", "transport mode",
     "name", "weight", "vehicle", "cases", "state", "code", "address", "fssai",
-    "dl", "po number", "po no", "order no",
+    "dl", "po number", "po no", "order no", "trn", "trn gstin",
 })
 
 
@@ -170,18 +175,51 @@ def _is_label_not_value(found: str, text: str) -> bool:
 # No length or shape test on the reference numbers themselves: Abbott really
 # prints "LR No.:CC" and Overseas "GR/LR No. :18/09". Those look like noise and
 # are exactly what is on the bill - only a captured LABEL is rejected.
-def extract_references(text: str) -> Dict[str, Optional[str]]:
-    """Transport, order and statutory references from the page text."""
+def _is_address_not_carrier(found: str) -> bool:
+    """A "carrier" that is really the parties' address flowing under the label.
+
+    Two signatures: the same phrase twice over - the Bill-to and Ship-to
+    columns flattened side by side ("VILE PARLE WEST VILE PARLE WEST", Bharat)
+    - or plain address text (a city, a road, a PIN code).
+    """
+    words = found.upper().split()
+    half = len(words) // 2
+    if half and len(words) % 2 == 0 and words[:half] == words[half:]:
+        return True
+    return bool(_ADDRESS_LIKE.search(found))
+
+
+def _labelled_all(text: str, labels: List[str], value: str):
+    """Every value following any of these labels, labels in order of preference."""
+    for label in labels:
+        loose = r"[\s.:\-]*".join(re.escape(w) for w in label.split())
+        for m in re.finditer(loose + r"[\s.:#\-]*" + value, text or "", re.I):
+            yield m.group(1).strip()
+
+
+def extract_references(text: str, exclude: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """Transport, order and statutory references from the page text.
+
+    Every occurrence of a label is tried, not just the first, until one gives
+    a real value. `exclude` is the parties' own text: Bharat prints "Name of
+    Carrier" twice, the first time with the buyer's address flowing into the
+    line beneath it - "VILE PARLE WEST" is an address, not a carrier - and the
+    second with "QUICK COURIER" under it.
+    """
     out: Dict[str, Optional[str]] = {}
+    party = re.sub(r"\s+", " ", (exclude or "")).upper()
     for field, (labels, value) in _REFERENCES.items():
-        found = _labelled(text, labels, value)
-        if found:
+        out[field] = None
+        for found in _labelled_all(text, labels, value):
             # Stop at the next label on the same line - for every reference,
             # not just the transporter.
             found = _NEXT_LABEL.split(found)[0].strip(" .,-:") or None
-        if found and _is_label_not_value(found, text):
-            found = None
-        out[field] = found
+            if not found or _is_label_not_value(found, text):
+                continue
+            if field == "transport" and _is_address_not_carrier(found):
+                continue
+            out[field] = found
+            break
     for field, labels in _DATES.items():
         out[field] = _labelled(text, labels, _DATE)
         if out[field] is None:
@@ -194,7 +232,8 @@ def extract_totals(text: str) -> Dict[str, Optional[str]]:
     """Invoice-level tax and discount totals, where the bill prints them."""
     out: Dict[str, Optional[str]] = {}
     for field, labels in _TOTALS.items():
-        value = _labelled(text, labels, _MONEY)
+        # "Less Disc. :Rs. 0.00" (Abbott): a currency mark may sit between.
+        value = _labelled(text, labels, r"(?:rs\.?|inr|₹)?\s*" + _MONEY)
         out[field] = value.replace(",", "") if value else None
     return out
 
@@ -805,10 +844,22 @@ def supplier_gstin_for_pan(pan: Optional[str], found: Optional[str],
     return None
 
 
+_DL_DATE_FIRST = re.compile(
+    r"\b2[01][A-D]\s*:?\s*" + _DATE + r"\s*/\s*([A-Z]{2,3}-[A-Z]{1,4}\d?-?\d{4,8})(?!\w)"
+)
+
+
 def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
     """Up to three (licence number, validity date) pairs from a party's block."""
     out: List[Tuple[Optional[str], Optional[str]]] = []
     seen = set()
+    # Some bills print the validity FIRST: Abbott's "DL No.-20B11.09.2027/
+    # MH-TZ2-491363" is form 20B, valid till 11.09.2027, number MH-TZ2-491363.
+    for match in _DL_DATE_FIRST.finditer(text or ""):
+        number = match.group(2)
+        if number not in seen:
+            seen.add(number)
+            out.append((number, match.group(1)))
     for match in _DL_SHAPE.finditer(text or ""):
         number = match.group(1)
         if number in seen:
@@ -823,8 +874,14 @@ def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
         # so one date is not attached to two numbers.
         tail = (text or "")[match.end():match.end() + 64]
         tail = _DL_SHAPE.split(tail)[0]
-        date = re.search(
-            r"(?:[\s&,:/]|valid\s*(?:till|upto|to)?|validity|exp(?:iry)?|till)*[:\-]?\s*" + _DATE,
+        # Anchored to the licence number: the date must FOLLOW it, with only
+        # separators or a validity phrase between - "& 25.11.2029" (Zydus),
+        # " Valid till - 27-Apr-2028" (Menarini). Searching anywhere in the tail
+        # would hand a licence whatever date is printed next on the line, such
+        # as Menarini's e-way bill date.
+        date = re.match(
+            r"(?:[\s&,:/]|valid\s*(?:till|upto|up\s*to|to)?|validity|exp(?:iry)?|till)*"
+            r"[:\-]?\s*" + _DATE,
             tail,
             re.I,
         )
@@ -836,7 +893,8 @@ def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
     return out
 
 
-def supplier_extras(text: str, exclude: Optional[str] = None) -> Dict[str, Optional[str]]:
+def supplier_extras(text: str, exclude: Optional[str] = None,
+                    page_text: Optional[str] = None) -> Dict[str, Optional[str]]:
     """PAN, e-mail and drug licences belonging to the SUPPLIER.
 
     `exclude` is the Bill-to and Ship-to text. A pharma invoice prints drug
@@ -856,12 +914,19 @@ def supplier_extras(text: str, exclude: Optional[str] = None) -> Dict[str, Optio
     email = _EMAIL.search(text or "")
     out["email"] = email.group(1) if email else None
     index = 0
-    for number, date in drug_licences(text):
-        if number in blocked:
-            continue
-        index += 1
-        out[f"dl_no_{index}"] = number
-        out[f"dl_date_{index}"] = date
-        if index == 3:
-            break
+    taken = set()
+    # The supplier's own block first; then the rest of the page, for licences
+    # printed away from it - Abbott prints its own in the page footer, and JB's
+    # second sits on a line below where its block is cut. Anything a party
+    # block carries is still the buyer's, and is still skipped.
+    for source in (text, page_text or ""):
+        for number, date in drug_licences(source):
+            if number in blocked or number in taken:
+                continue
+            taken.add(number)
+            index += 1
+            out[f"dl_no_{index}"] = number
+            out[f"dl_date_{index}"] = date
+            if index == 3:
+                return out
     return out
