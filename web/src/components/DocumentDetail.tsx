@@ -135,6 +135,8 @@ export default function DocumentDetail() {
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
         total_reconciled_by?: string | null;
+        total_in_words?: string | null;
+        total_in_words_disagrees?: boolean;
         copies_detected?: number | null;
         duplicates_removed?: number;
         needs_manual_entry?: boolean;
@@ -350,6 +352,12 @@ export default function DocumentDetail() {
                     TAXABLE total, thousands below the payable one on most
                     bills, and as the headline it read as a mismatch. */}
                 {meta?.line_items_total ? ` · items ₹${formatMoney(meta.line_items_total)} before tax` : ''}
+                {/* What the bill says in its OWN words, when that differs
+                    from what its figures add up to. On an Indian tax invoice
+                    the words are the controlling figure, so a reviewer about
+                    to approve a payment should see both. */}
+                {meta?.total_in_words_disagrees && meta.total_in_words
+                  ? ` · in words ₹${formatMoney(meta.total_in_words)}` : ''}
                 {/* A tick earned only against the printed TAXABLE total is a
                     weaker one - the bill's own grand total was never reached,
                     usually because a narrow tax column did not read. Say so,

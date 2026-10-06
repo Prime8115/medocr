@@ -23,7 +23,15 @@ from typing import Dict, List, Optional, Tuple
 
 # A field is (list of label spellings, value pattern). Labels are matched
 # case-insensitively with flexible punctuation and spacing.
-_DATE = r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}|\d{4}-\d{2}-\d{2})"
+# A date as Indian invoices print it, including the named-month form Menarini
+# uses throughout ("22-Sep-2025"). Numeric months alone left every date on that
+# bill blank although all of them were printed.
+_MONTH_NAME = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_DATE = (
+    r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r"|[0-3]?\d[\s./\-](?:" + _MONTH_NAME + r")[a-z]*[\s./\-]\d{2,4})"
+)
 _MONEY = r"([\d,]+\.\d{2}|[\d,]{2,})"
 _TOKEN = r"([A-Za-z0-9][A-Za-z0-9\-\/]*)"
 
@@ -235,7 +243,10 @@ def sum_line_totals(items: List[dict]) -> Dict[str, Optional[str]]:
 # ------------------------------- the parties -------------------------------
 _PARTY_HEADINGS = {
     "bill_to": re.compile(r"\bbill(?:ed)?\s*to\b", re.I),
-    "ship_to": re.compile(r"\bship\s*to\b", re.I),
+    # "Ship to", "Shipped to" - and "Shiped to", one p, which is how V L
+    # Enterprises spells it; that column was blank while every detail in it
+    # was printed on the bill.
+    "ship_to": re.compile(r"\bship(?:p?ed)?\s*to\b", re.I),
 }
 _STOP = re.compile(
     r"(gs\s*t\s*in|gstin|pan\s*no|pan\s*:|d\.?l\.?\s*no|drug\s*lic|food\s*lic|fssai|cin|"
@@ -255,6 +266,65 @@ _STOP = re.compile(
 # ("Bill to Party : Ship to Party :"), so allowing it let the Ship-to column
 # anchor itself inside Bill-to's text and swallow the wrong company.
 _LABEL_PREFIX = re.compile(r"(customer|details|buyer|consignee|receiver|[(\[:,.\-]|\s)+", re.I)
+
+# A party heading and whatever introduces it, matched greedily from the start of
+# the line - so the label prose contributed by the column BESIDE this one is
+# removed along with this column's own heading.
+_PARTY_LABEL_RUN = re.compile(
+    r"^.*\b(?:bill(?:ed)?\s*to|ship(?:p?ed)?\s*to)\b"
+    r"\s*(?:party|details|address)?\s*[:\-)(]*",
+    re.I,
+)
+
+# Heading prose a party column carries when the cut between columns falls in
+# the middle of a heading ("Details of Receiver (Billed to)", "Details of
+# Consignee (Shiped to)", "Address of delivery").
+_PARTY_PROSE = re.compile(
+    r"\bdetails\s+of\b|\breceiver\b|\bconsignee\b|\baddress\s+of\s+delivery\b"
+    r"|\((?:\s*(?:bill(?:ed)?|ship(?:p?ed)?)\s*(?:to)?\s*)\)?|\(\s*$",
+    re.I,
+)
+
+_LEGAL_SUFFIX = re.compile(
+    r"^\s*((?:pvt\.?|private)\s*(?:ltd\.?|limited)|(?:ltd\.?|limited))\s+(.+)$", re.I
+)
+
+
+def _suffix_last(name: str) -> str:
+    """Put a leading "PVT LTD" back at the end of the name.
+
+    A name wrapped across two lines in a narrow column is sometimes read tail
+    first - V L gave "PVT LTD EASTERN AGENCIES HEALTHCARE". No company name
+    begins with its legal suffix, so this reorder cannot damage a real one.
+    """
+    m = _LEGAL_SUFFIX.match(name or "")
+    return f"{m.group(2).strip()} {m.group(1).strip()}" if m else name
+
+
+_NAMEISH = re.compile(
+    r"\b(LIMITED|LTD|PVT|PRIVATE|LLP|CORPORATION|DISTRIBUTOR|PHARMA|HEALTHCARE|"
+    r"ENTERPRISES?|AGENC|LABORATOR|INDUSTRIES|REMEDIES|BIOTECH|LIFESCIENCE|"
+    r"MEDICAL|MEDICOS?|CHEMISTS?|DRUGS?|TRADERS|STORES?|HOSPITAL|CLINIC)",
+    re.I,
+)
+
+
+_INLINE_LABEL = re.compile(r"\b(?:address|name|state|code|city|pin)\s*:", re.I)
+
+
+def _has_doubled_glyphs(text: str) -> bool:
+    """Whether this block was drawn twice, so every letter arrives doubled."""
+    doubled = [
+        t for t in re.findall(r"[A-Za-z]{4,}", text or "")
+        if len(t) % 2 == 0 and t[0::2] == t[1::2]
+    ]
+    return len(doubled) >= 2
+
+
+def _is_only_legal_suffix(name: Optional[str]) -> bool:
+    return bool(name) and bool(re.fullmatch(
+        r"\s*(?:(?:pvt\.?|private)\s*)?(?:ltd\.?|limited)\s*", name, re.I))
+
 
 # Labels that mark the invoice-reference column - the one printed to the right
 # of Ship-to on most layouts. Needed as a boundary, or the Ship-to block runs on
@@ -440,22 +510,60 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
     """
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     cleaned: List[str] = []
+    address_opens_at: Optional[int] = None
     for line in lines:
-        without = re.sub(
-            r"\b(bill(?:ed)?\s*to|ship\s*to)\b\s*(party|details)?\s*[:\-)]*", "", line, flags=re.I
-        )
+        # Everything up to and including the LAST party heading on the line is
+        # the neighbouring column's label text, not this party's name. The two
+        # columns flatten into one line of text, so V L gave us "Receiver (
+        # Details of Consignee (Shiped PVT LTD EASTERN AGENCIES HEALTHCARE PVT
+        # LTD", where the company is only the tail.
+        without = _PARTY_LABEL_RUN.sub("", line)
+        # ...and the heading prose that survives on a line of its own when the
+        # column cut falls mid-heading: V L's bill-to block opens "Receiver
+        # (Billed to) Details of", its ship-to block "Consignee (Shiped".
+        without = _PARTY_PROSE.sub(" ", without)
         without = _STOP.split(without)[0]
         # A party's name often continues straight into its address on the same
         # visual line, so cut at the first address-looking token rather than
         # trusting the line break.
-        without = _ADDRESS_START.split(without)[0]
+        before_address = _ADDRESS_START.split(without)[0]
+        if len(before_address.strip(" :,-()")) < 3 and before_address != without:
+            # The line IS address from its first word ("Billed To: A-2 FIRST
+            # FLOOR..."). Recorded, because no name can come after it - Abbott
+            # prints no buyer name at all, and the next line, "PARLE(WEST)",
+            # is the tail of that street address.
+            address_opens_at = address_opens_at if address_opens_at is not None else len(cleaned)
+        without = before_address
         # Some suppliers prefix the party with its account code in their system.
         without = re.sub(r"^\s*\d{4,}\s+", "", without)
-        cleaned.append(without.strip(" :,-()"))
+        cleaned.append(re.sub(r"\s+", " ", without).strip(" :,-()"))
 
     name = None
     index = None
+    if _has_doubled_glyphs(text):
+        # The block is drawn twice, slightly offset - "NNaammee", "AAdddd r:e
+        # sAs" - so its text is two copies interleaved letter by letter.
+        # Overseas does this. No name can be read out of that honestly, so
+        # return none and let the GSTIN and PAN, which survive it, carry the
+        # party.
+        cleaned = []
+    address_started = False
     for i, line in enumerate(cleaned):
+        if address_opens_at is not None and i >= address_opens_at:
+            address_started = True
+        if (i > 1 or address_started) and not _NAMEISH.search(line):
+            # The company name opens the block. Something found further down -
+            # or after the address has already begun - that does not even look
+            # like a business is more address: V L's ship-to column was cut too
+            # far right and offered "VILE PARLE", and Abbott prints no buyer
+            # name at all, going from "Billed To:" straight into the street.
+            break
+        if _ADDRESS_LIKE.search(line):
+            address_started = True
+        if _INLINE_LABEL.search(line):
+            # "PARLE(WEST Address: ANDHERI" - a label inside the candidate
+            # means two columns ran together here (Abbott), not a name.
+            continue
         if len(line) >= 4 and re.search(r"[A-Za-z]{3}", line) and not _ADDRESS_LIKE.search(line):
             parts = [line]
             # Join wrapped continuations, stopping once the name looks complete
@@ -467,8 +575,13 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
                     parts.append(follow)
                     if _NAME_TAIL.search(follow):
                         break
-            name = _tidy_name(" ".join(parts))
+            name = _tidy_name(_suffix_last(" ".join(parts)))
             index = i + len(parts) - 1
+            if _is_only_legal_suffix(name):
+                # "PVT LTD" alone is the tail of a name wrapped out of view,
+                # not a company. Blank is honest; this is not.
+                name = None
+                continue
             break
 
     address = None

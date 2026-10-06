@@ -277,7 +277,9 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 f"{flagged} line(s) where quantity x rate does not match the amount - marked for checking."
             )
         check_warnings.extend(flag_invalid_gstins(fields))
-        report = reconcile_invoice(fields, hints.get("stated_item_count"))
+        report = reconcile_invoice(
+            fields, hints.get("stated_item_count"), hints.get("total_in_words")
+        )
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)
 

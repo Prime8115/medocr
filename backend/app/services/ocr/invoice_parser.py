@@ -34,6 +34,7 @@ from app.services.ocr.invoice_header import (
     sum_line_totals,
     supplier_extras,
     supplier_gstin_for_pan,
+    _has_doubled_glyphs,
 )
 from app.services.ocr.invoice_checks import line_arithmetic_holds
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables
@@ -328,6 +329,11 @@ _TOTAL_PATTERNS = [
     r"total\s*amount",
     r"amount\s*payable",
 ]
+# Deliberately no bare "total" pattern. Bharat labels its taxable column sum
+# "Total 371458.70" and prints its grand total ONLY in words; a last-resort bare
+# label read the column sum as the amount due - 41,907 short of the bill. Where
+# an invoice labels its total no better than that, the amount in words is the
+# figure we take, and reconcile_invoice compares the two for contradictions.
 _MONEY = r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]{2,})"
 
 # What a supplier may print between the label and the figure. Menarini heads its
@@ -406,7 +412,16 @@ _DETAIL_LABEL = re.compile(
 _GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][A-Z0-9])\b")
 _GSTIN = re.compile(r"\bG\s*S\s*T\s*(?:IN|No)?\.?\s*(?:no\.?)?\s*[:\-]?\s*([0-9A-Z]{15})\b", re.I)
 _INVOICE_NO = re.compile(r"\binvoice\s*(?:no|num(?:ber)?|#)\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", re.I)
-_DATE_VALUE = r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}|\d{4}-\d{2}-\d{2})"
+# A date as Indian invoices print it. The third form is the one that matters
+# here: Menarini dates every field "22-Sep-2025", and with only numeric months
+# accepted its invoice date, due date, LR date and PO date were ALL blank while
+# every one of them was printed on the bill.
+_MONTH_NAME = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_DATE_VALUE = (
+    r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r"|[0-3]?\d[\s./\-](?:" + _MONTH_NAME + r")[a-z]*[\s./\-]\d{2,4})"
+)
 _INVOICE_DATE = [
     re.compile(r"\binvoice\s*date\s*[:\-]?\s*" + _DATE_VALUE, re.I),
     re.compile(r"\binvoice\s*no.*?\bdt\.?\s*[:\-]?\s*" + _DATE_VALUE, re.I),
@@ -569,9 +584,16 @@ def _extract_header_meta(
 
     # Bill-to and Ship-to, each read from its own column.
     regions = parties or {}
+    # A party area drawn twice over (Overseas) garbles BOTH columns, though
+    # only one may show the tell-tale doubled letters - so the verdict is
+    # taken once, for the pair.
+    garbled = any(_has_doubled_glyphs(regions.get(k, "")) for k in ("bill_to", "ship_to"))
     party_fields = {}
     for key in ("bill_to", "ship_to"):
         detail = party_details(regions.get(key, ""))
+        if garbled:
+            detail["name"] = None
+            detail["address"] = None
         party_fields[key] = {k: _f(v) for k, v in detail.items()}
 
     # Bill-to and Ship-to are usually the same company, and several suppliers
@@ -1086,6 +1108,10 @@ def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
         "stated_item_count": _extract_item_count(full_text),
         "price_labels": labels,
         "document_text": full_text,
+        # The bill's total as it spells it out, for the cross-check against the
+        # figure. An Indian tax invoice states it twice and they do not always
+        # agree - see reconcile_invoice.
+        "total_in_words": total_from_words(full_text),
     }
     return fields
 
@@ -1217,5 +1243,6 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
         "copies_detected": copies,
         "stated_item_count": stated_count,
         "price_labels": labels,
+        "total_in_words": total_from_words(full_text),
     }
     return fields

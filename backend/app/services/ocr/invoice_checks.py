@@ -21,6 +21,11 @@ from typing import List, Optional, Tuple
 _TOTAL_TOLERANCE_ABS = 5.0
 _TOTAL_TOLERANCE_PCT = 0.02
 
+# An amount in words carries no paise, so "one lakh ... only" against
+# 1,190,128.90 is agreement, not a contradiction. Anything beyond a rupee is the
+# bill genuinely disagreeing with itself.
+_WORDS_TOLERANCE = 1.0
+
 
 def _v(field) -> str:
     """The trimmed string value of a {value, confidence} leaf."""
@@ -369,7 +374,8 @@ def _implied_discount(line_total: float, taxable: Optional[float]) -> Optional[T
     return None
 
 
-def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> dict:
+def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
+                      total_in_words: Optional[str] = None) -> dict:
     """Cross-check the extracted lines against the invoice's own totals.
 
     Returns a dict of meta keys plus a `warnings` list. Never mutates values.
@@ -386,12 +392,14 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
     warnings: List[str] = []
     reconciles: Optional[bool] = None
     reconciled_by: Optional[str] = None
+    built_from_lines: Optional[float] = None
 
     if line_total is not None and printed_total:
         candidates = _expected_totals(line_total, gross_total, invoice)
         tolerance = max(_TOTAL_TOLERANCE_ABS, printed_total * _TOTAL_TOLERANCE_PCT)
         # The closest candidate decides, so the one reported is the real build-up.
         best_name, best_value = min(candidates, key=lambda c: abs(c[1] - printed_total))
+        built_from_lines = best_value
         reconciles = abs(best_value - printed_total) <= tolerance
         if reconciles:
             reconciled_by = best_name
@@ -429,6 +437,28 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
     elif printed_total is None:
         warnings.append("Invoice total could not be read - please enter it before approving.")
 
+    # The bill against itself. An Indian tax invoice states its total twice: in
+    # words, and implicitly in the figures that build it up. Abbott's lines plus
+    # its own CGST and SGST come to 144,144.00, while it spells out one lakh
+    # forty four thousand SIXTY EIGHT - exactly 76 less. Rather than quietly
+    # pick a side on a number the pharmacy is about to pay, say so.
+    #
+    # Compared against the build-up from the LINES, not against a label-matched
+    # figure: the words are what the bill asserts, and the lines plus the tax it
+    # states are what it adds up to. A difference beyond a rupee - the paise the
+    # words never carry - is the bill disagreeing with itself.
+    # Reported, not warned about. The gap that matters here is tiny - Abbott's
+    # is 76 rupees in 144,144 - and at that size it cannot be told apart from
+    # our own shortfall when a per-line tax cell does not read (Menarini's lines
+    # reach 99.85% of its stated tax). A warning on either would cry wolf on
+    # both, so the figure is surfaced beside the total instead and the reviewer
+    # sees what the bill says in its own words.
+    spelled = _num({"value": total_in_words}) if total_in_words else None
+    words_disagrees = bool(
+        spelled and built_from_lines
+        and abs(spelled - built_from_lines) > _WORDS_TOLERANCE
+    )
+
     if stated_item_count and items and stated_item_count != len(items):
         warnings.append(
             f"The invoice states {stated_item_count} items but {len(items)} were read. "
@@ -441,6 +471,8 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
     return {
         "line_items_total": _fmt(line_total) if line_total is not None else None,
         "line_items_total_with_gst": _fmt(gross_total) if gross_total is not None else None,
+        "total_in_words": _fmt(spelled) if spelled is not None else None,
+        "total_in_words_disagrees": words_disagrees,
         "total_reconciles": reconciles,
         "total_reconciled_by": reconciled_by,
         "stated_item_count": stated_item_count,

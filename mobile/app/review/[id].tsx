@@ -319,6 +319,8 @@ export default function ReviewScreen() {
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
         total_reconciled_by?: string | null;
+        total_in_words?: string | null;
+        total_in_words_disagrees?: boolean;
         needs_manual_entry?: boolean;
         raw_text?: string | null;
       }
@@ -562,6 +564,12 @@ export default function ReviewScreen() {
             {meta?.line_items_total ? (
               <Text style={styles.totalsSub}>
                 items ₹{formatMoney(meta.line_items_total)} before tax
+                {/* What the bill says in its OWN words, when that differs
+                    from what its figures add up to. On an Indian tax invoice
+                    the words are the controlling figure, so a reviewer about
+                    to approve a payment should see both. */}
+                {meta?.total_in_words_disagrees && meta.total_in_words
+                  ? ` · in words ₹${formatMoney(meta.total_in_words)}` : ''}
                 {/* A tick earned only against the printed TAXABLE total is a
                     weaker one - the bill's own grand total was never reached,
                     usually because a narrow tax column did not read. Say so,
