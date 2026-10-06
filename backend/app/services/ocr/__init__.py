@@ -26,6 +26,7 @@ from app.services.ocr.invoice_checks import (
     validate_line_arithmetic,
 )
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.verify import flag_failed_fields, verify_invoice
 from app.services.ocr.pdf_utils import (
     extract_text_pages,
     extract_text_sample,
@@ -225,6 +226,14 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     return merged, failed_pages, total_pages
 
 
+# Checks the older warning list never carried. Their failures are also added
+# there, so an app build that predates the verdict banner still shows them.
+_NEW_CHECKS = frozenset({
+    "cross_foot", "head_totals", "line_tax", "line_net", "line_discount",
+    "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan",
+}) | frozenset({"cross_read"})
+
+
 def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None):
     """Post-process, run integrity checks, and wrap the result.
 
@@ -286,6 +295,16 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         )
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)
+
+        # The verification layer: every identity the bill states, checked. Its
+        # failures flag their fields (so review highlights them) and must each
+        # be acknowledged before approval - see verify.py.
+        verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
+        flag_failed_fields(fields, verification)
+        integrity["verification"] = verification
+        for check in verification["checks"]:
+            if check["status"] == "fail" and check["id"] in _NEW_CHECKS:
+                check_warnings.append(f"{check['label']}: {check['message']}")
 
     list_key = _LIST_KEY.get(resolved_type)
     item_count = len(fields.get(list_key, []) or []) if list_key else 0
@@ -445,10 +464,28 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     if unsure:
         log.warning("document %s: type unclear (%r); reading it as an invoice", document_id, doc_type)
 
-    fields, failed_pages, total_pages = _extract_chunked(
-        provider, file_bytes, content_type, resolved_type, on_progress=on_progress
+    # A scan is read by the AI by eye. Read it a second time, independently,
+    # with Tesseract - in parallel, so it costs no wall-clock time beside the AI
+    # call - and compare the two (services/ocr/cross_read.py).
+    import concurrent.futures as _cf
+
+    from app.services.ocr import cross_read
+
+    is_scan = resolved_type == "invoice" and (
+        content_type.startswith("image/")
+        or (content_type == "application/pdf" and not is_digital_pdf(file_bytes))
     )
-    result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages)
+    with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+        second = pool.submit(cross_read.second_reading, file_bytes, content_type) if is_scan else None
+        fields, failed_pages, total_pages = _extract_chunked(
+            provider, file_bytes, content_type, resolved_type, on_progress=on_progress
+        )
+        second_fields = second.result() if second else None
+    hints = {}
+    if second_fields:
+        hints["cross_read"] = cross_read.compare(fields, second_fields)
+    result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
+                       hints=hints)
     if unsure:
         result["meta"].setdefault("warnings", []).insert(0, TYPE_UNSURE_WARNING)
         result["meta"]["type_unsure"] = True

@@ -320,8 +320,30 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
         0,
     )
 
-    # Lines with no numbers of their own, waiting to be given to a record.
-    orphans: List[Tuple[float, str]] = []
+    # Columns whose heading stacks two fields - "Mfg.Dt / Exp.Dt" (Overseas),
+    # "Batch No / Mfg.Date" (Menarini). The record line carries the first and
+    # the wrapped line beneath it the second, so the wrapped line's value is kept
+    # as a second line in the cell - the convention a ruled table's cells use -
+    # instead of being thrown away with the rest of the wrapped line. Overseas's
+    # expiry, Jul-27, lived only there; we were reporting its mfg date, Aug-25,
+    # as the expiry.
+    stacked = {
+        i for i, col in enumerate(columns)
+        if sum(bool(re.search(p, col["label"], re.I))
+               for p in (r"batch|lot", r"mfg|mfd", r"exp")) >= 2
+    }
+
+    # Lines with no numbers of their own, waiting to be given to a record:
+    # (top, description text, {stacked column: value}).
+    orphans: List[Tuple[float, str, Dict[int, str]]] = []
+
+    def give(record: List[str], otext: str, ovals: Dict[int, str], before: bool) -> None:
+        if otext:
+            record[description_col] = (f"{otext} {record[description_col]}" if before
+                                       else f"{record[description_col]} {otext}").strip()
+        for col, val in ovals.items():
+            if record[col] and "\n" not in record[col]:
+                record[col] = f"{record[col]}\n{val}"
 
     for line in lines[end + 1:]:
         text = _line_text(line)
@@ -333,23 +355,24 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
         if _is_record_start(cells, numeric_columns):
             top = line[0]
             # Decide where the orphans between the last record and this one go.
-            for otop, otext in orphans:
+            for otop, otext, ovals in orphans:
                 if rows and abs(otop - row_tops[-1]) <= abs(otop - top):
-                    rows[-1][description_col] = f"{rows[-1][description_col]} {otext}".strip()
+                    give(rows[-1], otext, ovals, before=False)
                 else:
-                    cells[description_col] = f"{otext} {cells[description_col]}".strip()
+                    give(cells, otext, {}, before=True)
             orphans = []
             rows.append(cells)
             row_tops.append(top)
         else:
             extra = cells[description_col].strip()
-            if extra:
-                orphans.append((line[0], extra))
+            values = {i: cells[i].strip() for i in stacked if cells[i].strip()}
+            if extra or values:
+                orphans.append((line[0], extra, values))
 
     # Anything left over belongs to the last record.
-    for _, otext in orphans:
+    for _, otext, ovals in orphans:
         if rows:
-            rows[-1][description_col] = f"{rows[-1][description_col]} {otext}".strip()
+            give(rows[-1], otext, ovals, before=False)
 
     if not rows:
         return []

@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     # a pharmacist waiting at a counter should not pay that for a fallback.
     # Turn on to evaluate: OCR_TESSERACT_TABLES=true
     ocr_tesseract_tables: bool = False
+    # Read every scan a second time with Tesseract and compare it with the
+    # AI's reading, field by field (services/ocr/cross_read.py). A checker,
+    # not a reader - on wherever Tesseract is installed.
+    ocr_cross_read: bool = True
 
     tesseract_cmd: str = "tesseract"
     tesseract_lang: str = "eng"

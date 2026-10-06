@@ -284,6 +284,9 @@ class ExtractionMeta(BaseModel):
     total_in_words: Optional[str] = None
     # Set when those two do not agree, so the UI can draw attention to it.
     total_in_words_disagrees: bool = False
+    # Every check run on this extraction, pass/fail/skipped, with the fields a
+    # failure implicates and any acknowledgements - see services/ocr/verify.py.
+    verification: Optional[dict] = None
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None

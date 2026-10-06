@@ -35,6 +35,7 @@ from app.schemas.document import (
     DocumentReportAck,
     DocumentResponse,
     DocumentUpdate,
+    ApproveRequest,
 )
 from app.schemas.extraction import validate_fields
 from app.services import intake, jobs, lifecycle
@@ -43,6 +44,7 @@ from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
 from app.services.ocr.key_pool import next_quota_reset
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.verify import open_checks, reverify
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
 
@@ -536,6 +538,9 @@ def update_document(
     clean = postprocess_fields(doc.doc_type, clean)
 
     payload = dict(doc.payload or {})
+    # Re-run every check against the corrected data, so a fixed figure turns
+    # its check green and a mistyped one turns it red.
+    payload["meta"] = reverify(doc.doc_type, doc.payload or {}, clean)
     payload["fields"] = clean
     doc.payload = payload
     # Editing reopens review; the state machine forbids editing from other states above.
@@ -593,12 +598,45 @@ def report_document(
 
 
 @router.post("/{document_id}/approve", response_model=DocumentOut)
-def approve_document(document_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def approve_document(
+    document_id: str,
+    body: Optional[ApproveRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     doc = _get_owned_document(document_id, db, user)
     try:
         lifecycle.ensure_transition(doc.status, lifecycle.APPROVED)
     except lifecycle.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+    # Nothing is approved unseen. Every check that failed on this document must
+    # be acknowledged by the reviewer - "I checked this against the paper" - and
+    # each acknowledgement is recorded with who made it, and when.
+    meta = (doc.payload or {}).get("meta") or {}
+    verification = meta.get("verification")
+    acknowledged = set((body.acknowledged if body else []) or [])
+    still_open = [c for c in open_checks(verification) if c["id"] not in acknowledged]
+    if still_open:
+        names = "; ".join(c["label"] for c in still_open)
+        raise HTTPException(status_code=409, detail={
+            "message": f"{len(still_open)} check(s) must be confirmed against the paper "
+                       f"before approving: {names}.",
+            "open_checks": still_open,
+        })
+    newly = [c for c in open_checks(verification) if c["id"] in acknowledged]
+    if newly:
+        import copy
+
+        payload = copy.deepcopy(doc.payload)
+        record = payload["meta"]["verification"].setdefault("acknowledged", [])
+        stamp = datetime.now(timezone.utc).isoformat()
+        for check in newly:
+            record.append({"id": check["id"], "by": user.id, "at": stamp})
+            db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id,
+                            action="document.check_acknowledged",
+                            target=doc.id, detail={"check": check["id"], "label": check["label"]}))
+        doc.payload = payload
     doc.status = lifecycle.APPROVED
 
     # Link line items to the shop's inventory (attach matched SKUs) so the pushed

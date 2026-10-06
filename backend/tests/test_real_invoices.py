@@ -487,3 +487,22 @@ def test_both_parties_are_read_as_printed(case, results):
         block = fields.get(party) or {}
         assert (block.get("name") or {}).get("value") == case[f"{party}_name"], party
         assert (block.get("gstin") or {}).get("value") == case[f"{party}_gstin"], party
+
+
+# The only check a real invoice may fail is one where the BILL is at fault:
+# Abbott spells out 144,068 while its own figures build to 144,144.
+_EXPECTED_FAILED_CHECKS = {"ABBOTT HEALTHCARE PRIVATE LIMITED.pdf": {"total_in_words"}}
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_every_real_invoice_verifies(case, results):
+    """Every identity each bill states holds on what we read from it.
+
+    A failure here is either a misread to fix or a check too strict to ship -
+    this is how the verification layer found Overseas's expiry was its mfg date.
+    """
+    verification = results[case["file"]]["meta"]["verification"]
+    failed = {c["id"] for c in verification["checks"] if c["status"] == "fail"}
+    assert failed == _EXPECTED_FAILED_CHECKS.get(case["file"], set()), [
+        c for c in verification["checks"] if c["status"] == "fail"
+    ]

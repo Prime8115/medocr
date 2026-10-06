@@ -204,4 +204,11 @@ def test_the_pharmacist_can_complete_and_approve_it(client):
     saved = r.json()["payload"]["fields"]["line_items"]
     assert saved[0]["description"]["value"] == "Glimedose MP2 Tab 10's"
     assert "hsn" in saved[0]  # a row added by hand gets every field, blank
-    assert client.post(f"/v1/documents/{doc['id']}/approve", headers=headers).status_code == 200
+    # Hand-entered lines are checked like read ones: one line of 6,070 against
+    # a 15,034 bill must be confirmed before approval - then it goes through.
+    refused = client.post(f"/v1/documents/{doc['id']}/approve", headers=headers)
+    assert refused.status_code == 409
+    open_ids = [c["id"] for c in refused.json()["detail"]["open_checks"]]
+    assert "total_reconciles" in open_ids
+    assert client.post(f"/v1/documents/{doc['id']}/approve", headers=headers,
+                       json={"acknowledged": open_ids}).status_code == 200

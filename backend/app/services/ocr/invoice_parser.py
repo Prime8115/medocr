@@ -714,6 +714,20 @@ _NUMERIC_FIELDS = ("quantity", "free_quantity", "total_quantity", "mrp", "ptr", 
                    "gross_amount", "net_amount", "amount")
 
 
+_STACKABLE = (("batch_no", r"batch|lot"), ("mfg_date", r"mfg|mfd"), ("expiry", r"exp"))
+
+
+def _stacked_fields(heading) -> List[str]:
+    """The fields a stacked heading names, in the order it names them."""
+    text = str(heading or "").lower()
+    found = []
+    for field, pattern in _STACKABLE:
+        m = re.search(pattern, text)
+        if m:
+            found.append((m.start(), field))
+    return [field for _, field in sorted(found)]
+
+
 def _strip_stray(text: str) -> str:
     """Drop tokens carrying no characters, e.g. the "()" that trails a product
     name into the batch column and turned "TMET6" into "() TMET6"."""
@@ -850,6 +864,20 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     for field in _NUMERIC_FIELDS:
         if cols.get(field) is not None:
             item[field] = _f(_num(cell(field)))
+
+    # A column stacking two fields carries one value per line, in the order its
+    # heading names them: Overseas's "Mfg.Dt / Exp.Dt" holds "Aug-25" then
+    # "Jul-27", Menarini's "Batch No / Mfg.Date" holds the batch then the mfg
+    # date. Read as one value, Overseas's expiry was its manufacturing date.
+    for idx, heading in enumerate(header_row):
+        if idx >= len(row):
+            continue
+        parts = [p.strip() for p in str(row[idx] or "").split("\n") if p.strip()]
+        order = _stacked_fields(heading)
+        if len(parts) < 2 or len(order) != 2:
+            continue
+        for field, value in zip(order, parts):
+            item[field] = _f(_strip_stray(_clean(value)))
 
     # Anything the mapping did not claim is kept verbatim under the supplier's
     # own heading. A column we have never seen before - a scheme percentage, a
@@ -1128,7 +1156,8 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
     return out
 
 
-def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
+def parse_scanned_invoice(data: bytes, content_type: str,
+                          max_pages: Optional[int] = None) -> Optional[dict]:
     """Read a SCANNED invoice's table with Tesseract instead of the paid model.
 
     Identical in shape to `parse_invoice_pdf`, and deliberately built from the
@@ -1147,7 +1176,7 @@ def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
     if not tesseract_table.available():
         return None
 
-    pages = tesseract_table.words_per_page(data, content_type)
+    pages = tesseract_table.words_per_page(data, content_type, max_pages)
     if not pages or not any(pages):
         return None
 
