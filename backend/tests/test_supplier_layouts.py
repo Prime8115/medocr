@@ -292,3 +292,42 @@ def test_no_zero_is_written_beside_a_tax_that_was_not_read():
     f["invoice"] = {}
     complete_from_the_bill(f)
     assert "total_igst_amount" not in f["invoice"]
+
+
+def test_menarini_specific_fields():
+    import pathlib
+    """Verify that Menarini's LR Date, PO Date, DL Date 1/2, and line tax percentages
+    are extracted and verified, not left blank."""
+    from app.services.ocr import process_document
+    p = pathlib.Path(__file__).parent / "real_invoices" / "A.MENARINI INDIA.pdf"
+    if not p.exists():
+        return
+    res = process_document("menarini_test", p.read_bytes(), "application/pdf", doc_type="invoice")
+    fields = res["fields"]
+    inv = fields["invoice"]
+    sup = fields["supplier"]
+    items = fields["line_items"]
+
+    assert inv["lr_date"]["value"] == "22 Sep 25"
+    assert inv["lr_date"]["normalized"] == "2025-09-22"
+    assert inv["po_date"]["value"] == "22-Sep-2025"
+    assert inv["po_date"]["normalized"] == "2025-09-22"
+
+    assert sup["dl_no_1"]["value"] == "20B-MH-TZ3-82629"
+    assert sup["dl_date_1"]["value"] == "27-Apr-2028"
+    assert sup["dl_date_1"]["normalized"] == "2028-04-27"
+    assert sup["dl_no_2"]["value"] == "21B-MH-TZ3-82630"
+    assert sup["dl_date_2"]["value"] == "27-Apr-2028"
+    assert sup["dl_date_2"]["normalized"] == "2028-04-27"
+
+    assert len(items) == 12
+    for item in items:
+        assert item["cgst_percent"]["value"] in ("2.5", "9")
+        assert item["sgst_percent"]["value"] in ("2.5", "9")
+        assert item["gst_percent"]["value"] in ("5", "5.0", "18", "18.0")
+        assert item["cgst_amount"]["value"] is not None
+        assert item["sgst_amount"]["value"] is not None
+
+    verif = res.get("meta", {}).get("verification", {})
+    assert verif.get("verdict") == "verified"
+    assert verif.get("failed") == 0

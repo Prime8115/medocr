@@ -104,8 +104,11 @@ _DATES: Dict[str, List[str]] = {
     "due_date": ["Due Date", "Payment Due", "Due On"],
     # Kanchan prints "LR/RR No. : 2035873 Date : 11/07/2025" - the number sits
     # between the label and the date, so a plain "LR Date" never matches.
-    "lr_date": ["LR Date", "LR No Dt", "LR Dt", "LR RR No", "LR/RR No", "LR No"],
-    "po_date": ["PO Date", "P O Date", "Ord Ref Date", "Order Date"],
+    # Menarini prints "L.R. No. : LOCAL Date : 22 Sep 25".
+    "lr_date": ["LR Date", "L R Date", "LR No Dt", "LR Dt", "LR RR No", "LR/RR No",
+                "LR No", "L R No", "L.R. Date", "L.R. No", "LR/RR Date"],
+    "po_date": ["PO Date", "P O Date", "Ord Ref Date", "Order Date", "Order No",
+                "PO No", "P O No", "Cust Ord Rec Dt", "Cust Ord Dt", "Cust.Ord.Rec.Dt", "Cust Ord No"],
 }
 
 _TOTALS: Dict[str, List[str]] = {
@@ -818,9 +821,13 @@ def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
         # "MH-MZ5-190671 28.05.2030", Zydus "20B-MH-MZ4-373004 & 25.11.2029".
         # Allow a separator and a little slack, but stop before the next licence
         # so one date is not attached to two numbers.
-        tail = (text or "")[match.end():match.end() + 48]
+        tail = (text or "")[match.end():match.end() + 64]
         tail = _DL_SHAPE.split(tail)[0]
-        date = re.search(r"[\s&,:/]{0,4}" + _DATE, tail)
+        date = re.search(
+            r"(?:[\s&,:/]|valid\s*(?:till|upto|to)?|validity|exp(?:iry)?|till)*[:\-]?\s*" + _DATE,
+            tail,
+            re.I,
+        )
         out.append((number, date.group(1) if date else None))
         # More than three are collected on purpose: the caller drops any that
         # belong to another party, and then takes the first three that remain.

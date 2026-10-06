@@ -332,6 +332,10 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
         if sum(bool(re.search(p, col["label"], re.I))
                for p in (r"batch|lot", r"mfg|mfd", r"exp")) >= 2
     }
+    continuation_cols = {
+        i for i, col in enumerate(columns)
+        if i in stacked or re.search(r"cgst|sgst|igst|utgst|gst|tax|disc|rate|%", col["label"], re.I)
+    }
 
     # Lines with no numbers of their own, waiting to be given to a record:
     # (top, description text, {stacked column: value}).
@@ -365,7 +369,7 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
             row_tops.append(top)
         else:
             extra = cells[description_col].strip()
-            values = {i: cells[i].strip() for i in stacked if cells[i].strip()}
+            values = {i: cells[i].strip() for i in continuation_cols if cells[i].strip()}
             if extra or values:
                 orphans.append((line[0], extra, values))
 

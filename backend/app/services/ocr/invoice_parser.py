@@ -940,6 +940,12 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             item[f"{which}_amount"] = _f("0.00")
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
+    elif (item.get("gst_percent") or {}).get("value") in (None, "0.0", "0"):
+        heads_pct = [_num((item.get(f"{h}_percent") or {}).get("value"))
+                     for h in ("cgst", "sgst", "igst", "utgst")]
+        known_pcts = [p for p in heads_pct if p is not None and p > 0]
+        if known_pcts:
+            item["gst_percent"] = _f(str(round(sum(known_pcts), 2)), confidence=_DERIVED_CONFIDENCE)
 
     # A bill that prints each head's RATE on the line but its tax only in the
     # footer (Abbott: "6.00 | 6.00" per line, "7,722.00" twice at the foot) has
@@ -953,6 +959,19 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             if pct and not (item.get(f"{head}_amount") or {}).get("value"):
                 item[f"{head}_amount"] = _f(f"{float(taxable) * float(pct) / 100:.2f}",
                                             confidence=_DERIVED_CONFIDENCE)
+            elif not pct and (item.get(f"{head}_amount") or {}).get("value"):
+                amt_str = (item.get(f"{head}_amount") or {}).get("value")
+                amt_num = _num(amt_str)
+                if amt_num is not None:
+                    try:
+                        t_f = float(taxable)
+                        a_f = float(amt_num)
+                        if t_f > 0:
+                            derived_pct = round((a_f / t_f) * 100.0, 2)
+                            if _is_gst_rate(derived_pct):
+                                item[f"{head}_percent"] = _f(f"{derived_pct:g}", confidence=_DERIVED_CONFIDENCE)
+                    except (ValueError, TypeError):
+                        pass
 
     # `amount` is the line value everything reconciles against. Many invoices
     # print only one value column and head it "Net Amount" or "Gross Amount";
