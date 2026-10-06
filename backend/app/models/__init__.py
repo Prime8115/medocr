@@ -9,7 +9,9 @@ from app.models.audit_log import AuditLog
 from app.models.inventory import InventoryItem
 from app.models.job import OcrJob
 from app.models.supplier_choice import SupplierChoice
+from app.models.supplier_label import SupplierLabel
 
 __all__ = [
     "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "InventoryItem", "OcrJob", "SupplierChoice",
+    "SupplierLabel",
 ]

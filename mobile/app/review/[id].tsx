@@ -37,6 +37,7 @@ import {
   Check,
   Choice,
   choicesOf,
+  filledNotes,
   openChecks,
   optionText,
   pendingChoices,
@@ -492,6 +493,9 @@ export default function ReviewScreen() {
               {verdict.title}
             </Text>
             <Text style={styles.verdictDetail}>{verdict.detail}</Text>
+            {filledNotes(payload).map((note) => (
+              <Text key={note} style={styles.verdictDetail}>ⓘ {note}</Text>
+            ))}
           </TouchableOpacity>
         )}
 

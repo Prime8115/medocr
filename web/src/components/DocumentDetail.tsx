@@ -22,6 +22,7 @@ import {
   optionText,
   pendingChoices,
   verdictOf,
+  filledNotes,
   verificationOf,
   type Check as VerifyCheck,
   type Choice,
@@ -267,6 +268,7 @@ export default function DocumentDetail() {
         const verdict = verdictOf(v);
         if (!verdict) return null;
         const failed = (v?.checks ?? []).filter((c) => c.status === 'fail');
+        const filled = filledNotes(doc.payload);
         return (
           <div
             className="glass-card"
@@ -292,6 +294,9 @@ export default function DocumentDetail() {
                 ))}
               </ul>
             )}
+            {filled.map((note) => (
+              <div key={note} className="text-muted" style={{ marginTop: 6, fontSize: 13 }}>ⓘ {note}</div>
+            ))}
           </div>
         );
       })()}

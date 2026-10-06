@@ -295,6 +295,12 @@ class ExtractionMeta(BaseModel):
     # Fields the AI filled from the page text because the reading left them
     # blank - each one printed on the page word for word (gap_fill.py).
     gap_filled: Optional[list] = None
+    # Fields read at a label a reviewer taught us for this supplier
+    # (services/supplier_labels.py).
+    learned_filled: Optional[list] = None
+    # The verdict and misses before anyone edited - the supplier report's
+    # "verified on arrival" (services/supplier_coverage.py).
+    arrival: Optional[dict] = None
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None

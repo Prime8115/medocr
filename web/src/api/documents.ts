@@ -112,3 +112,33 @@ export async function getExtractionStats(days = 30): Promise<ExtractionStats> {
   const res = await api.get('/v1/documents/stats', { params: { days } });
   return res.data as ExtractionStats;
 }
+
+/** How well one supplier's bills are read (GET /v1/documents/suppliers). */
+export interface SupplierCoverage {
+  supplier_gstin: string | null;
+  supplier_name: string;
+  documents: number;
+  verified_on_arrival: number;
+  verified_on_arrival_pct: number | null;
+  edited_documents: number;
+  corrected_fields: { field: string; count: number }[];
+  missed_fields: { field: string; count: number }[];
+  failed_checks: { check: string; count: number }[];
+  pipelines: Record<string, number>;
+  gap_filled_documents: number;
+  learned_used_documents: number;
+  learned_labels: number;
+  remembered_choices: number;
+  last_seen: string | null;
+  status: 'needs_attention' | 'fair' | 'new' | 'good';
+}
+
+export interface SupplierReport {
+  window_days: number;
+  suppliers: SupplierCoverage[];
+}
+
+export async function getSupplierReport(days = 90): Promise<SupplierReport> {
+  const res = await api.get('/v1/documents/suppliers', { params: { days } });
+  return res.data as SupplierReport;
+}

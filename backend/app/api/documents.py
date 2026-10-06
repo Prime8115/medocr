@@ -48,6 +48,9 @@ from app.services.ocr.postprocess import postprocess_fields
 from app.services.ocr.choices import pending as pending_choices
 from app.services.ocr.verify import open_checks, reverify
 from app.services.supplier_choices import apply_remembered, decide
+from app.services.supplier_coverage import arrival as arrival_snapshot
+from app.services.supplier_coverage import coverage as supplier_coverage
+from app.services.supplier_labels import apply_learned, changed_paths, learn_from_edit
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
 
@@ -167,9 +170,13 @@ def _process_job(db: Session, job: OcrJob) -> None:
             log.warning("document %s: lease lost while reading; result discarded", document_id)
             return
         doc = db.get(Document, document_id)
-        # Choices this shop already decided for this supplier, decided again.
+        # What this shop has taught us about this supplier: where it prints the
+        # fields reviewers had to fill in, and the choices they made.
         if result.get("doc_type") == "invoice":
+            result = apply_learned(db, doc.shop_id, "invoice", result)
             result = apply_remembered(db, doc.shop_id, "invoice", result)
+            # How it looked before anyone touched it - for the supplier report.
+            result.setdefault("meta", {})["arrival"] = arrival_snapshot(result.get("meta"))
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
@@ -472,6 +479,33 @@ def extraction_stats(
     return health
 
 
+@router.get("/suppliers")
+def supplier_report(
+    days: int = Query(90, ge=1, le=730),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """How well each supplier's bills are read, the ones needing attention first.
+
+    Declared before `/{document_id}` so the literal path wins the route match.
+    """
+    from app.models.supplier_choice import SupplierChoice
+    from app.models.supplier_label import SupplierLabel
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    docs = (db.query(Document)
+            .filter(Document.shop_id == user.shop_id, Document.doc_type == "invoice",
+                    Document.created_at >= since)
+            .all())
+    edits = (db.query(AuditLog)
+             .filter(AuditLog.shop_id == user.shop_id, AuditLog.action == "document.edited",
+                     AuditLog.created_at >= since)
+             .all())
+    labels = db.query(SupplierLabel).filter(SupplierLabel.shop_id == user.shop_id).all()
+    choices = db.query(SupplierChoice).filter(SupplierChoice.shop_id == user.shop_id).all()
+    return {"window_days": days, "suppliers": supplier_coverage(docs, edits, labels, choices)}
+
+
 def _get_owned_document(document_id: str, db: Session, user: User) -> Document:
     doc = (
         db.query(Document)
@@ -543,15 +577,30 @@ def update_document(
         raise HTTPException(status_code=422, detail=str(exc))
     clean = postprocess_fields(doc.doc_type, clean)
 
-    payload = dict(doc.payload or {})
+    old_payload = doc.payload or {}
+    payload = dict(old_payload)
     # Re-run every check against the corrected data, so a fixed figure turns
     # its check green and a mistyped one turns it red.
-    payload["meta"] = reverify(doc.doc_type, doc.payload or {}, clean)
+    payload["meta"] = reverify(doc.doc_type, old_payload, clean)
     payload["fields"] = clean
+    # Compared cleaned the same way, so normalising alone is not a "change".
+    try:
+        old_clean = postprocess_fields(doc.doc_type,
+                                       validate_fields(doc.doc_type, old_payload.get("fields") or {}))
+    except Exception:  # noqa: BLE001 - an old payload the schema now refuses
+        old_clean = old_payload.get("fields") or {}
+    changed = changed_paths(old_clean, clean)
+    # Where the reviewer found what we missed, so this supplier's next bill is read there.
+    learned = (learn_from_edit(db, user.shop_id, old_payload, clean, user.id)
+               if doc.doc_type == "invoice" else [])
     doc.payload = payload
     # Editing reopens review; the state machine forbids editing from other states above.
     doc.status = lifecycle.NEEDS_REVIEW
-    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.edited", target=doc.id))
+    supplier = (clean.get("supplier") or {})
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.edited", target=doc.id,
+                    detail={"changed": changed, "learned": learned,
+                            "supplier_gstin": (supplier.get("gstin") or {}).get("value"),
+                            "supplier_name": (supplier.get("name") or {}).get("value")}))
     db.commit()
     db.refresh(doc)
     return doc

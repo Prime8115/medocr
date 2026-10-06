@@ -109,3 +109,46 @@ export function optionText(option: ChoiceOption): string {
     .filter((v) => v !== null && v !== undefined && v !== '')
     .join(' · ');
 }
+
+/** "invoice.lr_no" -> "LR no.", for people. */
+export function fieldLabel(path: string): string {
+  const names: Record<string, string> = {
+    line_items: 'line items',
+    'invoice.lr_no': 'LR no.', 'invoice.lr_date': 'LR date', 'invoice.po_no': 'PO no.',
+    'invoice.po_date': 'PO date', 'invoice.irn': 'IRN', 'invoice.eway_bill_no': 'e-way bill',
+    'supplier.dl_no_1': 'DL 1', 'supplier.dl_no_2': 'DL 2', 'supplier.gstin': 'supplier GSTIN',
+    'bill_to.gstin': 'bill-to GSTIN', 'ship_to.gstin': 'ship-to GSTIN',
+  };
+  if (names[path]) return names[path];
+  const [section, key = ''] = path.split('.');
+  const words = key.replace(/_/g, ' ');
+  return section === 'invoice' ? words : `${section.replace('_', '-')} ${words}`;
+}
+
+export interface FilledField {
+  path: string;
+  value: string;
+  label?: string;
+  replaced?: string | null;
+}
+
+/**
+ * Fields not read directly: filled by the AI from the page text (each one
+ * printed there word for word), or read at a label a reviewer taught us for
+ * this supplier. Both are held at lower confidence; this says which and why.
+ */
+export function filledNotes(payload: unknown): string[] {
+  const meta = (payload as { meta?: { gap_filled?: FilledField[]; learned_filled?: FilledField[] } } | null)?.meta;
+  const notes: string[] = [];
+  const ai = Array.isArray(meta?.gap_filled) ? meta!.gap_filled! : [];
+  const learned = Array.isArray(meta?.learned_filled) ? meta!.learned_filled! : [];
+  if (ai.length) {
+    notes.push(`Filled by AI from the bill's text — please check: ${ai.map((f) => fieldLabel(f.path)).join(', ')}.`);
+  }
+  if (learned.length) {
+    notes.push(
+      `Read where a reviewer showed us for this supplier: ${learned.map((f) => fieldLabel(f.path)).join(', ')}.`,
+    );
+  }
+  return notes;
+}
