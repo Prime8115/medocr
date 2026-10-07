@@ -164,3 +164,15 @@ def test_a_short_irn_fails_its_check():
     assert irn["status"] == "fail" and irn["fields"] == ["invoice.irn"]
     full = verify_invoice(_fields(irn="ab12cd34" * 8), report)
     assert [c["status"] for c in full["checks"] if c["id"] == "irn"] == ["pass"]
+
+
+def test_a_money_answer_must_be_a_whole_figure_on_the_page():
+    """'100' is not on a page that prints only 1,000.00 - a substring is not a match."""
+    page = "Grand Total 1,000.00\nTaxable 847.46"
+    accept = gap_fill._acceptable
+    assert not accept("invoice.total_amount", "100", page, {})
+    assert not accept("invoice.total_amount", "000.00", page, {})
+    assert accept("invoice.total_amount", "1000", page, {})
+    assert accept("invoice.total_amount", "1,000.00", page, {})
+    assert accept("invoice.total_amount", "847.46", page, {})
+    assert not accept("invoice.total_amount", "47.46", page, {})

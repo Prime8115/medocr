@@ -110,3 +110,26 @@ def test_parallel_preserves_order_and_reports_progress(monkeypatch):
     items = [li["description"]["value"] for li in fields["line_items"]]
     assert items == [f"item-{i}" for i in range(N)]  # page order preserved
     assert progress and progress[-1][1] == N
+
+
+def test_the_bill_total_comes_from_the_last_page():
+    """Page 1 prints a carried-forward subtotal under 'Total'; the last page the bill's."""
+    a = {"invoice": {"invoice_no": {"value": "INV1"}, "total_amount": {"value": "5,000.00"}}, "line_items": []}
+    b = {"invoice": {"invoice_no": {"value": "INV1"}, "total_amount": {"value": "12,340.00"}}, "line_items": []}
+    m = _merge_fields("invoice", a, b)
+    assert m["invoice"]["total_amount"]["value"] == "12,340.00"
+    assert "_chunk_conflicts" not in m
+
+
+def test_pages_that_disagree_on_a_header_field_are_flagged():
+    from app.services.ocr import chunk_conflict_warnings
+
+    a = {"invoice": {"invoice_no": {"value": "INV-101", "confidence": 0.95}}, "line_items": []}
+    b = {"invoice": {"invoice_no": {"value": "INV-107", "confidence": 0.95}}, "line_items": []}
+    c = {"invoice": {"invoice_no": {"value": "inv 101", "confidence": 0.95}}, "line_items": []}
+    m = _merge_fields("invoice", _merge_fields("invoice", a, b), c)
+    assert m["invoice"]["invoice_no"]["value"] == "INV-101"
+    assert m["invoice"]["invoice_no"]["confidence"] == 0.3
+    [warning] = chunk_conflict_warnings(m)
+    assert "INV-101" in warning and "INV-107" in warning
+    assert "_chunk_conflicts" not in m

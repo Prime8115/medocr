@@ -106,22 +106,45 @@ def reference_choices(text: str, fields: dict) -> List[dict]:
     }]
 
 
-def total_choice(report: dict) -> List[dict]:
-    """A choice for the bill total when its words and its figures disagree."""
+def _amount(value) -> Optional[float]:
+    try:
+        return float(str(value).replace(",", "").replace("₹", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def total_choice(report: dict, fields: Optional[dict] = None) -> List[dict]:
+    """A choice for the bill total when its words and its figures disagree.
+
+    Meanwhile the total stays what was READ off the bill: a default must never
+    replace a figure we read with one we worked out. When the read figure is
+    neither option, it is offered as an option of its own.
+    """
     words, built = report.get("total_in_words"), report.get("total_built_from_lines")
     if not report.get("total_in_words_disagrees") or not words or not built:
         return []
+    options = [
+        {"label": "Total in words", "values": {"invoice.total_amount": words}},
+        {"label": "Lines plus the tax the bill states",
+         "values": {"invoice.total_amount": built}},
+    ]
+    read = (((fields or {}).get("invoice") or {}).get("total_amount") or {}).get("value")
+    read_amount = _amount(read)
+    default = None
+    if read_amount is not None:
+        default = next((i for i, o in enumerate(options)
+                        if _amount(o["values"]["invoice.total_amount"]) == read_amount), None)
+        if default is None:
+            options.append({"label": "Total printed in figures",
+                            "values": {"invoice.total_amount": str(read)}})
+            default = len(options) - 1
     return [{
         "id": "total", "label": "Bill total",
         "question": "The bill's total in words does not match what its figures add up to. "
                     "Which is the amount payable?",
         "fields": ["invoice.total_amount"],
-        "options": [
-            {"label": "Total in words", "values": {"invoice.total_amount": words}},
-            {"label": "Lines plus the tax the bill states",
-             "values": {"invoice.total_amount": built}},
-        ],
-        "default": 0, "chosen": None,
+        "options": options,
+        "default": 0 if default is None else default, "chosen": None,
         # Every bill's discrepancy is its own; nothing to remember.
         "remember": False, "resolves": ["total_in_words"],
     }]

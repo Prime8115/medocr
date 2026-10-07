@@ -83,6 +83,28 @@ def test_words_against_figures_is_a_choice_not_remembered():
     assert choice["resolves"] == ["total_in_words"]
 
 
+def test_the_total_read_stays_until_someone_chooses():
+    """Abbott: figures 144,144.00 printed and read; words say 144,068. The read
+    figure stays meanwhile - a default never swaps it for the words."""
+    report = {"total_in_words": "144068.00", "total_in_words_disagrees": True,
+              "total_built_from_lines": "144144.00"}
+    fields = {"invoice": {"total_amount": {"value": "1,44,144.00"}}}
+    [choice] = ch.total_choice(report, fields)
+    assert choice["default"] == 1
+    ch.apply_default(fields, [choice])
+    assert fields["invoice"]["total_amount"]["value"] == "144144.00"
+
+
+def test_a_read_total_that_is_neither_option_is_offered_and_kept():
+    report = {"total_in_words": "144068.00", "total_in_words_disagrees": True,
+              "total_built_from_lines": "144144.00"}
+    fields = {"invoice": {"total_amount": {"value": "144100.00"}}}
+    [choice] = ch.total_choice(report, fields)
+    assert len(choice["options"]) == 3
+    assert choice["options"][choice["default"]]["values"]["invoice.total_amount"] == "144100.00"
+    assert choice["options"][2]["label"] == "Total printed in figures"
+
+
 # --- deciding -----------------------------------------------------------------------
 
 def test_an_undecided_choice_holds_the_verdict():

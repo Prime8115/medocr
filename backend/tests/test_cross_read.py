@@ -135,3 +135,20 @@ def test_a_scan_with_no_second_reading_says_so(monkeypatch):
     meta = ocr.process_document("d", scanned_pdf(), "application/pdf", "invoice")["meta"]
     checks = {c["id"]: c for c in meta["verification"]["checks"]}
     assert checks["cross_read"]["status"] == "skipped"
+
+
+def test_a_reading_of_the_first_pages_does_not_count_the_lines():
+    """A 10-page scan: the second reading saw only the first 3 pages' lines.
+    Fewer lines there is not a disagreement with the AI's full count."""
+    ai = _reading()
+    ai["line_items"] = ai["line_items"] * 1 + [
+        {"quantity": _leaf(str(i)), "amount": _leaf("10.00"), "batch_no": _leaf(f"B{i}")} for i in range(30)]
+    second = _reading()
+    second["_partial"] = True
+    [check] = cross_read.compare(ai, second)
+    assert check["status"] == "pass", check
+    assert "Line count" not in check["message"]
+
+    del second["_partial"]
+    [check] = cross_read.compare(ai, second)
+    assert check["status"] == "fail" and "Line count" in check["message"]

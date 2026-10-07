@@ -166,6 +166,7 @@ const INVOICE_SINGLE: Section[] = [
   {
     title: 'invoiceDetails',
     fields: [
+      { path: 'invoice.document_title', label: 'Document title' },
       { path: 'invoice.invoice_no', label: 'Invoice no' },
       { path: 'invoice.invoice_date', label: 'Date' },
       { path: 'invoice.total_amount', label: 'Total' },

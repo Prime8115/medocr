@@ -121,6 +121,9 @@ class Party(BaseModel):
 
 
 class InvoiceMeta(BaseModel):
+    # The title the document prints ("TAX INVOICE", "CREDIT NOTE") - what
+    # decides meta.document_kind (services/ocr/document_kind.py).
+    document_title: Field = Field()
     invoice_no: Field = Field()
     invoice_date: Field = Field()
     # The final payable amount printed at the foot of the bill.
@@ -318,6 +321,10 @@ class ExtractionMeta(BaseModel):
     # The bill prints ONE combined "SGST/UTGST" figure. It is shown in both the
     # SGST and the UTGST fields, as printed, and counted once in every total.
     sgst_utgst_combined: bool = False
+    # What the document says it is: "invoice", or "credit_note", "debit_note",
+    # "return", "delivery_challan", "proforma", "quotation", "purchase_order".
+    # None when it prints no title we recognise (services/ocr/document_kind.py).
+    document_kind: Optional[str] = None
     # The AI requests this reading made: how many, how long in all, and each
     # one's model, seconds and outcome. Explains a slow scan after the fact.
     ai_calls: Optional[dict] = None

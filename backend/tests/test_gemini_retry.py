@@ -360,3 +360,24 @@ def test_when_both_are_resting_the_primary_still_goes_first(monkeypatch):
     p = _provider(monkeypatch, [ok], retries=2)
     p.extract(b"img", "image/jpeg", "prescription")
     assert p._client.models.calls == ["gemini-2.5-flash"]
+
+
+def test_the_reviewer_asks_the_model_that_did_not_read(monkeypatch):
+    p = _provider(monkeypatch, [json.dumps({"supplier": {}}), json.dumps({"match": ["H1"]})])
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    answer = p.review_json("check", b"img", "image/jpeg")
+    assert answer == {"match": ["H1"]}
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_the_reviewer_falls_back_to_the_reader_when_the_other_is_busy(monkeypatch):
+    p = _provider(monkeypatch, [json.dumps({"supplier": {}}), Overloaded("503"), Overloaded("503"),
+                                Overloaded("503"), json.dumps({"match": []})])
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    assert p.review_json("check", b"img", "image/jpeg") == {"match": []}
+    assert p._client.models.calls[-1] == "gemini-2.5-flash"
+
+
+def test_a_reviewer_answer_that_is_not_an_object_is_none(monkeypatch):
+    p = _provider(monkeypatch, [json.dumps(["H1"])])
+    assert p.review_json("check", b"img", "image/jpeg") is None

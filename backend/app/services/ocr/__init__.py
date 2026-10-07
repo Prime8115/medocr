@@ -4,7 +4,9 @@
 `OCRError` on any failure. It NEVER returns fabricated data.
 """
 import logging
+import re
 import time
+from typing import List
 
 from app.config import settings
 from app.schemas.extraction import (
@@ -70,27 +72,77 @@ def _overall_confidence(fields: dict):
     return round(sum(confs) / len(confs), 3) if confs else None
 
 
+# Header figures printed at the FOOT of the bill: on a multi-page invoice the
+# last page carries them, while an earlier page may print a carried-forward
+# subtotal under the same label. The later chunk's value wins for these.
+_FOOT_FIELDS = frozenset({
+    "total_amount", "total_taxable_amount", "total_discount_amount", "total_gst_amount",
+    "total_cgst_amount", "total_sgst_amount", "total_igst_amount", "total_utgst_amount",
+})
+# Chunks that read the same header field differently, kept on the merged
+# fields until _read_with_ai turns them into warnings.
+_CONFLICTS = "_chunk_conflicts"
+
+
 def _merge_fields(doc_type: str, base: dict, incoming: dict) -> dict:
     """Merge a later chunk's fields into the accumulated fields.
 
-    Header/single fields are taken from the first chunk that populated them;
-    the repeating list (line_items / medications) is concatenated.
+    Header/single fields are taken from the first chunk that populated them -
+    except the bill's totals, which come from the last (see _FOOT_FIELDS); the
+    repeating list (line_items / medications) is concatenated. Two chunks that
+    read the same header field differently are recorded, and the field marked
+    for checking, rather than one silently winning.
     """
     if base is None:
         return incoming
     list_key = _LIST_KEY.get(doc_type)
     for key, val in incoming.items():
-        if key == list_key:
+        if key == _CONFLICTS:
+            base.setdefault(_CONFLICTS, []).extend(val or [])
+        elif key == list_key:
             base[key] = (base.get(key) or []) + (val or [])
         elif key not in base or not base.get(key):
             base[key] = val
         elif isinstance(base.get(key), dict) and isinstance(val, dict):
-            # Fill any still-empty header sub-fields from this chunk.
             for k, v in val.items():
                 cur = base[key].get(k)
-                if not cur or (isinstance(cur, dict) and not cur.get("value")):
+                cur_value = cur.get("value") if isinstance(cur, dict) else cur
+                new_value = v.get("value") if isinstance(v, dict) else v
+                if not cur or (isinstance(cur, dict) and not cur_value):
+                    base[key][k] = v            # fill a still-empty header field
+                    continue
+                if not new_value or not isinstance(cur, dict) or not isinstance(v, dict):
+                    continue
+                if _same_reading(cur_value, new_value):
+                    continue
+                if key == "invoice" and k in _FOOT_FIELDS:
+                    # The last page's figure; reconciliation checks it.
                     base[key][k] = v
+                    continue
+                kept, other = cur, v
+                kept["confidence"] = min(kept.get("confidence") or 0.3, 0.3)
+                base.setdefault(_CONFLICTS, []).append(
+                    {"path": f"{key}.{k}", "kept": str(kept.get("value")), "other": str(other.get("value"))})
     return base
+
+
+def _same_reading(a, b) -> bool:
+    """Two readings of one header field that differ only in formatting."""
+    squash = lambda x: re.sub(r"[\s,₹\-/]", "", str(x)).upper()  # noqa: E731
+    sa, sb = squash(a), squash(b)
+    if sa == sb:
+        return True
+    try:
+        return abs(float(sa) - float(sb)) < 0.005
+    except ValueError:
+        return False
+
+
+def chunk_conflict_warnings(fields: dict) -> List[str]:
+    """Take the chunks' disagreements off the fields, as warnings for review."""
+    return [f"Pages of this bill give two readings of {c['path'].replace('_', ' ')}: "
+            f"{c['kept']} (kept) and {c['other']} - please check it."
+            for c in fields.pop(_CONFLICTS, None) or []]
 
 
 def _extract_one(provider: OCRProvider, data: bytes, content_type: str, doc_type: str) -> dict:
@@ -234,7 +286,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
 _NEW_CHECKS = frozenset({
     "cross_foot", "head_totals", "line_tax", "line_net", "line_discount",
     "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan", "printed_not_read", "irn",
-}) | frozenset({"cross_read"})
+}) | frozenset({"cross_read", "ai_review", "document_kind"})
 
 
 def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None, extra_warnings=None):
@@ -326,6 +378,13 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         # total GST is fixed, and flagged so every sum counts it once.
         if show_combined_utgst(fields, hints.get("document_text") or hints.get("party_text") or ""):
             integrity["sgst_utgst_combined"] = True
+        # A credit note or challan is not a purchase invoice (document_kind.py).
+        from app.services.ocr import document_kind
+
+        title = ((fields.get("invoice") or {}).get("document_title") or {})
+        integrity["document_kind"] = document_kind.detect(
+            title.get("value") if isinstance(title, dict) else None,
+            hints.get("document_text") or hints.get("party_text") or "")
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification
@@ -333,7 +392,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         # Where the bill itself gives two answers, the reviewer decides
         # (choices.py) - offered with every option and a default meanwhile.
         offered = (reference_choices(hints.get("document_text") or "", fields)
-                   + total_choice(integrity))
+                   + total_choice(integrity, fields))
         if offered:
             apply_default(fields, offered)
             integrity["choices"] = offered
@@ -393,6 +452,7 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
 
 
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None) -> dict:
+    unreconciled = None
     # --- Tier 1: deterministic parse of digital PDF invoices (free, exact, unlimited
     # pages). Real (not mock) — runs whenever the input is a digital PDF and the
     # document isn't explicitly a prescription. ---
@@ -433,7 +493,12 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                             )
                             if retry_result["meta"].get("total_reconciles") is True:
                                 return retry_result
-                    return result
+                    if meta.get("total_reconciles") is True or not settings.ocr_second_read_unreconciled:
+                        return result
+                    # The table was read, but its lines do not reach the bill's
+                    # total. Kept as it is - flagged - unless the AI's reading
+                    # of the same text adds up, which is then the better one.
+                    unreconciled = result
             # --- Tier 1b: a SCANNED invoice read by Tesseract, free and local.
             # Tried before the paid model, and kept only when the lines add up
             # to the total printed on the bill. That check is the whole safety
@@ -472,6 +537,30 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                 document_id, exc, exc_info=True,
             )
 
+    if unreconciled is not None:
+        return _second_read(document_id, unreconciled, file_bytes, content_type, doc_type, on_progress)
+    return _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress)
+
+
+def _second_read(document_id, unreconciled, file_bytes, content_type, doc_type, on_progress):
+    """The AI's reading of a digital invoice whose table reading did not add up,
+    kept only if it does; otherwise the table reading, flagged as it was."""
+    try:
+        ai = _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress)
+    except Exception as exc:  # noqa: BLE001 - a second opinion that fails changes nothing
+        log.info("document %s: AI second read failed (%s); keeping the table reading", document_id, exc)
+        return unreconciled
+    if ai["meta"].get("total_reconciles") is True:
+        log.info("document %s: the table reading did not add up; the AI's does - using it", document_id)
+        ai["meta"].setdefault("warnings", []).insert(
+            0, "The lines read from the PDF's table did not add up to its total; this reading "
+               "by the AI does - please check it.")
+        return ai
+    log.info("document %s: neither reading adds up; keeping the table reading", document_id)
+    return unreconciled
+
+
+def _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress):
     # --- Tier 2: AI vision/text pipeline (images, scanned PDFs, non-invoice PDFs) ---
     provider = get_provider()
 
@@ -517,6 +606,7 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
             provider, file_bytes, content_type, resolved_type, on_progress=on_progress
         )
         second_fields = second.result() if second else None
+    conflict_warnings = chunk_conflict_warnings(fields)
     hints = {}
     if second_fields:
         hints["cross_read"] = cross_read.compare(fields, second_fields)
@@ -532,9 +622,18 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
 
         hints["party_text"] = first_page_text(file_bytes, content_type)
         party_warnings = cross_check(fields, hints["party_text"])
+    if is_scan and settings.ocr_ai_review:
+        # A second AI checks the reading against the page, value by value, as
+        # a reviewer would (ai_review.py). After party_check, so a GSTIN filled
+        # in from the page is reviewed too.
+        from app.services.ocr import ai_review
+
+        hints.setdefault("cross_read", []).append(
+            ai_review.review(provider, fields, file_bytes, content_type))
     result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
-                       hints=hints, extra_warnings=party_warnings)
-    calls = list(getattr(provider, "calls", None) or [])
+                       hints=hints, extra_warnings=conflict_warnings + party_warnings)
+    calls = getattr(provider, "calls", None)
+    calls = list(calls) if isinstance(calls, list) else []
     if calls:
         result["meta"]["ai_calls"] = {
             "count": len(calls),

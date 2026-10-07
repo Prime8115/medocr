@@ -16,10 +16,22 @@ reported back through `meta` so the UI can show it.
 import re
 from typing import List, Optional, Tuple
 
-# A line total may legitimately differ from the invoice total by round-off,
-# freight, or a cash discount applied at the foot of the bill.
-_TOTAL_TOLERANCE_ABS = 5.0
-_TOTAL_TOLERANCE_PCT = 0.02
+# How far the total built from the lines may sit from the printed total and
+# still be the same bill: the grand total's rounding to the rupee, plus each
+# line's GST rounded to the paisa, plus a hair for very large bills. Kept tight
+# on purpose - it used to be max(5 rupees, 2%), under which a 2,000-rupee
+# misread on a 1-lakh bill "reconciled". Freight, cash discounts and other foot
+# adjustments are NOT absorbed here: a bill that has them is flagged for the
+# reviewer, never passed by widening the margin.
+_TOTAL_TOLERANCE_ABS = 1.5
+_TOTAL_TOLERANCE_PER_LINE = 0.05
+_TOTAL_TOLERANCE_PCT = 0.001
+
+
+def total_tolerance(total: float, line_count: int) -> float:
+    """The largest gap between lines and a printed total that is still round-off."""
+    return max(_TOTAL_TOLERANCE_ABS + _TOTAL_TOLERANCE_PER_LINE * max(line_count, 0),
+               abs(total) * _TOTAL_TOLERANCE_PCT)
 
 # An amount in words carries no paise, so "one lakh ... only" against
 # 1,190,128.90 is agreement, not a contradiction. Anything beyond a rupee is the
@@ -396,7 +408,7 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
 
     if line_total is not None and printed_total:
         candidates = _expected_totals(line_total, gross_total, invoice)
-        tolerance = max(_TOTAL_TOLERANCE_ABS, printed_total * _TOTAL_TOLERANCE_PCT)
+        tolerance = total_tolerance(printed_total, len(items))
         # The closest candidate decides, so the one reported is the real build-up.
         best_name, best_value = min(candidates, key=lambda c: abs(c[1] - printed_total))
         built_from_lines = best_value
@@ -415,9 +427,7 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
             # prints as its basic amount, yet rejected for want of a tax column.
             printed_taxable = _num(invoice.get("total_taxable_amount"))
             if printed_taxable:
-                taxable_tolerance = max(
-                    _TOTAL_TOLERANCE_ABS, printed_taxable * _TOTAL_TOLERANCE_PCT
-                )
+                taxable_tolerance = total_tolerance(printed_taxable, len(items))
                 if abs(line_total - printed_taxable) <= taxable_tolerance:
                     reconciles = True
                     reconciled_by = "the invoice's printed taxable total"
