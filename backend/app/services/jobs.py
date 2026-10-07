@@ -12,6 +12,7 @@ overwrite the result of the process that took it over.
 import os
 import socket
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional
@@ -26,8 +27,9 @@ from app.models.job import JOB_ACTIVE, JOB_DONE, JOB_FAILED, JOB_PENDING, JOB_RU
 # server never mistakes its predecessor's leases for its own.
 WORKER_ID = f"{socket.gethostname()[:30]}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
-# Jobs this process currently holds - the heartbeat keeps their leases alive.
-_held: set = set()
+# Jobs this process currently holds, and since when (monotonic seconds) - the
+# heartbeat keeps their leases alive; the deadline is measured from the claim.
+_held: dict = {}
 _held_lock = threading.Lock()
 
 
@@ -38,12 +40,19 @@ def held_job_ids() -> List[str]:
 
 def _hold(job_id: str) -> None:
     with _held_lock:
-        _held.add(job_id)
+        _held[job_id] = time.monotonic()
 
 
 def let_go(job_id: str) -> None:
     with _held_lock:
-        _held.discard(job_id)
+        _held.pop(job_id, None)
+
+
+def overdue_job_ids(deadline_seconds: float, now: Optional[float] = None) -> List[str]:
+    """Jobs this process has been reading for longer than `deadline_seconds`."""
+    now = time.monotonic() if now is None else now
+    with _held_lock:
+        return [j for j, since in _held.items() if now - since > deadline_seconds]
 
 
 def infer_content_type(ref: str) -> str:

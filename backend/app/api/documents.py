@@ -162,6 +162,27 @@ def _process_job(db: Session, job: OcrJob) -> None:
             _fail_job(db, job_id, document_id, _public_message(failure), cause)
             return
 
+    _save_result(db, job_id, document_id, result, cause)
+
+
+def _improve(db: Session, what: str, step, result: dict) -> dict:
+    """Apply something this shop taught us to a finished reading. If it fails,
+    the reading is kept as it was - a lesson that cannot be applied is never a
+    reason to fail a scan that was read. Run in a savepoint, so a database
+    error inside it is undone alone, not with the result being saved."""
+    import copy
+
+    before = copy.deepcopy(result)
+    try:
+        with db.begin_nested():
+            return step(result)
+    except Exception:  # noqa: BLE001
+        log.exception("could not apply %s; the reading is kept as read", what)
+        return before
+
+
+def _save_result(db: Session, job_id: str, document_id: str, result: dict, cause: Optional[str]) -> None:
+    """Store a finished reading and close its job."""
     try:
         # Result and job close in one transaction, and only if this process
         # still holds the job - otherwise whoever took it over owns the outcome.
@@ -173,10 +194,13 @@ def _process_job(db: Session, job: OcrJob) -> None:
         # What this shop has taught us about this supplier: where it prints the
         # fields reviewers had to fill in, and the choices they made.
         if result.get("doc_type") == "invoice":
-            result = apply_learned(db, doc.shop_id, "invoice", result)
-            result = apply_remembered(db, doc.shop_id, "invoice", result)
+            shop_id = doc.shop_id
+            result = _improve(db, "learned supplier labels",
+                              lambda r: apply_learned(db, shop_id, "invoice", r), result)
+            result = _improve(db, "remembered choices",
+                              lambda r: apply_remembered(db, shop_id, "invoice", r), result)
             # How it looked before anyone touched it - for the supplier report.
-            result.setdefault("meta", {})["arrival"] = arrival_snapshot(result.get("meta"))
+            result = _improve(db, "the arrival snapshot", _with_arrival, result)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
@@ -191,6 +215,37 @@ def _process_job(db: Session, job: OcrJob) -> None:
         db.rollback()
         log.exception("document %s: could not save the result", document_id)
         _fail_job(db, job_id, document_id, FAILED_MESSAGE, f"Could not save the result: {exc}")
+
+
+def _with_arrival(result: dict) -> dict:
+    result.setdefault("meta", {})["arrival"] = arrival_snapshot(result.get("meta"))
+    return result
+
+
+def give_up_overdue(job_id: str) -> None:
+    """A read that has run past its deadline: the scan goes to the pharmacist
+    for manual entry, with its text, instead of spinning for ever. Should the
+    stuck read finish later, its result is discarded - this closes the job."""
+    db = SessionLocal()
+    try:
+        job = db.get(OcrJob, job_id)
+        if not job:
+            return
+        cause = (f"Reading took longer than {settings.ocr_job_deadline_seconds / 60:.0f} minutes "
+                 "and was stopped")
+        log.error("document %s: %s", job.document_id, cause)
+        doc = db.get(Document, job.document_id)
+        try:
+            data = storage.load(doc.image_ref) if doc else None
+        except Exception:  # noqa: BLE001
+            data = None
+        result = _manual_entry(job.document_id, data, job, cause) if data is not None else None
+        if result is None:
+            _fail_job(db, job_id, job.document_id, FAILED_MESSAGE, cause)
+        else:
+            _save_result(db, job_id, job.document_id, result, cause)
+    finally:
+        db.close()
 
 
 def _manual_entry(document_id: str, data: bytes, job: OcrJob, cause: str) -> Optional[dict]:

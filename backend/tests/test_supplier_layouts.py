@@ -526,11 +526,12 @@ def test_a_line_printing_only_the_rate_shows_only_the_rate_under_utgst():
 
     f = {
         "supplier": {"gstin": _leaf("27ABCDE1234F3ZY")}, "bill_to": {"gstin": _leaf("27PQRST6789K1ZW")},
-        "invoice": {"total_amount": _leaf("1050.00"), "total_taxable_amount": _leaf("1000.00"),
-                    "total_cgst_amount": _leaf("25.00"), "total_sgst_amount": _leaf("25.00")},
+        "invoice": {"total_amount": _leaf("945.00"), "total_taxable_amount": _leaf("900.00"),
+                    "total_cgst_amount": _leaf("22.50"), "total_sgst_amount": _leaf("22.50")},
         "line_items": [{"amount": _leaf("1000.00"), "gst_percent": _leaf("5.00"),
                         "cgst_percent": _leaf("2.50"), "sgst_percent": _leaf("2.50")}],
     }
+    f["invoice"]["total_discount_amount"] = _leaf("100.00")       # taken off at the foot, as MSV
     complete_from_the_bill(f)
     assert _v(f["line_items"][0], "utgst_amount") == "0.00"     # intra-state: no UTGST
     assert show_combined_utgst(f, "CGST  SGST/UTGST")
@@ -539,3 +540,60 @@ def test_a_line_printing_only_the_rate_shows_only_the_rate_under_utgst():
     checks = {c["id"]: c for c in verify_invoice(f, {"sgst_utgst_combined": True})["checks"]}
     assert checks["line_tax"]["status"] != "fail", checks["line_tax"]
     assert checks["head_totals"]["status"] != "fail", checks["head_totals"]
+
+
+def _rate_only_bill(supplier, buyer, discount=None, taxable="63830.00"):
+    inv = {"total_amount": _leaf("75319.00"), "total_taxable_amount": _leaf(taxable),
+           "total_igst_amount": _leaf("11489.40")}
+    if discount:
+        inv["total_discount_amount"] = _leaf(discount)
+    return {
+        "supplier": {"gstin": _leaf(supplier)}, "bill_to": {"gstin": _leaf(buyer)},
+        "invoice": inv,
+        "line_items": [{"amount": _leaf(a), "gst_percent": _leaf("18.00")}
+                       for a in ("17500.00", "46250.00", "80.00")],
+    }
+
+
+def test_an_inter_state_bill_printing_only_rates_gets_its_line_igst_and_net():
+    """V. N. Pharma (Maharashtra) to Gujarat: one 'IGST %' column, the tax only
+    as a bill total. IGST %, IGST amount and net amount were blank."""
+    from app.services.ocr.verify import verify_invoice
+
+    f = _rate_only_bill("27ABCDE1234F3ZY", "24PQRST6789K1ZW")
+    complete_from_the_bill(f)
+    lines = f["line_items"]
+    assert [_v(it, "igst_percent") for it in lines] == ["18.00"] * 3
+    assert [_v(it, "igst_amount") for it in lines] == ["3150.00", "8325.00", "14.40"]
+    assert [_v(it, "net_amount") for it in lines] == ["20650.00", "54575.00", "94.40"]
+    assert lines[0]["igst_amount"]["confidence"] < 1.0            # worked out, not read
+    assert _v(lines[0], "cgst_amount") == "0.00"                     # inter-state: no CGST
+    checks = {c["id"]: c for c in verify_invoice(f, {})["checks"]}
+    assert checks["head_totals"]["status"] == "pass"                 # 11,489.40, as printed
+
+
+def test_an_intra_state_rate_splits_into_cgst_and_sgst():
+    f = _rate_only_bill("27ABCDE1234F3ZY", "27PQRST6789K1ZW")
+    f["invoice"] = {"total_taxable_amount": _leaf("63830.00"), "total_cgst_amount": _leaf("5744.70"),
+                    "total_sgst_amount": _leaf("5744.70")}
+    complete_from_the_bill(f)
+    it = f["line_items"][0]
+    assert (_v(it, "cgst_percent"), _v(it, "sgst_percent")) == ("9.00", "9.00")
+    assert (_v(it, "cgst_amount"), _v(it, "sgst_amount")) == ("1575.00", "1575.00")
+    assert _v(it, "igst_amount") == "0.00"
+
+
+def test_a_bill_discount_at_the_foot_leaves_line_tax_unworked():
+    """MSV: 10% off below the lines - a line's tax is not its amount at the rate."""
+    f = _rate_only_bill("27ABCDE1234F3ZY", "24PQRST6789K1ZW", discount="6383.00", taxable="57447.00")
+    complete_from_the_bill(f)
+    it = f["line_items"][0]
+    assert _v(it, "igst_percent") == "18.00"
+    assert not _v(it, "igst_amount") and not _v(it, "net_amount")
+
+
+def test_a_printed_line_tax_is_never_replaced():
+    f = _rate_only_bill("27ABCDE1234F3ZY", "24PQRST6789K1ZW")
+    f["line_items"][0]["igst_amount"] = _leaf("3149.99")
+    complete_from_the_bill(f)
+    assert _v(f["line_items"][0], "igst_amount") == "3149.99"

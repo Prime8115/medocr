@@ -11,6 +11,7 @@ upload already started is skipped here rather than read twice.
 import concurrent.futures as cf
 import logging
 import threading
+import time
 from typing import Optional, Set
 
 from app.config import settings
@@ -29,6 +30,7 @@ class Worker:
         self._thread: Optional[threading.Thread] = None
         self._inflight: Set[str] = set()
         self._lock = threading.Lock()
+        self._last_sweep = time.monotonic()   # startup recovery has just swept
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, name="ocr-worker", daemon=True)
@@ -59,9 +61,16 @@ class Worker:
             freed = jobs.release_expired(db, self.lease_seconds)
             if freed:
                 log.warning("ocr worker: %d job(s) whose holder stopped renewing returned to the queue", freed)
+            self._sweep_orphans(db)
             due = jobs.due_job_ids(db, limit=50)
         finally:
             db.close()
+
+        # A read past its deadline goes to manual entry instead of spinning on.
+        for job_id in jobs.overdue_job_ids(settings.ocr_job_deadline_seconds):
+            jobs.let_go(job_id)   # no more heartbeats: this read is over
+            # Its own thread: the pool may be full of exactly such stuck reads.
+            threading.Thread(target=self._give_up, args=(job_id,), name="ocr-overdue", daemon=True).start()
 
         started = 0
         for job_id in due:
@@ -72,6 +81,31 @@ class Worker:
             self._pool.submit(self._run, job_id)
             started += 1
         return started
+
+    @staticmethod
+    def _give_up(job_id: str) -> None:
+        from app.api import documents as documents_api
+
+        try:
+            documents_api.give_up_overdue(job_id)
+        except Exception:  # noqa: BLE001
+            log.exception("ocr job %s: could not hand the overdue scan to manual entry", job_id)
+
+    def _sweep_orphans(self, db) -> None:
+        """Documents left queued or processing with no job - an upload that
+        died between saving the document and queueing it - are queued again.
+        Startup did this only once; now nothing waits for a restart."""
+        from app.services.recovery import recover_stuck_documents
+
+        now = time.monotonic()
+        if now - self._last_sweep < settings.ocr_orphan_sweep_seconds:
+            return
+        self._last_sweep = now
+        try:
+            recover_stuck_documents(db, older_than_seconds=settings.ocr_orphan_min_age_seconds)
+        except Exception:  # noqa: BLE001 - a failed sweep waits for the next one
+            db.rollback()
+            log.exception("ocr worker: orphan sweep failed")
 
     def _run(self, job_id: str) -> None:
         from app.api import documents as documents_api
