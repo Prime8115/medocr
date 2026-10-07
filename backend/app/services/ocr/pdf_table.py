@@ -34,7 +34,11 @@ _MIN_HEADER_HITS = 4
 
 # A line that ends the line-item table.
 _FOOTER = re.compile(
-    r"\b(sub\s*total|grand\s*total|total\s*taxable|basic\s*amount|tax\s*summary|"
+    # "GST Summary (15621.50 @ 6.00% SGST=937.29,CGST=937.29)" - Overseas sets
+    # its summary block in the table's own columns, so every figure on that line
+    # read as a second line item and doubled the invoice.
+    r"\b(sub\s*total|grand\s*total|total\s*taxable|basic\s*amount|summary|"
+    r"in\s*words|"
     r"whether\s*tax|any\s*rcm|terms\s*(and|&)\s*cond|jurisdiction|rupees\s*:|"
     r"bank\s*(account|name)|for\s+stockist|e\s*&\s*o\.?e|subject\s+to|declaration|"
     # The warranty/declaration block JB prints under its last page. Left
@@ -110,6 +114,22 @@ def _looks_like_header_continuation(line: Line) -> bool:
     return numeric == 0 and all(len(w) <= 14 for w in words)
 
 
+def _contributes_to_header(line: Line) -> bool:
+    """Whether a stacked line adds anything to the header.
+
+    Usually that means a keyword of its own. But the last line of a stacked
+    header is often a lone fragment with no keyword at all - Abbott prints the
+    "%" of "CGST% / SGST/UTGST %" on its own line, and Menarini the "Taxes)" of
+    "MRP (Incl. Taxes)". Dropping it is not cosmetic: without the "%", a column
+    headed "SGST/UTGST" reads as an AMOUNT column, and a tax RATE of 6.00 would
+    be filed as six rupees of tax.
+    """
+    if _header_hits(line) > 0:
+        return True
+    words = [str(w["text"]) for w in line[1]]
+    return bool(words) and len(words) <= 4 and all(len(w) <= 7 for w in words)
+
+
 def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
     """(first, last) line indices of the column header, or None."""
     best: Optional[Tuple[int, int]] = None
@@ -125,8 +145,21 @@ def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
     start = best[0]
     end = start
     for j in range(start + 1, min(start + 3, len(lines))):
-        if _looks_like_header_continuation(lines[j]) and _header_hits(lines[j]) > 0:
+        if _looks_like_header_continuation(lines[j]) and _contributes_to_header(lines[j]):
             end = j
+        else:
+            break
+    # ...and upward. The line with the most keywords is not always the top of
+    # the header: Menarini stacks "MRP" and "HSN / Batch No / Gross / Taxable"
+    # ABOVE its widest heading line. Growing only downward left those columns
+    # untitled, so MRP's values fell into the Quantity column ("13.00 126.00")
+    # and, with no "Batch No" heading anywhere, the whole correctly-rebuilt
+    # table was rejected for want of a batch marker - sending the invoice to
+    # the AI. A data row cannot be swallowed here: it carries numbers, which
+    # `_looks_like_header_continuation` refuses.
+    for j in range(start - 1, max(-1, start - 3), -1):
+        if _looks_like_header_continuation(lines[j]) and _header_hits(lines[j]) > 0:
+            start = j
         else:
             break
     return start, end
@@ -256,7 +289,14 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
     start, end = band
 
     columns = _cluster_columns(lines[start:end + 1])
-    columns = _add_unheaded_leading_column(columns, lines[end + 1:])
+    # Only the real rows may vote on the column layout: the declaration and
+    # tax-summary prose beneath them aligns with nothing.
+    body = lines[end + 1:]
+    for i, line in enumerate(body):
+        if _FOOTER.search(_line_text(line)):
+            body = body[:i]
+            break
+    columns = _add_unheaded_leading_column(columns, body)
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)
@@ -280,8 +320,34 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
         0,
     )
 
-    # Lines with no numbers of their own, waiting to be given to a record.
-    orphans: List[Tuple[float, str]] = []
+    # Columns whose heading stacks two fields - "Mfg.Dt / Exp.Dt" (Overseas),
+    # "Batch No / Mfg.Date" (Menarini). The record line carries the first and
+    # the wrapped line beneath it the second, so the wrapped line's value is kept
+    # as a second line in the cell - the convention a ruled table's cells use -
+    # instead of being thrown away with the rest of the wrapped line. Overseas's
+    # expiry, Jul-27, lived only there; we were reporting its mfg date, Aug-25,
+    # as the expiry.
+    stacked = {
+        i for i, col in enumerate(columns)
+        if sum(bool(re.search(p, col["label"], re.I))
+               for p in (r"batch|lot", r"mfg|mfd", r"exp")) >= 2
+    }
+    continuation_cols = {
+        i for i, col in enumerate(columns)
+        if i in stacked or re.search(r"cgst|sgst|igst|utgst|gst|tax|disc|rate|%", col["label"], re.I)
+    }
+
+    # Lines with no numbers of their own, waiting to be given to a record:
+    # (top, description text, {stacked column: value}).
+    orphans: List[Tuple[float, str, Dict[int, str]]] = []
+
+    def give(record: List[str], otext: str, ovals: Dict[int, str], before: bool) -> None:
+        if otext:
+            record[description_col] = (f"{otext} {record[description_col]}" if before
+                                       else f"{record[description_col]} {otext}").strip()
+        for col, val in ovals.items():
+            if record[col] and "\n" not in record[col]:
+                record[col] = f"{record[col]}\n{val}"
 
     for line in lines[end + 1:]:
         text = _line_text(line)
@@ -293,23 +359,24 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
         if _is_record_start(cells, numeric_columns):
             top = line[0]
             # Decide where the orphans between the last record and this one go.
-            for otop, otext in orphans:
+            for otop, otext, ovals in orphans:
                 if rows and abs(otop - row_tops[-1]) <= abs(otop - top):
-                    rows[-1][description_col] = f"{rows[-1][description_col]} {otext}".strip()
+                    give(rows[-1], otext, ovals, before=False)
                 else:
-                    cells[description_col] = f"{otext} {cells[description_col]}".strip()
+                    give(cells, otext, {}, before=True)
             orphans = []
             rows.append(cells)
             row_tops.append(top)
         else:
             extra = cells[description_col].strip()
-            if extra:
-                orphans.append((line[0], extra))
+            values = {i: cells[i].strip() for i in continuation_cols if cells[i].strip()}
+            if extra or values:
+                orphans.append((line[0], extra, values))
 
     # Anything left over belongs to the last record.
-    for _, otext in orphans:
+    for _, otext, ovals in orphans:
         if rows:
-            rows[-1][description_col] = f"{rows[-1][description_col]} {otext}".strip()
+            give(rows[-1], otext, ovals, before=False)
 
     if not rows:
         return []

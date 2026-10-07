@@ -35,6 +35,8 @@ from app.schemas.document import (
     DocumentReportAck,
     DocumentResponse,
     DocumentUpdate,
+    ApproveRequest,
+    ChooseRequest,
 )
 from app.schemas.extraction import validate_fields
 from app.services import intake, jobs, lifecycle
@@ -43,6 +45,12 @@ from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
 from app.services.ocr.key_pool import next_quota_reset
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.choices import pending as pending_choices
+from app.services.ocr.verify import open_checks, reverify
+from app.services.supplier_choices import apply_remembered, decide
+from app.services.supplier_coverage import arrival as arrival_snapshot
+from app.services.supplier_coverage import coverage as supplier_coverage
+from app.services.supplier_labels import apply_learned, changed_paths, learn_from_edit
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
 
@@ -162,6 +170,13 @@ def _process_job(db: Session, job: OcrJob) -> None:
             log.warning("document %s: lease lost while reading; result discarded", document_id)
             return
         doc = db.get(Document, document_id)
+        # What this shop has taught us about this supplier: where it prints the
+        # fields reviewers had to fill in, and the choices they made.
+        if result.get("doc_type") == "invoice":
+            result = apply_learned(db, doc.shop_id, "invoice", result)
+            result = apply_remembered(db, doc.shop_id, "invoice", result)
+            # How it looked before anyone touched it - for the supplier report.
+            result.setdefault("meta", {})["arrival"] = arrival_snapshot(result.get("meta"))
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
@@ -464,6 +479,33 @@ def extraction_stats(
     return health
 
 
+@router.get("/suppliers")
+def supplier_report(
+    days: int = Query(90, ge=1, le=730),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """How well each supplier's bills are read, the ones needing attention first.
+
+    Declared before `/{document_id}` so the literal path wins the route match.
+    """
+    from app.models.supplier_choice import SupplierChoice
+    from app.models.supplier_label import SupplierLabel
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    docs = (db.query(Document)
+            .filter(Document.shop_id == user.shop_id, Document.doc_type == "invoice",
+                    Document.created_at >= since)
+            .all())
+    edits = (db.query(AuditLog)
+             .filter(AuditLog.shop_id == user.shop_id, AuditLog.action == "document.edited",
+                     AuditLog.created_at >= since)
+             .all())
+    labels = db.query(SupplierLabel).filter(SupplierLabel.shop_id == user.shop_id).all()
+    choices = db.query(SupplierChoice).filter(SupplierChoice.shop_id == user.shop_id).all()
+    return {"window_days": days, "suppliers": supplier_coverage(docs, edits, labels, choices)}
+
+
 def _get_owned_document(document_id: str, db: Session, user: User) -> Document:
     doc = (
         db.query(Document)
@@ -535,12 +577,30 @@ def update_document(
         raise HTTPException(status_code=422, detail=str(exc))
     clean = postprocess_fields(doc.doc_type, clean)
 
-    payload = dict(doc.payload or {})
+    old_payload = doc.payload or {}
+    payload = dict(old_payload)
+    # Re-run every check against the corrected data, so a fixed figure turns
+    # its check green and a mistyped one turns it red.
+    payload["meta"] = reverify(doc.doc_type, old_payload, clean)
     payload["fields"] = clean
+    # Compared cleaned the same way, so normalising alone is not a "change".
+    try:
+        old_clean = postprocess_fields(doc.doc_type,
+                                       validate_fields(doc.doc_type, old_payload.get("fields") or {}))
+    except Exception:  # noqa: BLE001 - an old payload the schema now refuses
+        old_clean = old_payload.get("fields") or {}
+    changed = changed_paths(old_clean, clean)
+    # Where the reviewer found what we missed, so this supplier's next bill is read there.
+    learned = (learn_from_edit(db, user.shop_id, old_payload, clean, user.id)
+               if doc.doc_type == "invoice" else [])
     doc.payload = payload
     # Editing reopens review; the state machine forbids editing from other states above.
     doc.status = lifecycle.NEEDS_REVIEW
-    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.edited", target=doc.id))
+    supplier = (clean.get("supplier") or {})
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.edited", target=doc.id,
+                    detail={"changed": changed, "learned": learned,
+                            "supplier_gstin": (supplier.get("gstin") or {}).get("value"),
+                            "supplier_name": (supplier.get("name") or {}).get("value")}))
     db.commit()
     db.refresh(doc)
     return doc
@@ -592,13 +652,81 @@ def report_document(
     )
 
 
+@router.post("/{document_id}/choose", response_model=DocumentOut)
+def choose_option(
+    document_id: str,
+    body: ChooseRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Answer one of the bill's ambiguous fields - see services/ocr/choices.py."""
+    doc = _get_owned_document(document_id, db, user)
+    if doc.status not in (lifecycle.NEEDS_REVIEW, lifecycle.APPROVED):
+        raise HTTPException(status_code=409, detail=f"Cannot change a document in '{doc.status}' state.")
+    try:
+        doc.payload = decide(db, user.shop_id, doc.doc_type, doc.payload or {}, body.choice,
+                             body.option, user.id, remember=body.remember)
+    except (StopIteration, IndexError, KeyError):
+        raise HTTPException(status_code=422, detail="No such choice or option on this document.")
+    doc.status = lifecycle.NEEDS_REVIEW
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.choice_made",
+                    target=doc.id, detail={"choice": body.choice, "option": body.option,
+                                           "remember": body.remember}))
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
 @router.post("/{document_id}/approve", response_model=DocumentOut)
-def approve_document(document_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def approve_document(
+    document_id: str,
+    body: Optional[ApproveRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     doc = _get_owned_document(document_id, db, user)
     try:
         lifecycle.ensure_transition(doc.status, lifecycle.APPROVED)
     except lifecycle.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+    # Nothing is approved unseen. Every check that failed on this document must
+    # be acknowledged by the reviewer - "I checked this against the paper" - and
+    # each acknowledgement is recorded with who made it, and when.
+    meta = (doc.payload or {}).get("meta") or {}
+    # A choice is a decision, not a confirmation: it cannot be ticked away.
+    undecided = pending_choices(meta)
+    if undecided:
+        names = "; ".join(c["label"] for c in undecided)
+        raise HTTPException(status_code=409, detail={
+            "message": f"Choose before approving: {names}.",
+            "open_choices": [{"id": c["id"], "label": c["label"]} for c in undecided],
+            "open_checks": [],
+        })
+    verification = meta.get("verification")
+    acknowledged = set((body.acknowledged if body else []) or [])
+    still_open = [c for c in open_checks(verification)
+                  if c["id"] not in acknowledged and not c["id"].startswith("choice_")]
+    if still_open:
+        names = "; ".join(c["label"] for c in still_open)
+        raise HTTPException(status_code=409, detail={
+            "message": f"{len(still_open)} check(s) must be confirmed against the paper "
+                       f"before approving: {names}.",
+            "open_checks": still_open,
+        })
+    newly = [c for c in open_checks(verification) if c["id"] in acknowledged]
+    if newly:
+        import copy
+
+        payload = copy.deepcopy(doc.payload)
+        record = payload["meta"]["verification"].setdefault("acknowledged", [])
+        stamp = datetime.now(timezone.utc).isoformat()
+        for check in newly:
+            record.append({"id": check["id"], "by": user.id, "at": stamp})
+            db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id,
+                            action="document.check_acknowledged",
+                            target=doc.id, detail={"check": check["id"], "label": check["label"]}))
+        doc.payload = payload
     doc.status = lifecycle.APPROVED
 
     # Link line items to the shop's inventory (attach matched SKUs) so the pushed

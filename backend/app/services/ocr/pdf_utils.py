@@ -93,13 +93,9 @@ def is_scanned_pdf(data: bytes, sample_pages: int = 3) -> bool:
 def image_only_pdf(data: bytes, dpi: int = 200, quality: int = 85) -> bytes:
     """The same pages as pictures only - the scanner's text layer left behind,
     so the AI reads what is printed, not what the scanner guessed."""
-    import pypdfium2 as pdfium
+    from app.services.ocr.pdfium_safe import render_pages
 
-    pdf = pdfium.PdfDocument(data)
-    try:
-        images = [pdf[i].render(scale=dpi / 72).to_pil().convert("RGB") for i in range(len(pdf))]
-    finally:
-        pdf.close()
+    images = [img.convert("RGB") for img in render_pages(data, dpi / 72)]
     if not images:
         return data
     buf = io.BytesIO()

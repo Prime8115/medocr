@@ -31,7 +31,11 @@ def _cases():
     return [e for e in entries if (HERE / e["file"]).exists()]
 
 
-CASES = _cases()
+# Scans are read by Tesseract or the AI, never by the digital parser these tests
+# hold to exact figures - and running them here would call the paid model.
+ALL_CASES = _cases()
+CASES = [c for c in ALL_CASES if not c.get("scanned")]
+SCANNED = [c for c in ALL_CASES if c.get("scanned")]
 pytestmark = pytest.mark.skipif(
     not CASES, reason="real invoice PDFs not present (see tests/real_invoices/manifest.json)"
 )
@@ -350,7 +354,7 @@ def test_no_column_is_silently_discarded(case, results):
 
     import pdfplumber
 
-    from app.services.ocr.invoice_parser import _find_header_row, _map_columns
+    from app.services.ocr.invoice_parser import _find_header_row, _gst_columns, _map_columns
     from app.services.ocr.pdf_table import extract_word_tables
 
     data = (HERE / case["file"]).read_bytes()
@@ -363,7 +367,11 @@ def test_no_column_is_silently_discarded(case, results):
                 if hi is None:
                     continue
                 header = table[hi]
-                mapped = set(_map_columns(header).values())
+                # Tax columns are claimed by the rate/amount arithmetic rather than
+                # by name - a bare "CGST" heading cannot say which it holds - and
+                # reach cgst_percent / cgst_amount that way, exactly as _build_item
+                # counts them.
+                mapped = set(_map_columns(header).values()) | set(_gst_columns(header))
                 headings = {
                     str(h).replace("\n", " ").strip()
                     for i, h in enumerate(header)
@@ -404,3 +412,131 @@ def test_free_supply_is_read_as_zero_not_as_missing():
     # Still a real line with real stock attached to it.
     assert free[0]["quantity"]["value"] == "25"
     assert free[0]["batch_no"]["value"]
+
+
+@pytest.mark.parametrize("case", SCANNED, ids=_ids(SCANNED))
+def test_a_scan_is_never_read_as_a_digital_pdf(case):
+    """A scan carries a text layer too - the scanner's guess at it.
+
+    MSV Lifesciences' reads its GSTIN as "33ABEFM031 5R128". Trusting that layer
+    would push a corrupt GSTIN to billing with full confidence, so the digital
+    parser must decline it and leave it to a reader that looks at the picture.
+    """
+    from app.services.ocr.pdf_utils import is_digital_pdf
+
+    data = (HERE / case["file"]).read_bytes()
+    assert not is_digital_pdf(data)
+    assert parse_invoice_pdf(data) is None
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_a_blank_field_on_the_bill_stays_blank(case, results):
+    """Where the bill leaves a field empty, we must not fill it with the next label.
+
+    V L prints "L.R. NO. : DATE :" with both blank and we reported the lorry
+    receipt as "DATE"; Zydus's transporter came back as "PO Number". Inventing
+    data is worse than omitting it.
+    """
+    invoice = results[case["file"]]["fields"]["invoice"]
+    labels = {"date", "mode", "no", "tel no", "po number", "gstin", "transporter"}
+    for key in ("lr_no", "transport", "po_no"):
+        value = ((invoice.get(key) or {}).get("value") or "").strip().lower()
+        assert value not in labels, f"{key} = {value!r}"
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_supplier_gstin_agrees_with_its_pan(case, results):
+    """A GSTIN carries its holder's PAN in characters 3-12, so the two must agree.
+
+    Abbott prints the buyer's GSTIN in its own block; we filed Abbott's purchases
+    under the pharmacy's own GSTIN until this was enforced.
+    """
+    supplier = results[case["file"]]["fields"]["supplier"]
+    gstin = (supplier.get("gstin") or {}).get("value")
+    pan = (supplier.get("pan") or {}).get("value")
+    if gstin and pan:
+        assert gstin[2:12] == pan
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_no_party_name_is_label_prose(case, results):
+    """A buyer name must be a name - or blank, if the bill prints none.
+
+    Interleaved columns gave "Receiver ( Details of Consignee (Shiped PVT LTD..."
+    and "PARLE(WEST Address: ANDHERI"; a doubled-print block gave "NNaammee".
+    """
+    fields = results[case["file"]]["fields"]
+    for party in ("bill_to", "ship_to"):
+        name = ((fields.get(party) or {}).get("name") or {}).get("value") or ""
+        low = name.lower()
+        for prose in ("details of", "receiver", "consignee", "address:", "shiped", "nnaammee"):
+            assert prose not in low, f"{party}.name = {name!r}"
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_both_parties_are_read_as_printed(case, results):
+    """Bill-to and Ship-to name and GSTIN, exactly as each bill prints them.
+
+    These broke in four different ways across the real invoices: a centred
+    heading over left-aligned details (V L), a block drawn twice over
+    (Overseas), a buyer named only on a "Cust.Code & Name:" line with a
+    different consignee (Abbott), and a name cut at the column edge (JB).
+    """
+    fields = results[case["file"]]["fields"]
+    for party in ("bill_to", "ship_to"):
+        block = fields.get(party) or {}
+        assert (block.get("name") or {}).get("value") == case[f"{party}_name"], party
+        assert (block.get("gstin") or {}).get("value") == case[f"{party}_gstin"], party
+
+
+# The only check a real invoice may fail is one where the BILL is at fault:
+# Abbott spells out 144,068 while its own figures build to 144,144.
+# ...and the bills that give two answers to one field wait for the reviewer to
+# choose: Zydus prints a "PO Number" and an "Order No"; Abbott's words and
+# figures disagree on its total.
+_EXPECTED_FAILED_CHECKS = {
+    "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf": {"total_in_words", "choice_total"},
+    "Zydus PDF(1).pdf": {"choice_po"},
+    # JB prints its own "Ord. Ref. No." and, under a second label, the
+    # customer's "Contract Ref PO".
+    "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf": {"choice_po"},
+}
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_every_real_invoice_verifies(case, results):
+    """Every identity each bill states holds on what we read from it.
+
+    A failure here is either a misread to fix or a check too strict to ship -
+    this is how the verification layer found Overseas's expiry was its mfg date.
+    """
+    verification = results[case["file"]]["meta"]["verification"]
+    failed = {c["id"] for c in verification["checks"] if c["status"] == "fail"}
+    assert failed == _EXPECTED_FAILED_CHECKS.get(case["file"], set()), [
+        c for c in verification["checks"] if c["status"] == "fail"
+    ]
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_header_fields_read_as_printed(case, results):
+    """LR, PO, due date, IRN, transport, discount and drug licences, exactly
+    as each bill prints them - or blank where the bill leaves them blank.
+
+    Each value here was checked against the printed invoice. These broke one
+    supplier at a time (Menarini's "L.R. No. : LOCAL Date : 22 Sep 25" and
+    "Valid till - 27-Apr-2028", Abbott's footer licences, Bharat's carrier),
+    so every field is pinned for every supplier.
+    """
+    fields = results[case["file"]]["fields"]
+    for path, expected in case["header_expect"].items():
+        section, key = path.split(".")
+        got = ((fields.get(section) or {}).get(key) or {}).get("value")
+        assert got == expected, f"{path}: {got!r} != {expected!r}"
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_first_line_tax_and_dates_read_as_printed(case, results):
+    line = results[case["file"]]["fields"]["line_items"][0]
+    for key, expected in case["first_line_expect"].items():
+        got = (line.get(key) or {}).get("value")
+        assert got == expected, f"{key}: {got!r} != {expected!r}"

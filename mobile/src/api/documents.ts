@@ -66,8 +66,18 @@ export async function patchDocument(id: string, fields: Fields): Promise<Documen
   return res.data as DocumentDto;
 }
 
-export async function approveDocument(id: string): Promise<DocumentDto> {
-  const res = await api.post(`/v1/documents/${id}/approve`);
+/**
+ * Approve, confirming the failed checks the reviewer has checked against the
+ * paper. The server refuses (409, naming them) while any failed check is left out.
+ */
+export async function approveDocument(id: string, acknowledged: string[] = []): Promise<DocumentDto> {
+  const res = await api.post(`/v1/documents/${id}/approve`, { acknowledged });
+  return res.data as DocumentDto;
+}
+
+/** Answer one of the bill's ambiguous fields; `remember` keeps it for the supplier. */
+export async function chooseOption(id: string, choice: string, option: number, remember = true): Promise<DocumentDto> {
+  const res = await api.post(`/v1/documents/${id}/choose`, { choice, option, remember });
   return res.data as DocumentDto;
 }
 

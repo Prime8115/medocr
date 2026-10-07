@@ -49,8 +49,18 @@ export async function patchDocument(id: string, fields: Record<string, unknown>)
   return res.data as DocumentDto;
 }
 
-export async function approveDocument(id: string): Promise<DocumentDto> {
-  const res = await api.post(`/v1/documents/${id}/approve`);
+/**
+ * Approve, confirming the failed checks the reviewer has checked against the
+ * paper. The server refuses (409, naming them) while any failed check is left out.
+ */
+export async function approveDocument(id: string, acknowledged: string[] = []): Promise<DocumentDto> {
+  const res = await api.post(`/v1/documents/${id}/approve`, { acknowledged });
+  return res.data as DocumentDto;
+}
+
+/** Answer one of the bill's ambiguous fields; `remember` keeps it for the supplier. */
+export async function chooseOption(id: string, choice: string, option: number, remember = true): Promise<DocumentDto> {
+  const res = await api.post(`/v1/documents/${id}/choose`, { choice, option, remember });
   return res.data as DocumentDto;
 }
 
@@ -101,4 +111,34 @@ export interface ExtractionStats {
 export async function getExtractionStats(days = 30): Promise<ExtractionStats> {
   const res = await api.get('/v1/documents/stats', { params: { days } });
   return res.data as ExtractionStats;
+}
+
+/** How well one supplier's bills are read (GET /v1/documents/suppliers). */
+export interface SupplierCoverage {
+  supplier_gstin: string | null;
+  supplier_name: string;
+  documents: number;
+  verified_on_arrival: number;
+  verified_on_arrival_pct: number | null;
+  edited_documents: number;
+  corrected_fields: { field: string; count: number }[];
+  missed_fields: { field: string; count: number }[];
+  failed_checks: { check: string; count: number }[];
+  pipelines: Record<string, number>;
+  gap_filled_documents: number;
+  learned_used_documents: number;
+  learned_labels: number;
+  remembered_choices: number;
+  last_seen: string | null;
+  status: 'needs_attention' | 'fair' | 'new' | 'good';
+}
+
+export interface SupplierReport {
+  window_days: number;
+  suppliers: SupplierCoverage[];
+}
+
+export async function getSupplierReport(days = 90): Promise<SupplierReport> {
+  const res = await api.get('/v1/documents/suppliers', { params: { days } });
+  return res.data as SupplierReport;
 }

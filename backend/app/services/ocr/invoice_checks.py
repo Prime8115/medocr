@@ -21,6 +21,11 @@ from typing import List, Optional, Tuple
 _TOTAL_TOLERANCE_ABS = 5.0
 _TOTAL_TOLERANCE_PCT = 0.02
 
+# An amount in words carries no paise, so "one lakh ... only" against
+# 1,190,128.90 is agreement, not a contradiction. Anything beyond a rupee is the
+# bill genuinely disagreeing with itself.
+_WORDS_TOLERANCE = 1.0
+
 
 def _v(field) -> str:
     """The trimmed string value of a {value, confidence} leaf."""
@@ -84,6 +89,36 @@ def dedupe_line_items(items: List[dict]) -> Tuple[List[dict], int]:
     return unique, removed
 
 
+# How far quantity x rate may stray from the line amount and still be the same
+# line. A discount or scheme shrinks the amount; a GST-inclusive amount inflates
+# it. Outside this band the columns were misread. Named because the table-source
+# choice in invoice_parser scores candidate readings by the same test - one
+# definition of "this row's arithmetic works", used everywhere.
+LINE_RATIO_LOW = 0.5
+LINE_RATIO_HIGH = 1.5
+
+
+def line_arithmetic_holds(item: dict) -> Optional[bool]:
+    """Whether quantity x unit price matches this line's amount.
+
+    None when the row does not print enough to tell. The unit price is whichever
+    of the price columns the row carries: `rate` is resolved later, from the
+    whole invoice, so during parsing PTS or PTR is all there is to go on.
+    """
+    qty, amount = _num(item.get("quantity")), _num(item.get("amount"))
+    price = next(
+        (p for p in (_num(item.get("rate")), _num(item.get("pts")), _num(item.get("ptr")))
+         if p),
+        None,
+    )
+    if not qty or not price or not amount or amount <= 0:
+        return None
+    expected = qty * price
+    if expected <= 0:
+        return None
+    return LINE_RATIO_LOW <= amount / expected <= LINE_RATIO_HIGH
+
+
 def validate_line_arithmetic(items: List[dict], low_confidence: float = 0.4) -> int:
     """Flag rows whose quantity x rate is nowhere near the line amount.
 
@@ -105,7 +140,7 @@ def validate_line_arithmetic(items: List[dict], low_confidence: float = 0.4) -> 
         ratio = amount / expected
         # Discounts/schemes shrink the amount, GST-inclusive amounts inflate it;
         # only a gross mismatch indicates a misread column.
-        if 0.5 <= ratio <= 1.5:
+        if LINE_RATIO_LOW <= ratio <= LINE_RATIO_HIGH:
             continue
         flagged += 1
         for key in ("quantity", "rate", "amount"):
@@ -339,7 +374,8 @@ def _implied_discount(line_total: float, taxable: Optional[float]) -> Optional[T
     return None
 
 
-def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> dict:
+def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
+                      total_in_words: Optional[str] = None) -> dict:
     """Cross-check the extracted lines against the invoice's own totals.
 
     Returns a dict of meta keys plus a `warnings` list. Never mutates values.
@@ -356,12 +392,14 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
     warnings: List[str] = []
     reconciles: Optional[bool] = None
     reconciled_by: Optional[str] = None
+    built_from_lines: Optional[float] = None
 
     if line_total is not None and printed_total:
         candidates = _expected_totals(line_total, gross_total, invoice)
         tolerance = max(_TOTAL_TOLERANCE_ABS, printed_total * _TOTAL_TOLERANCE_PCT)
         # The closest candidate decides, so the one reported is the real build-up.
         best_name, best_value = min(candidates, key=lambda c: abs(c[1] - printed_total))
+        built_from_lines = best_value
         reconciles = abs(best_value - printed_total) <= tolerance
         if reconciles:
             reconciled_by = best_name
@@ -399,6 +437,28 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
     elif printed_total is None:
         warnings.append("Invoice total could not be read - please enter it before approving.")
 
+    # The bill against itself. An Indian tax invoice states its total twice: in
+    # words, and implicitly in the figures that build it up. Abbott's lines plus
+    # its own CGST and SGST come to 144,144.00, while it spells out one lakh
+    # forty four thousand SIXTY EIGHT - exactly 76 less. Rather than quietly
+    # pick a side on a number the pharmacy is about to pay, say so.
+    #
+    # Compared against the build-up from the LINES, not against a label-matched
+    # figure: the words are what the bill asserts, and the lines plus the tax it
+    # states are what it adds up to. A difference beyond a rupee - the paise the
+    # words never carry - is the bill disagreeing with itself.
+    # Reported, not warned about. The gap that matters here is tiny - Abbott's
+    # is 76 rupees in 144,144 - and at that size it cannot be told apart from
+    # our own shortfall when a per-line tax cell does not read (Menarini's lines
+    # reach 99.85% of its stated tax). A warning on either would cry wolf on
+    # both, so the figure is surfaced beside the total instead and the reviewer
+    # sees what the bill says in its own words.
+    spelled = _num({"value": total_in_words}) if total_in_words else None
+    words_disagrees = bool(
+        spelled and built_from_lines
+        and abs(spelled - built_from_lines) > _WORDS_TOLERANCE
+    )
+
     if stated_item_count and items and stated_item_count != len(items):
         warnings.append(
             f"The invoice states {stated_item_count} items but {len(items)} were read. "
@@ -411,6 +471,11 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None) -> 
     return {
         "line_items_total": _fmt(line_total) if line_total is not None else None,
         "line_items_total_with_gst": _fmt(gross_total) if gross_total is not None else None,
+        "total_in_words": _fmt(spelled) if spelled is not None else None,
+        "total_in_words_disagrees": words_disagrees,
+        # What the bill's own lines and stated tax add up to - the other side of
+        # a words-versus-figures disagreement, offered to the reviewer as a choice.
+        "total_built_from_lines": _fmt(built_from_lines) if built_from_lines is not None else None,
         "total_reconciles": reconciles,
         "total_reconciled_by": reconciled_by,
         "stated_item_count": stated_item_count,
@@ -440,3 +505,106 @@ def flag_invalid_gstins(fields: dict) -> List[str]:
             leaf["confidence"] = min(leaf.get("confidence") or 0.3, 0.3)
             warnings.append(f"The {label} GSTIN {value} is not a valid GSTIN - please check it against the invoice.")
     return warnings
+
+
+# ------------------------- fields the bill already states -------------------------
+# GSTIN = 2-digit state code + the holder's 10-character PAN + entity + Z + check.
+_GSTIN = re.compile(r"^\d{2}([A-Z]{5}\d{4}[A-Z])[A-Z0-9]Z[A-Z0-9]$")
+# Union Territories without a legislature, where UTGST replaces SGST.
+_UT_STATE_CODES = frozenset({"04", "25", "26", "31", "35", "38"})
+_HEADS = ("cgst", "sgst", "igst", "utgst")
+
+
+def _leaf(value: str, confidence: float = 1.0) -> dict:
+    return {"value": value, "confidence": confidence}
+
+
+def complete_from_the_bill(fields: dict) -> List[str]:
+    """Fill fields that the bill states implicitly, for EITHER reader.
+
+    None of this is guessed - each is a fact the printed invoice already fixes:
+
+    * A party's PAN is characters 3-12 of its GSTIN. MSV prints both GSTINs and
+      neither PAN, and the export had blank PAN columns for figures sitting in
+      plain sight.
+    * The total GST is the sum of the heads the bill prints.
+    * A tax head that cannot apply to the sale is zero. An intra-state sale in a
+      state carries no IGST and no UTGST; an inter-state one no CGST, SGST or
+      UTGST. The tester read a blank UTGST on Tamil Nadu and Maharashtra bills
+      as "missing" - it is 0.00, and saying so is accurate.
+
+    Returns the dotted paths filled, for the log.
+    """
+    filled: List[str] = []
+    for party in ("supplier", "bill_to", "ship_to"):
+        block = fields.get(party)
+        if not isinstance(block, dict):
+            continue
+        gstin = _v(block.get("gstin")).upper().replace(" ", "")
+        m = _GSTIN.match(gstin)
+        if m and not _v(block.get("pan")):
+            block["pan"] = _leaf(m.group(1))
+            filled.append(f"{party}.pan")
+
+    invoice = fields.get("invoice")
+    if not isinstance(invoice, dict):
+        return filled
+
+    supplier = _v((fields.get("supplier") or {}).get("gstin"))
+    buyer = _v((fields.get("bill_to") or {}).get("gstin")) or _v((fields.get("ship_to") or {}).get("gstin"))
+    if _GSTIN.match(supplier.upper()) and _GSTIN.match(buyer.upper()):
+        inter = supplier[:2] != buyer[:2]
+        ut = supplier[:2] in _UT_STATE_CODES
+        if inter:
+            absent = ("cgst", "sgst", "utgst")
+        else:
+            absent = ("igst", "sgst") if ut else ("igst", "utgst")
+        # Only once the heads that DO apply are known - a zero beside a blank
+        # would read as "this bill carries no tax".
+        present = [h for h in _HEADS if h not in absent]
+        if any(_num(invoice.get(f"total_{h}_amount")) is not None for h in present):
+            for head in absent:
+                key = f"total_{head}_amount"
+                if not _v(invoice.get(key)):
+                    invoice[key] = _leaf("0.00")
+                    filled.append(f"invoice.{key}")
+        # ...and on each line whose applicable heads were read, so its UTGST %
+        # and amount read 0 like the bill's total does, rather than blank.
+        for i, item in enumerate(fields.get("line_items") or []):
+            if not any(_num(item.get(f"{h}_{k}")) is not None
+                       for h in present for k in ("percent", "amount")):
+                continue
+            for head in absent:
+                for kind, zero in (("percent", "0"), ("amount", "0.00")):
+                    key = f"{head}_{kind}"
+                    if not _v(item.get(key)):
+                        item[key] = _leaf(zero)
+                        filled.append(f"line_items[{i}].{key}")
+
+    # A bill-level discount the lines settle: zero when every line's discount
+    # is printed as zero (Menarini's "0.00%") or its gross equals its taxable
+    # value (V L's TOTAL BASIC = TAXABLE AMOUNT). Left blank, the export read it
+    # as not captured.
+    if not _v(invoice.get("total_discount_amount")):
+        items = fields.get("line_items") or []
+
+        def settled_zero(it: dict) -> bool:
+            pct, amt = _num(it.get("discount_percent")), _num(it.get("discount_amount"))
+            if amt is not None:
+                return amt == 0
+            if pct is not None:
+                return pct == 0
+            gross, taxable = _num(it.get("gross_amount")), _num(it.get("amount"))
+            return gross is not None and taxable is not None and abs(gross - taxable) < 0.01
+
+        if items and all(settled_zero(it) for it in items):
+            invoice["total_discount_amount"] = _leaf("0.00")
+            filled.append("invoice.total_discount_amount")
+
+    if not _v(invoice.get("total_gst_amount")):
+        heads = [_num(invoice.get(f"total_{h}_amount")) for h in _HEADS]
+        known = [h for h in heads if h is not None]
+        if known and any(known):
+            invoice["total_gst_amount"] = _leaf(_fmt(sum(known)))
+            filled.append("invoice.total_gst_amount")
+    return filled

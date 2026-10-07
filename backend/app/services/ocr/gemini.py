@@ -117,6 +117,14 @@ def compact_schema(model_cls) -> dict:
     return walk(model_cls.model_json_schema())
 
 
+# (model, doc_type) pairs whose response schema the model has refused in this
+# process. gemini-flash-lite-latest refuses the invoice schema every time, so
+# without this every invoice paid for a request that could only fail first.
+# Per process, not persisted: a model that starts accepting it is noticed on
+# the next restart (and each deploy restarts the worker).
+_SCHEMA_REFUSED: set = set()
+
+
 def _is_schema_rejection(exc: OCRError) -> bool:
     """Gemini refused a request that carried a response schema.
 
@@ -276,6 +284,26 @@ class GeminiProvider(OCRProvider):
         )
         return parse_classification(getattr(resp, "text", "") or "")
 
+    def complete_json(self, prompt: str) -> dict:
+        """A JSON answer to a plain-text prompt - for filling named gaps in a
+        reading (gap_fill.py). The whole document is never re-sent as an image;
+        only its text and the few fields wanted."""
+        from google.genai import types
+
+        resp = self._generate_with_fallback(
+            [prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                max_output_tokens=2048,
+            ),
+        )
+        raw = (getattr(resp, "text", "") or "").strip()
+        try:
+            out = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise OCRError(f"Model returned unreadable output: {exc}", kind="output") from exc
+        return out if isinstance(out, dict) else {}
+
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
         prompt = EXTRACTION_PROMPT.get(doc_type)
         model_cls = FIELDS_MODEL.get(doc_type)
@@ -285,6 +313,24 @@ class GeminiProvider(OCRProvider):
         from google.genai import types
 
         contents = self._content_parts(prompt, file_bytes, content_type)
+        refused_key = (self._primary, doc_type)
+        if refused_key in _SCHEMA_REFUSED:
+            # This model has already refused this schema in this process; the
+            # schema'd request would only fail again, costing a call and its
+            # latency on every single invoice.
+            self.schema_fallbacks += 1
+            resp = self._generate_with_fallback(
+                contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    max_output_tokens=settings.ocr_max_output_tokens,
+                ),
+            )
+            raw = (getattr(resp, "text", "") or "").strip()
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise OCRError(f"Model returned unreadable output: {exc}", kind="output") from exc
         try:
             resp = self._generate_with_fallback(
                 contents,
@@ -303,6 +349,7 @@ class GeminiProvider(OCRProvider):
             # so ask for plain JSON rather than failing the scan.
             log.warning("Gemini rejected the %s response schema; retrying without it: %s", doc_type, exc)
             self.schema_fallbacks += 1
+            _SCHEMA_REFUSED.add(refused_key)
             resp = self._generate_with_fallback(
                 contents,
                 config=types.GenerateContentConfig(

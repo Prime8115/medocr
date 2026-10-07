@@ -278,6 +278,29 @@ class ExtractionMeta(BaseModel):
     # How the lines reach the printed total when they do, e.g.
     # "lines - bill discount + bill tax" - so a reviewer can see why it matched.
     total_reconciled_by: Optional[str] = None
+    # The total the bill spells out in words, which on an Indian tax invoice is
+    # the controlling figure. Shown beside the total so the reviewer can see
+    # both: Abbott's figures build to 144,144.00 while its words say 144,068.00.
+    total_in_words: Optional[str] = None
+    # Set when those two do not agree, so the UI can draw attention to it.
+    total_in_words_disagrees: bool = False
+    # Every check run on this extraction, pass/fail/skipped, with the fields a
+    # failure implicates and any acknowledgements - see services/ocr/verify.py.
+    verification: Optional[dict] = None
+    # Fields the bill gives two answers to, for the reviewer to decide - see
+    # services/ocr/choices.py.
+    choices: Optional[list] = None
+    # The document's own text, as read - for the checks and learning that need it.
+    page_text: Optional[str] = None
+    # Fields the AI filled from the page text because the reading left them
+    # blank - each one printed on the page word for word (gap_fill.py).
+    gap_filled: Optional[list] = None
+    # Fields read at a label a reviewer taught us for this supplier
+    # (services/supplier_labels.py).
+    learned_filled: Optional[list] = None
+    # The verdict and misses before anyone edited - the supplier report's
+    # "verified on arrival" (services/supplier_coverage.py).
+    arrival: Optional[dict] = None
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None

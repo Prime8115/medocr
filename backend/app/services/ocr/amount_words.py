@@ -27,21 +27,36 @@ _TENS = {
 # Multipliers, largest first so "lakh" is applied before "thousand".
 _SCALES = (("crore", 10_000_000), ("lakh", 100_000), ("lac", 100_000), ("thousand", 1_000))
 
+# "Amt" has to be here with "amount". V L Enterprises prints
+# "Net Amount Payable : Rupees Fifty One Thousand Five Hundred Nineteen Only
+# Net Payable Amt. 51519.00", and that trailing "Amt" is in neither the number
+# vocabulary nor this list, so the whole line was abandoned as unparseable -
+# leaving the page's OTHER spelled-out figure, its GST, as the invoice total.
 _NOISE = re.compile(
-    r"\b(rupees?|rs|inr|only|and|paise|paisa|total|amount|in|words?|net|payable)\b",
+    r"\b(rupees?|rs|inr|only|and|paise|paisa|total|amount|amt|in|words?|net|payable)\b",
     re.I,
 )
 # Ten crore. Comfortably above any distributor invoice we would ever see.
 _MAX_PLAUSIBLE_TOTAL = 100_000_000
 
 _LABEL = re.compile(
-    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*[:\-]\s*(?P<words>[A-Za-z \-]{10,200})"
+    # A COLON is required after the label, not a colon-or-dash. A bare hyphen is
+    # never a label separator on these bills, but it is everywhere inside the
+    # numbers themselves: on "RUPEES FIFTY-FOUR THOUSAND FIFTY-EIGHT ONLY" the
+    # old pattern took the hyphen in "FIFTY-FOUR" for the separator and read the
+    # remainder, "EIGHT ONLY", as the amount - 8 rupees for a 54,058 bill.
+    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*:-?\s*(?P<words>[A-Za-z \-]{10,200})"
     # Tally prints "Amount Chargeable (in words)" with the figure on the NEXT
     # line and no colon - MSV Lifesciences - and a scanner may garble the
     # words before "(in words)". The bracketed label alone is enough.
     r"|\(\s*in\s*words\s*\)\s*[:\-;]?\s*(?P<words2>[A-Za-z \-]{10,200})"
     # ...and with scanner noise after it on the same line ("oo an 7 E&OE").
-    r"|\(\s*in\s*words\s*\)[^\n]{0,40}\n\s*(?P<words3>[A-Za-z \-]{10,200})",
+    r"|\(\s*in\s*words\s*\)[^\n]{0,40}\n\s*(?P<words3>[A-Za-z \-]{10,200})"
+    # "RUPEES FIFTY-FOUR THOUSAND FIFTY-EIGHT ONLY" (Menarini) - the commonest
+    # Indian form, carrying no "in words" label and no colon at all. Without it
+    # the first alternative matched "rupees", then took the hyphen inside
+    # "FIFTY-FOUR" for the label separator, and the line parsed as 8.
+    r"|\brupees?\s+(?P<words4>[A-Za-z][A-Za-z \-]{9,200}?)\s+only\b",
     re.I,
 )
 
@@ -51,6 +66,8 @@ _PAISE = re.compile(r"\b(?:and|rupees?)\s+(?:[a-z]+[\s\-]+){0,4}pais[ae]\b.*$", 
 # The page often spells out its tax too ("Tax Amount (in words)"). That is not
 # the invoice total, however large.
 _TAX_LABEL = re.compile(r"tax\s*(?:amount|amt)?\s*$", re.I)
+# ...and the same for a spelled-out GST figure, which is not the amount due.
+_GST_LABEL = re.compile(r"\b(?:gst|cgst|sgst|igst|utgst|cess)\b", re.I)
 
 
 _NOISE_WORDS = ("rupees", "rupee", "only", "and", "paise", "paisa", "rs", "inr")
@@ -140,10 +157,26 @@ def total_from_words(text: str) -> Optional[str]:
     """
     best: Optional[int] = None
     for match in _LABEL.finditer(text or ""):
-        before = (text or "")[max(0, match.start() - 16):match.start()]
-        if _TAX_LABEL.search(before):
+        name = next((n for n in ("words", "words2", "words3", "words4")
+                     if match.group(n)), None)
+        if name is None:
             continue
-        words = match.group("words") or match.group("words2") or match.group("words3")
+        # Everything printed between the start of the label and the words
+        # themselves - which is where a page says WHICH amount it is spelling
+        # out. V L Enterprises spells out two: "Total GST Payable : Rupees Five
+        # Thousand Seven Hundred Seventy One..." and "Net Amount Payable :
+        # Rupees Fifty One Thousand Five Hundred Nineteen Only". Taking the
+        # larger of the two is not enough - a bill whose GST is spelled out and
+        # whose total is not would report its tax as the amount due.
+        # Bounded to the current line: the unlabelled "RUPEES ... ONLY" form has
+        # no label of its own, and a blind lookbehind reached onto the line
+        # above - where Menarini prints its SGST summary - and discarded the
+        # only place that invoice spells out its total.
+        line_start = (text or "").rfind("\n", 0, match.start()) + 1
+        label = (text or "")[max(line_start, match.start() - 16):match.start(name)]
+        if _TAX_LABEL.search(label) or _GST_LABEL.search(label):
+            continue
+        words = match.group(name)
         value = _words_to_int(words)
         # A pharmacy invoice below a rupee, or above ten crore, is a misparse
         # rather than a total. A wrong total is worse than no total: it would

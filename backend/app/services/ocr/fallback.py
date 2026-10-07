@@ -89,15 +89,10 @@ def _prepare(image):
 
 
 def _pdf_page_images(data: bytes, max_pages: int):
-    import pypdfium2 as pdfium
+    from app.services.ocr.pdfium_safe import render_pages
 
-    pdf = pdfium.PdfDocument(data)
-    try:
-        for i in range(min(len(pdf), max_pages)):
-            # ~300 dpi: what Tesseract reads printed invoices best at.
-            yield pdf[i].render(scale=300 / 72).to_pil()
-    finally:
-        pdf.close()
+    # ~300 dpi: what Tesseract reads printed invoices best at.
+    yield from render_pages(data, 300 / 72, max_pages=max_pages)
 
 
 def document_text(data: bytes, content_type: str) -> Tuple[str, str, int]:

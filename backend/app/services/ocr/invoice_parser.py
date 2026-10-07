@@ -33,7 +33,10 @@ from app.services.ocr.invoice_header import (
     party_regions,
     sum_line_totals,
     supplier_extras,
+    supplier_gstin_for_pan,
+    _has_doubled_glyphs,
 )
+from app.services.ocr.invoice_checks import line_arithmetic_holds
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables
 
 log = logging.getLogger(__name__)
@@ -43,7 +46,8 @@ log = logging.getLogger(__name__)
 # Order of this dict matters: earlier fields claim their column first.
 _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "description": (
-        ["productname", "itemname", "description", "particulars", "product", "item", "goods", "medicine"],
+        ["productname", "itemname", "description", "proddesc", "particulars", "product",
+         "desc", "item", "goods", "medicine"],
         ["hsn", "code", "qty", "rate", "amount"],
     ),
     "hsn": (["hsncode", "hsn"], []),
@@ -51,7 +55,10 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "manufacturer": (["mfgname", "manufacturername", "manufacturer", "mfgco", "company"], ["code", "date", "cd"]),
     # Excludes "exp": Bharat heads one column "Exp.date / Mfg.date", and the
     # expiry is the field a pharmacist actually needs, so it claims that column.
-    "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp"]),
+    # Excludes "batch" too: Menarini stacks "Batch No" over "Mfg.Date" in ONE
+    # column, where the record line carries the BATCH and the wrapped line below
+    # carries the date. Letting mfg_date claim it left every batch number blank.
+    "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp", "batch"]),
     "uom": (["uom", "unitofmeasure"], []),
     "batch_no": (["batchno", "batch", "lotno", "lot", "bno", "btno"], ["bill", "sr", "inv"]),
     # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
@@ -65,7 +72,7 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "quantity": (["quantity", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
     "mrp": (["mrp"], ["%"]),
     "ptr": (["pricetoretailer", "retailerprice", "ptr"], ["%"]),
-    "pts": (["pricetostockist", "stockistprice", "pts"], ["%"]),
+    "pts": (["pricetostockist", "stockistprice", "distributorprice", "distprice", "pts"], ["%"]),
     # An explicit billed-rate column. "NIR" (Net Invoice Rate) is tried first
     # because Bharat prints it beside a bare CGST "Rate" column that would
     # otherwise win. GST rate columns are excluded outright.
@@ -82,8 +89,14 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "wp_amount": (["wpamt", "wpamount", "wpvalue"], ["%"]),
     "scheme": (["schemedesc", "schemedescription", "schemename", "scheme"], ["%", "qty", "amt", "value"]),
     "scheme_value": (["schemevalue", "schemeamt", "schemeamount"], ["%"]),
-    "gross_amount": (["grossamount", "grossamt", "grossvalue"], ["%"]),
-    "net_amount": (["netamount", "netamt", "netvalue"], ["%"]),
+    # "Sale Value" (Overseas) is the line BEFORE its discount - a gross figure.
+    # Left to `amount`, it overstated every line by the discount.
+    "gross_amount": (["grossamount", "grossamt", "grossvalue", "grosstotal", "totalbasic", "gross",
+                      "salevalue"], ["%"]),
+    # "Total Amount" (Menarini) is the line INCLUDING tax - a net amount, not
+    # the taxable one. Excluded from anything taxable so the column the bill
+    # actually sums still goes to `amount`.
+    "net_amount": (["netamount", "netamt", "netvalue", "totalamount"], ["%", "taxable"]),
     "utgst_percent": (["utgst%", "utgstrate"], ["amt", "amount"]),
     "utgst_amount": (["utgstamt", "utgstamount"], ["%", "rate"]),
     "scheme_percent": (["sch%", "scheme%", "schemediscount"], ["amt", "qty"]),
@@ -103,7 +116,11 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # they are no longer allowed to stand in for this one.
     "amount": (
         ["taxableamount", "taxablevalue", "taxableamt", "amount", "value", "total"],
-        ["%", "gross", "net"],
+        # A tax column is not the line's own amount, and neither is a discount
+        # column. Overseas prints "Disc Value" and "CGST Amount" beside its
+        # taxable "Trans. Value"; without these, the sum of the invoice was the
+        # sum of its discounts.
+        ["%", "gross", "net", "disc", "cgst", "sgst", "igst", "utgst"],
     ),
 }
 
@@ -117,6 +134,23 @@ _COPY_MARKERS = (
 
 # India's highest GST slab. Anything above it is a misread cell, not a rate.
 _MAX_GST_PERCENT = 28.0
+
+# The rates GST is actually charged at - whole, and split into CGST + SGST
+# halves - plus the small special rates. A figure that is not one of these is
+# tax, not a rate. "Below 28" was not enough: Menarini's single-figure CGST
+# cells carry 27.77 and 11.89 rupees, which read as 27.77% and 11.89% and left
+# both lines with no tax, so the bill's CGST total came out 39.66 short.
+_GST_RATES = (0.0, 0.1, 0.125, 0.25, 0.5, 1.0, 1.5, 2.5, 3.0, 5.0, 6.0, 7.5, 9.0,
+              12.0, 14.0, 18.0, 28.0)
+
+
+# Confidence for a figure computed from others on the bill rather than read off
+# it. Below the review threshold's "certain", so it is marked for a glance.
+_DERIVED_CONFIDENCE = 0.85
+
+
+def _is_gst_rate(n: float) -> bool:
+    return any(abs(n - r) < 0.001 for r in _GST_RATES)
 
 # No real pharmacy line carries more units than this. A bigger number in the
 # quantity column means we picked up an invoice or IRN number from a footer.
@@ -202,6 +236,15 @@ def _gst_columns(header_row) -> List[int]:
         if "gst" not in h:
             continue
         if "%" in str(c) or "rate" in h:
+            out.append(idx)
+        elif not any(w in h for w in ("amt", "amount", "value")):
+            # A BARE tax heading - V L Enterprises heads its pair just "CGST"
+            # and prints "9.00 655.67" beneath it, the rate and the tax in one
+            # cell. The heading cannot say which, so it goes through the same
+            # arithmetic as every other merged tax cell: a figure at or below
+            # the maximum GST rate is the rate, the next one is the amount.
+            # Mapping a bare heading straight to the amount would have posted
+            # 9% as nine rupees of tax on every line of that invoice.
             out.append(idx)
     return out
 
@@ -298,11 +341,24 @@ _TOTAL_PATTERNS = [
     r"grand\s*total",
     r"bill\s*amount",
     r"invoice\s*(?:total|amount|value)",
+    r"total\s*invoice",
     r"net\s*amount",
     r"total\s*amount",
     r"amount\s*payable",
 ]
+# Deliberately no bare "total" pattern. Bharat labels its taxable column sum
+# "Total 371458.70" and prints its grand total ONLY in words; a last-resort bare
+# label read the column sum as the amount due - 41,907 short of the bill. Where
+# an invoice labels its total no better than that, the amount in words is the
+# figure we take, and reconcile_invoice compares the two for contradictions.
 _MONEY = r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]{2,})"
+
+# What a supplier may print between the label and the figure. Menarini heads its
+# grand total "Net Payable Amt : 54,058.00" - with "Amt" in the way, the label
+# did not match and the bill's TAXABLE total ("Net Amount 46870.98", 7,187 less)
+# was read as the amount due. Only these few words are allowed through, so the
+# pattern cannot skip across a label to a neighbouring column's figure.
+_TOTAL_TAIL = r"(?:\s*(?:amt|amount|value|payable|due|rs|inr)\.?){0,2}\s*[:\-]?\s*"
 
 
 def _extract_total(text: str) -> Optional[str]:
@@ -312,7 +368,7 @@ def _extract_total(text: str) -> Optional[str]:
     Serums) is the only place the grand total appears at all.
     """
     for pattern in _TOTAL_PATTERNS:
-        matches = re.findall(pattern + r"\s*[:\-]?\s*" + _MONEY, text or "", re.I)
+        matches = re.findall(pattern + _TOTAL_TAIL + _MONEY, text or "", re.I)
         if matches:
             # The last occurrence is the foot of the bill.
             return matches[-1].replace(",", "")
@@ -342,15 +398,25 @@ def _extract_item_count(text: str) -> Optional[int]:
 # supplier - the two are side-by-side columns that flatten into interleaved text.
 _BUYER_HEADING = re.compile(r"\b(bill(?:ed)?\s*to|ship\s*to|sold\s*to|buyer|consignee|customer)\b", re.I)
 
+# Several of these are STEMS - AGENC(IES), LABORATOR(IES), ENTERPRISE(S) - so
+# the pattern must not demand a word boundary after them. With one, "V L
+# ENTERPRISES" was not recognised as a company at all and the supplier was read
+# as "Due Date : 12/09/2025 Division : PHARMA".
 _COMPANY = re.compile(
     r"\b(LIMITED|LTD|PVT|PRIVATE|DISTRIBUTOR|PHARMA|HEALTHCARE|ENTERPRISE|AGENC|LABORATOR|"
-    r"INDUSTRIES|REMEDIES|BIOTECH|LIFESCIENCE|LOGISTICS|MARKETING|TRADERS)\b",
+    r"INDUSTRIES|REMEDIES|BIOTECH|LIFESCIENCE|LOGISTICS|MARKETING|TRADERS)\w*",
     re.I,
 )
 # "C.A. of X" / "C&F of X" names the principal a carrying agent acts for. The
 # invoicing party - the one whose GSTIN is on the bill, and the one the pharmacy
 # actually buys from - is the agent itself, printed separately.
-_AGENT_OF = re.compile(r"^\s*(c\.?\s*a\.?|c\s*&\s*f|c\.?f\.?a\.?|agent|stockist)\s*(of|for)\b", re.I)
+# ...and "Super Stockiest of Tablets (India) Limited" (V L Enterprises, spelling
+# theirs) names the principal a stockist buys from, not the stockist itself.
+_AGENT_OF = re.compile(
+    r"^\s*(?:super\s*)?(c\.?\s*a\.?|c\s*&\s*f|c\.?f\.?a\.?|agent|stocki?e?st|distributor)"
+    r"\s*(of|for)\b",
+    re.I,
+)
 
 _DOC_WORDS = re.compile(r"\b(TAX\s*INVOICE|INVOICE|ORIGINAL|DUPLICATE|TRIPLICATE|CREDIT\s*NOTE)\b", re.I)
 # Lines that are details about a party, not part of its address.
@@ -373,7 +439,16 @@ _DETAIL_LABEL = re.compile(
 _GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][A-Z0-9])\b")
 _GSTIN = re.compile(r"\bG\s*S\s*T\s*(?:IN|No)?\.?\s*(?:no\.?)?\s*[:\-]?\s*([0-9A-Z]{15})\b", re.I)
 _INVOICE_NO = re.compile(r"\binvoice\s*(?:no|num(?:ber)?|#)\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", re.I)
-_DATE_VALUE = r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}|\d{4}-\d{2}-\d{2})"
+# A date as Indian invoices print it. The third form is the one that matters
+# here: Menarini dates every field "22-Sep-2025", and with only numeric months
+# accepted its invoice date, due date, LR date and PO date were ALL blank while
+# every one of them was printed on the bill.
+_MONTH_NAME = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_DATE_VALUE = (
+    r"([0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r"|[0-3]?\d[\s./\-](?:" + _MONTH_NAME + r")[a-z]*[\s./\-]\d{2,4})"
+)
 _INVOICE_DATE = [
     re.compile(r"\binvoice\s*date\s*[:\-]?\s*" + _DATE_VALUE, re.I),
     re.compile(r"\binvoice\s*no.*?\bdt\.?\s*[:\-]?\s*" + _DATE_VALUE, re.I),
@@ -481,6 +556,34 @@ def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
     return name, address
 
 
+# "Cust.Code & Name: 10023867-EASTERN AGENCIES HEALTHCARE PVT. LTD." - the
+# buyer's name with the supplier's account code in front, ending where the next
+# label on the line begins.
+_CUSTOMER_NAME = re.compile(
+    r"\bcust(?:omer)?\.?\s*(?:code\s*&\s*)?name\s*:\s*(?:\d+\s*-\s*)?"
+    r"([A-Za-z][^\n]*?)(?=\s+(?:ship(?:p?ed)?\s*to|billed\s*to|address|gstin|pan)\b|\s*$)",
+    re.I | re.M,
+)
+
+
+_EMAIL_ANYWHERE = re.compile(r"([\w.+\-]+@[\w\-]+\.[A-Za-z][\w.\-]*[A-Za-z])")
+
+
+def _complete_legal_suffix(name: Optional[str], page_text: str) -> Optional[str]:
+    """Finish a supplier name cut off after "PRIVATE" or "PVT".
+
+    The supplier's block is cut at the x where the buyer's column begins, and a
+    large title can run past that line: Overseas's "OVERSEAS HEALTH CARE
+    PRIVATE LIMITED" came back without its "LIMITED". The full line is still in
+    the page text, so the missing word is read from there - only ever the legal
+    suffix, nothing else from the buyer's side.
+    """
+    if not name or not re.search(r"\b(private|pvt\.?)\s*$", name, re.I):
+        return name
+    m = re.search(re.escape(name) + r"\s+(limited|ltd\.?)\b", page_text or "", re.I)
+    return f"{name} {m.group(1)}" if m else name
+
+
 def _extract_header_meta(
     text: str,
     supplier_lines: Optional[List[Tuple[float, str]]] = None,
@@ -500,6 +603,7 @@ def _extract_header_meta(
     name, address = _supplier_details(lines)
     if name is None:
         name, address = _supplier_details([(0.0, ln) for ln in (text or "").splitlines()])
+    name = _complete_legal_suffix(name, text)
 
     gstin = (
         _GSTIN_SHAPE.search(own or "")
@@ -518,15 +622,53 @@ def _extract_header_meta(
     # PAN, e-mail and drug licences come from the supplier's own block, so the
     # buyer's equivalents cannot be mistaken for the vendor's.
     party_text = "\n".join((parties or {}).values())
-    for key, value in supplier_extras(own or text, party_text).items():
+    for key, value in supplier_extras(own or text, party_text, text).items():
         supplier[key] = _f(value)
+
+    # A GSTIN carries its owner's PAN in characters 3-12, so the supplier's two
+    # identifiers have to agree. Abbott prints the BUYER's GSTIN inside the
+    # supplier's own block and its own only in the page footer, so we filed
+    # Abbott's purchases under the pharmacy's own GSTIN - which corrupts both
+    # the purchase record and the input-tax credit claimed against it.
+    better = supplier_gstin_for_pan(
+        (supplier.get("pan") or {}).get("value"),
+        (supplier.get("gstin") or {}).get("value"),
+        text,
+    )
+    if better:
+        supplier["gstin"] = _f(better)
 
     # Bill-to and Ship-to, each read from its own column.
     regions = parties or {}
+    # A party area drawn twice over (Overseas) garbles BOTH columns, though
+    # only one may show the tell-tale doubled letters - so the verdict is
+    # taken once, for the pair.
+    garbled = any(_has_doubled_glyphs(regions.get(k, "")) for k in ("bill_to", "ship_to"))
     party_fields = {}
     for key in ("bill_to", "ship_to"):
         detail = party_details(regions.get(key, ""))
+        if garbled:
+            detail["name"] = None
+            detail["address"] = None
         party_fields[key] = {k: _f(v) for k, v in detail.items()}
+
+    # Some bills name the buyer on a labelled line of its own rather than in
+    # the Bill-to block: Abbott prints "Cust.Code & Name: 10023867-EASTERN
+    # AGENCIES HEALTHCARE PVT. LTD." and then goes from "Billed To:" straight
+    # into the street address.
+    if not (party_fields.get("bill_to", {}).get("name") or {}).get("value"):
+        labelled = _CUSTOMER_NAME.search(text or "")
+        if labelled:
+            party_fields.setdefault("bill_to", {})["name"] = _f(labelled.group(1).strip(" .,-"))
+
+    # A buyer's name cut at its column's edge after "PVT" (JB) is finished the
+    # same way as the supplier's - from the full line, legal suffix only.
+    for key in ("bill_to", "ship_to"):
+        leaf = party_fields.get(key, {}).get("name") or {}
+        if leaf.get("value"):
+            done = _complete_legal_suffix(leaf["value"], "\n".join([text or ""] + list(regions.values())))
+            if done != leaf["value"]:
+                party_fields[key]["name"] = _f(done)
 
     # Bill-to and Ship-to are usually the same company, and several suppliers
     # print its GSTIN or PAN only once. Share a value between them when the names
@@ -547,7 +689,7 @@ def _extract_header_meta(
             elif there and not here:
                 bill[key] = _f(there)
 
-    references = extract_references(text)
+    references = extract_references(text, "\n".join(regions.values()))
     totals = extract_totals(text)
     return {
         **party_fields,
@@ -573,6 +715,20 @@ _NUMERIC_FIELDS = ("quantity", "free_quantity", "total_quantity", "mrp", "ptr", 
                    "cgst_percent", "cgst_amount", "sgst_percent", "sgst_amount",
                    "igst_percent", "igst_amount", "utgst_percent", "utgst_amount",
                    "gross_amount", "net_amount", "amount")
+
+
+_STACKABLE = (("batch_no", r"batch|lot"), ("mfg_date", r"mfg|mfd"), ("expiry", r"exp"))
+
+
+def _stacked_fields(heading) -> List[str]:
+    """The fields a stacked heading names, in the order it names them."""
+    text = str(heading or "").lower()
+    found = []
+    for field, pattern in _STACKABLE:
+        m = re.search(pattern, text)
+        if m:
+            found.append((m.start(), field))
+    return [field for _, field in sorted(found)]
 
 
 def _strip_stray(text: str) -> str:
@@ -712,6 +868,20 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         if cols.get(field) is not None:
             item[field] = _f(_num(cell(field)))
 
+    # A column stacking two fields carries one value per line, in the order its
+    # heading names them: Overseas's "Mfg.Dt / Exp.Dt" holds "Aug-25" then
+    # "Jul-27", Menarini's "Batch No / Mfg.Date" holds the batch then the mfg
+    # date. Read as one value, Overseas's expiry was its manufacturing date.
+    for idx, heading in enumerate(header_row):
+        if idx >= len(row):
+            continue
+        parts = [p.strip() for p in str(row[idx] or "").split("\n") if p.strip()]
+        order = _stacked_fields(heading)
+        if len(parts) < 2 or len(order) != 2:
+            continue
+        for field, value in zip(order, parts):
+            item[field] = _f(_strip_stray(_clean(value)))
+
     # Anything the mapping did not claim is kept verbatim under the supplier's
     # own heading. A column we have never seen before - a scheme percentage, a
     # case/loose marker, a manufacturer code - is real information off the bill,
@@ -747,20 +917,64 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         numbers = [float(n.replace(",", "")) for n in _NUM.findall(str(row[gi] or ""))]
         if not numbers:
             continue
-        rate = next((n for n in numbers if 0 <= n <= _MAX_GST_PERCENT), None)
+        rate = next((n for n in numbers if _is_gst_rate(n)), None)
+        head = _norm(header_row[gi]) if gi < len(header_row) else ""
+        which = _tax_head(head, interstate, local)
         if rate is None:
+            # No figure here can be a rate, so the cell holds the TAX ITSELF.
+            # Menarini heads its column just "CGST" and prints 28.08 under it,
+            # with the 2.50% on the wrapped line below; 28.08 exceeds India's
+            # top slab, so it is money, not a percentage. Dropping the cell for
+            # want of a rate lost the tax on every line of that invoice.
+            if not (item.get(f"{which}_amount") or {}).get("value"):
+                item[f"{which}_amount"] = _f(f"{numbers[-1]:.2f}")
             continue
         gst_vals.append(rate)
 
-        head = _norm(header_row[gi]) if gi < len(header_row) else ""
-        which = _tax_head(head, interstate, local)
         if not (item.get(f"{which}_percent") or {}).get("value"):
             item[f"{which}_percent"] = _f(f"{rate:g}")
         amounts = [n for n in numbers if n is not rate]
         if amounts and not (item.get(f"{which}_amount") or {}).get("value"):
             item[f"{which}_amount"] = _f(f"{amounts[-1]:.2f}")
+        elif rate == 0 and not (item.get(f"{which}_amount") or {}).get("value"):
+            # A head charged at 0% carries no tax. Saying so lets the invoice
+            # total for that head read 0.00 - Menarini prints "IGST 0.00" - not
+            # blank, which the export reads as "not captured".
+            item[f"{which}_amount"] = _f("0.00")
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
+    elif (item.get("gst_percent") or {}).get("value") in (None, "0.0", "0"):
+        heads_pct = [_num((item.get(f"{h}_percent") or {}).get("value"))
+                     for h in ("cgst", "sgst", "igst", "utgst")]
+        known_pcts = [p for p in heads_pct if p is not None and p > 0]
+        if known_pcts:
+            item["gst_percent"] = _f(str(round(sum(known_pcts), 2)), confidence=_DERIVED_CONFIDENCE)
+
+    # A bill that prints each head's RATE on the line but its tax only in the
+    # footer (Abbott: "6.00 | 6.00" per line, "7,722.00" twice at the foot) has
+    # still stated the line's tax - it is the taxable value at that rate, which
+    # is what GST is. Computed, so held below full confidence: the reviewer can
+    # see it was worked out rather than read.
+    taxable = _num((item.get("amount") or {}).get("value"))
+    if taxable is not None:
+        for head in ("cgst", "sgst", "igst", "utgst"):
+            pct = _num((item.get(f"{head}_percent") or {}).get("value"))
+            if pct and not (item.get(f"{head}_amount") or {}).get("value"):
+                item[f"{head}_amount"] = _f(f"{float(taxable) * float(pct) / 100:.2f}",
+                                            confidence=_DERIVED_CONFIDENCE)
+            elif not pct and (item.get(f"{head}_amount") or {}).get("value"):
+                amt_str = (item.get(f"{head}_amount") or {}).get("value")
+                amt_num = _num(amt_str)
+                if amt_num is not None:
+                    try:
+                        t_f = float(taxable)
+                        a_f = float(amt_num)
+                        if t_f > 0:
+                            derived_pct = round((a_f / t_f) * 100.0, 2)
+                            if _is_gst_rate(derived_pct):
+                                item[f"{head}_percent"] = _f(f"{derived_pct:g}", confidence=_DERIVED_CONFIDENCE)
+                    except (ValueError, TypeError):
+                        pass
 
     # `amount` is the line value everything reconciles against. Many invoices
     # print only one value column and head it "Net Amount" or "Gross Amount";
@@ -801,7 +1015,13 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             ]
             known = [float(t) for t in taxes if t is not None]
             if known:
-                item["net_amount"] = _f(f"{float(taxable) + sum(known):.2f}")
+                # As sure as the least sure figure it was added up from.
+                sure = min(
+                    (item.get(k) or {}).get("confidence") or 1.0
+                    for k in ("cgst_amount", "sgst_amount", "igst_amount", "utgst_amount")
+                    if (item.get(k) or {}).get("value")
+                )
+                item["net_amount"] = _f(f"{float(taxable) + sum(known):.2f}", confidence=sure)
 
     # A footer line that slips past the text filters gives itself away here: its
     # "quantity" is an IRN or invoice number a dozen digits long. Kanchan's IRN
@@ -858,6 +1078,75 @@ def _infer_description_column(rows, cols: dict, width: int) -> Optional[int]:
     return None
 
 
+def _better_reading(word_items: List[dict], ruled_items: List[dict]) -> bool:
+    """Whether the coordinate rebuild beat the ruled-table extraction.
+
+    Row count used to decide this, with ruled winning ties because it is exact
+    when the invoice really draws its grid. But a "table" found by its rules is
+    not necessarily the LINE-ITEM table. Overseas draws one box around the whole
+    page: `extract_tables()` hands back 25 rows of mostly empty cells that yield
+    exactly ONE item - tying with the rebuilder's one CORRECT item and winning
+    on the tie. That item had no quantity, the expiry in the mfg-date field, and
+    a 6.00 tax RATE where the amount belongs.
+
+    So the rows are judged on whether their arithmetic works - quantity x price
+    against the line amount, the same test `validate_line_arithmetic` applies -
+    and only then on how many there are. A page border cannot fake that.
+    """
+    def score(items: List[dict]) -> int:
+        return sum(1 for item in items if line_arithmetic_holds(item))
+
+    word_score, ruled_score = score(word_items), score(ruled_items)
+    if word_score != ruled_score:
+        return word_score > ruled_score
+    # Neither is more self-consistent: fall back to the old rule, which keeps
+    # the ruled path on Kanchan and Zydus where it has always been right.
+    return len(word_items) > len(ruled_items)
+
+
+# Words that only ever appear as a SUB-heading under another one, never as a
+# column heading in their own right. A row made of these is the second half of
+# a stacked header, not a line item.
+_SUBHEADINGS = ("%", "amount", "amt", "rate", "value", "qty", "no", "date", "free")
+
+
+def _merge_stacked_header(table, hi: int):
+    """A stacked ruled header as one header row, plus where the data starts.
+
+    V L Enterprises heads its tax pair across two ruled rows - "CGST" spanning
+    two cells on one row, then "%" and "AMOUNT" beneath them. Read as a single
+    row, both of its tax columns are headed just "CGST" and the amount is
+    indistinguishable from the rate. The word-coordinate path already stitches
+    stacked headers together; the ruled path did not, so the sub-heading row was
+    treated as a line item and the tax amounts reached no field at all.
+
+    The parent is carried across its children, so "AMOUNT" under "CGST" becomes
+    "CGST AMOUNT" - but only where a child actually exists, leaving the blank
+    cells a ruled grid is full of alone.
+    """
+    if hi + 1 >= len(table):
+        return table[hi], hi + 1
+    below = table[hi + 1]
+    cells = [str(c or "").strip() for c in below]
+    filled = [c for c in cells if c]
+    if not filled or len(filled) > len(cells):
+        return table[hi], hi + 1
+    # Every filled cell must be a sub-heading word, and none of them a figure.
+    if not all(_norm(c) in _SUBHEADINGS or _norm(c).strip("%") in _SUBHEADINGS
+               for c in filled):
+        return table[hi], hi + 1
+
+    header = [str(c or "").strip() for c in table[hi]]
+    merged, parent = [], ""
+    for i, own in enumerate(header):
+        child = cells[i] if i < len(cells) else ""
+        if own:
+            parent = own
+        label = f"{parent} {child}".strip() if child else own
+        merged.append(label)
+    return merged, hi + 2
+
+
 def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
                       local: Optional[str] = None) -> List[dict]:
     """Line items from whichever of these tables is the line-item table."""
@@ -866,7 +1155,7 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
         hi = _find_header_row(table)
         if hi is None:
             continue
-        header_row = table[hi]
+        header_row, data_from = _merge_stacked_header(table, hi)
         cols = _map_columns(header_row)
         if "description" not in cols:
             # OCR of a scan regularly loses one header word, and "Description"
@@ -875,21 +1164,22 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             # always HAS a product name, and it is the leftmost column that
             # holds words rather than figures, so infer it rather than discard
             # the invoice.
-            inferred = _infer_description_column(table[hi + 1:], cols, len(header_row))
+            inferred = _infer_description_column(table[data_from:], cols, len(header_row))
             if inferred is not None:
                 cols = {**cols, "description": inferred}
         if "description" not in cols or ("quantity" not in cols and "batch_no" not in cols):
             continue  # not a line-item table we understand
         gst_cols = _gst_columns(header_row)
         labels.update(price_labels(cols, header_row))
-        for row in table[hi + 1:]:
+        for row in table[data_from:]:
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
                 out.append(item)
     return out
 
 
-def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
+def parse_scanned_invoice(data: bytes, content_type: str,
+                          max_pages: Optional[int] = None) -> Optional[dict]:
     """Read a SCANNED invoice's table with Tesseract instead of the paid model.
 
     Identical in shape to `parse_invoice_pdf`, and deliberately built from the
@@ -908,7 +1198,7 @@ def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
     if not tesseract_table.available():
         return None
 
-    pages = tesseract_table.words_per_page(data, content_type)
+    pages = tesseract_table.words_per_page(data, content_type, max_pages)
     if not pages or not any(pages):
         return None
 
@@ -964,6 +1254,10 @@ def parse_scanned_invoice(data: bytes, content_type: str) -> Optional[dict]:
         "stated_item_count": _extract_item_count(full_text),
         "price_labels": labels,
         "document_text": full_text,
+        # The bill's total as it spells it out, for the cross-check against the
+        # figure. An Indian tax invoice states it twice and they do not always
+        # agree - see reconcile_invoice.
+        "total_in_words": total_from_words(full_text),
     }
     return fields
 
@@ -984,6 +1278,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
         return None
 
     line_items: List[dict] = []
+    party_text = ""
     page_items: Dict[int, List[dict]] = {}
     labels: dict = {}
     meta = None
@@ -1021,10 +1316,12 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                 # arrive run together on PDFs that carry no space characters.
                 page_texts[page_no] = page.extract_text(x_tolerance=WORD_TOLERANCE) or ""
                 if meta is None:
+                    regions = party_regions(page, WORD_TOLERANCE)
+                    party_text = "\n".join(regions.values())
                     meta = _extract_header_meta(
                         page_texts[page_no],
                         supplier_region_lines(page),
-                        party_regions(page, WORD_TOLERANCE),
+                        regions,
                     )
                     # Decided once, from the two GSTINs: an intra-state sale is
                     # CGST + SGST, an inter-state one is IGST. Suppliers head a
@@ -1051,7 +1348,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
                 word_labels: dict = {}
                 ruled_items = _rows_from_tables(page.extract_tables() or [], ruled_labels, interstate, local_head)
                 word_items = _rows_from_tables(extract_word_tables(page), word_labels, interstate, local_head)
-                if len(word_items) > len(ruled_items):
+                if _better_reading(word_items, ruled_items):
                     labels.update(word_labels)
                     page_items[page_no] = word_items
                 else:
@@ -1083,6 +1380,20 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     # A total printed only on the last page won't be in the first page's text.
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
         fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+    # Nor will references printed only on a later page: Kanchan and Zydus print
+    # their IRN in the foot of the last page. Read from every page of the copy,
+    # filling only what the first page left blank.
+    for key, value in extract_references(full_text).items():
+        if value and not (fields.setdefault("invoice", {}).get(key) or {}).get("value"):
+            fields["invoice"][key] = _f(value)
+    # ...and the supplier's e-mail, which JB prints in its last page's footer.
+    # An address that sits in the buyer's blocks is the buyer's.
+    supplier = fields.setdefault("supplier", {})
+    if not (supplier.get("email") or {}).get("value"):
+        for m in _EMAIL_ANYWHERE.finditer(full_text):
+            if m.group(1).lower() not in party_text.lower():
+                supplier["email"] = _f(m.group(1))
+                break
     # Any invoice-level total the bill did not print is summed from the lines,
     # so the tax split always reaches the shop's accounts.
     invoice_meta = fields.setdefault("invoice", {})
@@ -1095,5 +1406,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
         "copies_detected": copies,
         "stated_item_count": stated_count,
         "price_labels": labels,
+        "total_in_words": total_from_words(full_text),
+        "document_text": full_text,
     }
     return fields

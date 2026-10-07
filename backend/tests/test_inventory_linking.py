@@ -56,7 +56,13 @@ def test_approve_links_inventory_and_push_carries_sku(client, mock_ocr, db_sessi
     doc_id = client.post("/v1/documents/", files=files, data={"doc_type": "invoice"}, headers=headers).json()["document_id"]
     assert client.get(f"/v1/documents/{doc_id}", headers=headers).json()["status"] == "needs_review"
 
-    approved = client.post(f"/v1/documents/{doc_id}/approve", headers=headers).json()
+    # The mock invoice fails its checks; the reviewer confirms each against
+    # the paper, as approval now requires.
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    failed = [c["id"] for c in doc["payload"]["meta"]["verification"]["checks"]
+              if c["status"] == "fail"]
+    approved = client.post(f"/v1/documents/{doc_id}/approve", json={"acknowledged": failed},
+                           headers=headers).json()
     li = approved["payload"]["fields"]["line_items"]
     assert li[0].get("inventory_match", {}).get("sku") == "PCM-500"
     assert approved["payload"]["meta"]["inventory_linked"] == 1

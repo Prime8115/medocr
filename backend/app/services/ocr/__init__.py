@@ -17,6 +17,7 @@ from app.schemas.extraction import (
 from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
+    complete_from_the_bill,
     dedupe_line_items,
     flag_invalid_gstins,
     mark_free_supplies,
@@ -25,6 +26,8 @@ from app.services.ocr.invoice_checks import (
     validate_line_arithmetic,
 )
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.choices import apply_default, reference_choices, settle_checks, total_choice
+from app.services.ocr.verify import flag_failed_fields, verify_invoice
 from app.services.ocr.pdf_utils import (
     extract_text_pages,
     extract_text_sample,
@@ -224,6 +227,14 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     return merged, failed_pages, total_pages
 
 
+# Checks the older warning list never carried. Their failures are also added
+# there, so an app build that predates the verdict banner still shows them.
+_NEW_CHECKS = frozenset({
+    "cross_foot", "head_totals", "line_tax", "line_net", "line_discount",
+    "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan", "printed_not_read", "irn",
+}) | frozenset({"cross_read"})
+
+
 def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None, extra_warnings=None):
     """Post-process, run integrity checks, and wrap the result.
 
@@ -236,6 +247,9 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     check_warnings = list(extra_warnings or [])
 
     if resolved_type == "invoice":
+        # Facts the bill fixes without printing them - a PAN inside its
+        # GSTIN, a zero head the sale cannot carry - for either reader.
+        complete_from_the_bill(fields)
         items = fields.get("line_items") or []
         before = len(items)
         items, removed = dedupe_line_items(items)
@@ -277,9 +291,47 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 f"{flagged} line(s) where quantity x rate does not match the amount - marked for checking."
             )
         check_warnings.extend(flag_invalid_gstins(fields))
-        report = reconcile_invoice(fields, hints.get("stated_item_count"))
+        report = reconcile_invoice(
+            fields, hints.get("stated_item_count"), hints.get("total_in_words")
+        )
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)
+
+        # The verification layer: every identity the bill states, checked. Its
+        # failures flag their fields (so review highlights them) and must each
+        # be acknowledged before approval - see verify.py.
+        # The page's own text travels with the result, so the checks that read
+        # it - fields printed but not read - also run after a reviewer's edit,
+        # and corrections can be learned from it.
+        if hints.get("document_text"):
+            integrity["page_text"] = hints["document_text"]
+            # A new supplier's layout can leave fields our reader missed. The
+            # AI is asked for just those, from the text, and only answers
+            # printed on the page word for word are kept (gap_fill.py). A
+            # reading already complete never calls it.
+            if pipeline in ("pdf_parser", "tesseract"):
+                from app.services.ocr.gap_fill import fill as fill_gaps
+                from app.services.ocr.missed_fields import find_missed
+
+                filled = fill_gaps(fields, hints["document_text"],
+                                   find_missed(fields, hints["document_text"]))
+                if filled:
+                    integrity["gap_filled"] = filled
+                    complete_from_the_bill(fields)
+        verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
+        flag_failed_fields(fields, verification)
+        integrity["verification"] = verification
+
+        # Where the bill itself gives two answers, the reviewer decides
+        # (choices.py) - offered with every option and a default meanwhile.
+        offered = (reference_choices(hints.get("document_text") or "", fields)
+                   + total_choice(integrity))
+        if offered:
+            apply_default(fields, offered)
+            integrity["choices"] = offered
+        for check in verification["checks"]:
+            if check["status"] == "fail" and check["id"] in _NEW_CHECKS:
+                check_warnings.append(f"{check['label']}: {check['message']}")
 
     list_key = _LIST_KEY.get(resolved_type)
     item_count = len(fields.get(list_key, []) or []) if list_key else 0
@@ -293,8 +345,43 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     ).model_dump()
     meta["pages"] = pages
     meta["item_count"] = item_count
+    settle_checks(meta)
     meta["pages_failed"] = failed_pages
     return {"schema_version": SCHEMA_VERSION, "doc_type": resolved_type, "fields": fields, "meta": meta}
+
+
+# At or above this many lines, a parse is kept on its row count alone, as it
+# always was. Below it, the invoice's own total has to agree - see below.
+_SHORT_INVOICE_LINES = 3
+
+
+def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
+    """Whether to keep the deterministic parse rather than call the AI.
+
+    Row count was the old proxy for "did the table parse", and it was wrong in
+    both directions. It rejected invoices that genuinely bill ONE product -
+    Abbott bills a single kit, Overseas a single pack - sending bills whose
+    table we read perfectly to the paid model, which then read the figures by
+    eye and got the batch, PTR and PTS wrong. And it accepted any three rows of
+    nonsense.
+
+    So a short parse must reconcile against the total printed on the bill. That
+    is a far stronger test than counting rows: a one-line invoice whose line
+    equals its printed total is certainly read correctly.
+    """
+    items = parsed.get("line_items") or []
+    if not items:
+        return False
+    if len(items) >= _SHORT_INVOICE_LINES:
+        return True
+    report = reconcile_invoice(parsed)
+    if report.get("total_reconciles") is True:
+        return True
+    log.info(
+        "document %s: deterministic parse found only %d line(s) and they do not "
+        "reconcile - handing to the AI", document_id, len(items),
+    )
+    return False
 
 
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None) -> dict:
@@ -311,7 +398,7 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                 from app.services.ocr.invoice_parser import parse_invoice_pdf
 
                 parsed = parse_invoice_pdf(file_bytes)
-                if parsed and len(parsed.get("line_items", [])) >= 3:
+                if parsed and _parse_is_trustworthy_enough(parsed, document_id):
                     hints = parsed.pop("_hints", {})
                     fields = validate_fields("invoice", parsed)
                     result = _finalize(
@@ -405,18 +492,36 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     if unsure:
         log.warning("document %s: type unclear (%r); reading it as an invoice", document_id, doc_type)
 
-    fields, failed_pages, total_pages = _extract_chunked(
-        provider, file_bytes, content_type, resolved_type, on_progress=on_progress
+    # A scan is read by the AI by eye. Read it a second time, independently,
+    # with Tesseract - in parallel, so it costs no wall-clock time beside the AI
+    # call - and compare the two (services/ocr/cross_read.py).
+    import concurrent.futures as _cf
+
+    from app.services.ocr import cross_read
+
+    is_scan = resolved_type == "invoice" and (
+        content_type.startswith("image/")
+        or (content_type == "application/pdf" and not is_digital_pdf(file_bytes))
     )
+    with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+        second = pool.submit(cross_read.second_reading, file_bytes, content_type) if is_scan else None
+        fields, failed_pages, total_pages = _extract_chunked(
+            provider, file_bytes, content_type, resolved_type, on_progress=on_progress
+        )
+        second_fields = second.result() if second else None
+    hints = {}
+    if second_fields:
+        hints["cross_read"] = cross_read.compare(fields, second_fields)
     party_warnings = []
     if resolved_type == "invoice" and settings.ocr_party_check_enabled:
-        # A second, independent reading of the parties' GSTINs (party_check.py):
-        # a GSTIN the AI left blank or misread is caught, not silently lost.
+        # A GSTIN the AI left blank or misread is caught, not silently lost
+        # (party_check.py). cross_read only compares fields BOTH readers saw,
+        # so a GSTIN the AI dropped would otherwise pass unnoticed.
         from app.services.ocr.party_check import cross_check, first_page_text
 
         party_warnings = cross_check(fields, first_page_text(file_bytes, content_type))
     result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
-                       extra_warnings=party_warnings)
+                       hints=hints, extra_warnings=party_warnings)
     if unsure:
         result["meta"].setdefault("warnings", []).insert(0, TYPE_UNSURE_WARNING)
         result["meta"]["type_unsure"] = True
