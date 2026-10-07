@@ -318,6 +318,9 @@ class ExtractionMeta(BaseModel):
     # The bill prints ONE combined "SGST/UTGST" figure. It is shown in both the
     # SGST and the UTGST fields, as printed, and counted once in every total.
     sgst_utgst_combined: bool = False
+    # The AI requests this reading made: how many, how long in all, and each
+    # one's model, seconds and outcome. Explains a slow scan after the fact.
+    ai_calls: Optional[dict] = None
 
 
 class ExtractionPayload(BaseModel):

@@ -531,6 +531,15 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
         party_warnings = cross_check(fields, hints["party_text"])
     result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
                        hints=hints, extra_warnings=party_warnings)
+    calls = list(getattr(provider, "calls", None) or [])
+    if calls:
+        result["meta"]["ai_calls"] = {
+            "count": len(calls),
+            "seconds": round(sum(c["seconds"] for c in calls), 1),
+            "calls": calls[-20:],
+        }
+        log.info("document %s: %d AI call(s), %.1fs in all", document_id, len(calls),
+                 result["meta"]["ai_calls"]["seconds"])
     if unsure:
         result["meta"].setdefault("warnings", []).insert(0, TYPE_UNSURE_WARNING)
         result["meta"]["type_unsure"] = True

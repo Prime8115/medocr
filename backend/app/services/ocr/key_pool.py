@@ -125,9 +125,9 @@ class KeyPool:
             if self._client_factory:
                 client = self._client_factory(key)
             else:
-                from google import genai
+                from app.services.ocr.gemini import make_client
 
-                client = genai.Client(api_key=key)
+                client = make_client(key)
             self._clients[key] = client
         return client
 

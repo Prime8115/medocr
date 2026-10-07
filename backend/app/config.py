@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Check the parties' GSTINs against a second, local reading of the page
     # (services/ocr/party_check.py). Costs a few seconds of CPU on a scan.
     ocr_party_check_enabled: bool = True
+    # Longest a single AI request may run. Without a limit, an overloaded model
+    # held each request for minutes before failing: one MSV scan took 12m45s on
+    # production with nothing logged. A timed-out request goes straight to the
+    # fallback model rather than being retried on the one that hung.
+    ocr_request_timeout_seconds: float = 90.0
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
     # Requests per minute the app allows itself per key and model, so it paces
