@@ -273,3 +273,51 @@ def test_a_refused_schema_is_not_sent_again_by_the_same_worker(monkeypatch):
     configs = p._client.models.configs
     assert len(configs) == 3          # refused, retried - then one call only
     assert configs[2].response_json_schema is None
+
+
+# --- a hung request: a time limit, and straight to the fallback --------------
+
+class TimedOut(Exception):
+    """What the HTTP client raises when a request runs past its time limit."""
+
+    def __str__(self):
+        return "The read operation timed out"
+
+
+def test_a_timed_out_request_goes_straight_to_the_fallback(monkeypatch):
+    # The primary hung once; it is not tried again before the fallback.
+    p = _provider(monkeypatch, [TimedOut(), json.dumps({"patient": {"name": {"value": "Alice"}}})],
+                  retries=3)
+    out = p.extract(b"img", "image/jpeg", "prescription")
+    assert out["patient"]["name"]["value"] == "Alice"
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash"]
+    assert [c["outcome"] for c in p.calls] == ["timeout", "ok"]
+    assert all(isinstance(c["seconds"], float) for c in p.calls)
+
+
+def test_every_client_carries_the_time_limit(monkeypatch):
+    monkeypatch.setattr(settings, "ocr_request_timeout_seconds", 45)
+    client = gem.make_client("test-key")
+    assert client._api_client._http_options.timeout == 45000
+
+
+def test_the_calls_reach_the_documents_meta(monkeypatch):
+    import app.services.ocr as ocr
+
+    class Recorded(gem.GeminiProvider):
+        def __init__(self):
+            self.calls = [{"model": "m", "seconds": 1.5, "outcome": "timeout"},
+                          {"model": "f", "seconds": 4.0, "outcome": "ok"}]
+            self.name = "gemini"
+
+        def classify(self, *_a):
+            return "invoice"
+
+        def extract(self, *_a):
+            return {}
+
+    monkeypatch.setattr(ocr, "get_provider", lambda: Recorded())
+    monkeypatch.setattr(settings, "ocr_party_check_enabled", False)
+    meta = ocr.process_document("d", b"img", "image/jpeg", "invoice")["meta"]
+    assert meta["ai_calls"]["count"] == 2
+    assert meta["ai_calls"]["seconds"] == 5.5

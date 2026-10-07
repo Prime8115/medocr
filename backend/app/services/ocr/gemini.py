@@ -30,7 +30,9 @@ def _is_transient(exc: Exception) -> bool:
     if code in (429, 500, 503):
         return True
     msg = str(exc).lower()
-    return any(m in msg for m in _TRANSIENT_MARKERS)
+    # httpx's ReadTimeout says "timed out", not "timeout"; a request that ran
+    # past its limit is as transient as a 503.
+    return any(m in msg for m in _TRANSIENT_MARKERS) or _is_timeout(exc)
 
 
 def _rate_limit_info(exc: Exception) -> Tuple[Optional[float], bool]:
@@ -67,6 +69,24 @@ def _rate_limit_info(exc: Exception) -> Tuple[Optional[float], bool]:
     if not daily and re.search(r"per\s*day", text, re.I):
         daily = True
     return retry_after, daily
+
+
+def make_client(api_key: str):
+    """A Gemini client whose every request gives up after
+    OCR_REQUEST_TIMEOUT_SECONDS instead of waiting on an overloaded model."""
+    from google import genai
+    from google.genai import types
+
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(settings.ocr_request_timeout_seconds * 1000)),
+    )
+
+
+def _is_timeout(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return "timeout" in name or "timed out" in msg or "deadline" in msg
 
 
 def _brief(exc: Exception, limit: int = 300) -> str:
@@ -185,6 +205,9 @@ class GeminiProvider(OCRProvider):
         # How many extractions Gemini only answered once the response schema
         # was dropped. Zero in a healthy system; the nightly live test reports it.
         self.schema_fallbacks = 0
+        # Every request made, with its model, duration and outcome - recorded in
+        # the document's meta so a slow scan can be explained afterwards.
+        self.calls: list = []
 
     def _content_parts(self, prompt: str, file_bytes: bytes, content_type: str) -> list:
         """Build the model input: raw text for digital PDFs (compact, reliable),
@@ -219,15 +242,25 @@ class GeminiProvider(OCRProvider):
                     model, max_wait=settings.ocr_rate_wait_max_seconds, sleep=self._sleep
                 )
             else:
-                client = self._genai.Client(api_key=settings.gemini_api_key)
+                client = make_client(settings.gemini_api_key)
                 key = "default"
 
+            started = time.monotonic()
             try:
-                return client.models.generate_content(
+                resp = client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
+                self.calls.append({"model": model, "seconds": round(time.monotonic() - started, 1),
+                                   "outcome": "ok"})
+                return resp
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                self.calls.append({"model": model, "seconds": round(time.monotonic() - started, 1),
+                                   "outcome": "timeout" if _is_timeout(exc) else _brief(exc, 80)})
+                if _is_timeout(exc):
+                    # A model that let one request hang will most likely hang
+                    # the next: go to the fallback now, not after another wait.
+                    raise
                 if self._is_rate_limit(exc):
                     retry_after, daily = _rate_limit_info(exc)
                     if self._key_pool is not None:
