@@ -85,4 +85,6 @@ app.include_router(agent.router, prefix="/v1/agent", tags=["Desktop Agent"])
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    # How many Gemini keys the server loaded (a count only, never the keys) -
+    # so a key added to .env can be seen to have taken effect.
+    return {"status": "ok", "ai_keys": len(settings.gemini_keys_list)}

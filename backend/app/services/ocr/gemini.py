@@ -251,6 +251,12 @@ class GeminiProvider(OCRProvider):
         msg = str(exc).lower()
         return "429" in msg or "resource_exhausted" in msg or "rate limit" in msg
 
+    def _key_number(self, key: str) -> int:
+        """1-based position of `key` in the pool; 1 for a single key."""
+        if self._key_pool is not None and key in self._key_pool.keys:
+            return self._key_pool.keys.index(key) + 1
+        return 1
+
     def _generate(self, model: str, contents, config=None):
         """Attempts against one model: through the shared key pool (which rotates
         keys, paces requests and remembers cooldowns), else a single client with
@@ -269,17 +275,21 @@ class GeminiProvider(OCRProvider):
                 client = make_client(settings.gemini_api_key)
                 key = "default"
 
+            # Which key served the call, by position in GEMINI_API_KEYS - never
+            # the key itself - so the meta shows the keys taking turns.
+            key_no = self._key_number(key)
             started = time.monotonic()
             try:
                 resp = client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
-                self.calls.append({"model": model, "seconds": round(time.monotonic() - started, 1),
-                                   "outcome": "ok"})
+                self.calls.append({"model": model, "key": key_no,
+                                   "seconds": round(time.monotonic() - started, 1), "outcome": "ok"})
                 return resp
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                self.calls.append({"model": model, "seconds": round(time.monotonic() - started, 1),
+                self.calls.append({"model": model, "key": key_no,
+                                   "seconds": round(time.monotonic() - started, 1),
                                    "outcome": "timeout" if _is_timeout(exc) else _brief(exc, 80)})
                 if _is_timeout(exc):
                     # A model that let one request hang will most likely hang

@@ -381,3 +381,33 @@ def test_the_reviewer_falls_back_to_the_reader_when_the_other_is_busy(monkeypatc
 def test_a_reviewer_answer_that_is_not_an_object_is_none(monkeypatch):
     p = _provider(monkeypatch, [json.dumps(["H1"])])
     assert p.review_json("check", b"img", "image/jpeg") is None
+
+
+def test_each_call_records_which_key_served_it_never_the_key(monkeypatch):
+    from app.services.ocr.key_pool import KeyPool
+
+    clients = {}
+
+    def factory(key):
+        clients[key] = FakeClient([json.dumps({"supplier": {}})] * 4)
+        return clients[key]
+
+    monkeypatch.setattr(settings, "ocr_model", "gemini-2.5-flash")
+    monkeypatch.setattr(settings, "ocr_fallback_model", "gemini-2.0-flash")
+    pool = KeyPool(["key-one", "key-two"], client_factory=factory)
+    p = gem.GeminiProvider(sleep=lambda _s: None, key_pool=pool)
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    assert [c["key"] for c in p.calls] == [1, 2]          # the keys take turns
+    assert "key-one" not in json.dumps(p.calls)
+
+
+def test_health_says_how_many_keys_are_loaded(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.setattr(settings, "gemini_api_keys", "a,b")
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    body = TestClient(app).get("/health").json()
+    assert body == {"status": "ok", "ai_keys": 2}
