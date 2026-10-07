@@ -253,6 +253,47 @@ def _check_head_totals(c: _Checks, fields: dict, items: List[dict]) -> None:
              describe=lambda h: h.upper())
 
 
+def _check_rates_give_the_tax(c: _Checks, fields: dict, items: List[dict], combined: bool = False) -> None:
+    """The lines' GST rates, applied to their taxable values, give the tax the
+    bill states.
+
+    Catches a misread RATE on a bill whose lines print no tax amounts - the
+    case line_tax and head_totals cannot test. MSV on production: the AI read
+    two 5% lines as 12% and 18%; every other check passed. A bill-wide discount
+    reduces each line's taxable value alike, so the lines are scaled to the
+    bill's taxable total before the rates are applied.
+    """
+    label = "The lines' GST rates give the bill's tax"
+    invoice = fields.get("invoice") or {}
+    amounts = [_n(it.get("amount")) for it in items]
+    rates = [_n(it.get("gst_percent")) for it in items]
+    taxable = _n(invoice.get("total_taxable_amount"))
+    tax = _n(invoice.get("total_gst_amount"))
+    if tax is None:
+        heads = ("cgst", "sgst", "igst") + (() if combined else ("utgst",))
+        printed = [v for v in (_n(invoice.get(f"total_{h}_amount")) for h in heads) if v is not None]
+        tax = sum(printed) if printed else None
+    line_sum = sum(a for a in amounts if a is not None)
+    if (not items or not tax or not taxable or line_sum <= 0
+            or any(a is None for a in amounts) or any(r is None for r in rates)):
+        c.add("rates_give_tax", label, "skipped")
+        return
+    scale = taxable / line_sum
+    if not 0.5 <= scale <= 1.05:
+        # The taxable total is not the lines' value less a discount: freight,
+        # or a figure on another basis. Nothing to scale by with confidence.
+        c.add("rates_give_tax", label, "skipped")
+        return
+    expected = sum(a * r / 100.0 for a, r in zip(amounts, rates)) * scale
+    if _close(expected, tax, 1.0 + 0.02 * len(items), 0.015):
+        c.add("rates_give_tax", label, "pass", f"The rates give {expected:.2f}; the bill states {tax:.2f}.")
+    else:
+        c.add("rates_give_tax", label, "fail",
+              f"The lines' rates give tax of {expected:.2f}, but the bill states {tax:.2f} - "
+              "a line's GST rate may be misread.",
+              [f"line_items[{i}].gst_percent" for i in range(len(items))] + ["invoice.total_gst_amount"])
+
+
 def _check_cross_foot(c: _Checks, fields: dict, report: dict) -> None:
     invoice = fields.get("invoice") or {}
     taxable, gst, total = (_n(invoice.get("total_taxable_amount")),
@@ -423,6 +464,7 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_line_discount(c, items)
     _check_price_ladder(c, items)
     _check_gst_rates(c, items)
+    _check_rates_give_the_tax(c, fields, items, combined=bool(report.get("sgst_utgst_combined")))
     _check_dates(c, fields, items, today)
     _check_hsn(c, items)
     _check_irn(c, fields)

@@ -249,3 +249,46 @@ def test_an_edit_reverifies_the_document(client, mock_ocr):
     check = next(c for c in patched["payload"]["meta"]["verification"]["checks"]
                  if c["id"] == "gstin_bill_to")
     assert check["status"] == "fail"
+
+
+# --- the lines' rates give the bill's tax -------------------------------------------
+
+def _rate_bill(rates, cgst="357.96", sgst="357.96"):
+    amounts = ["6070.00", "1785.00", "1070.00", "1735.50", "1856.00", "3392.50"]
+    return {
+        "invoice": {"total_taxable_amount": {"value": "14318.10"}, "total_cgst_amount": {"value": cgst},
+                    "total_sgst_amount": {"value": sgst}},
+        "line_items": [{"amount": {"value": a}, "gst_percent": {"value": r}} for a, r in zip(amounts, rates)],
+    }
+
+
+def _rates_check(fields, report=None):
+    from app.services.ocr.verify import verify_invoice
+
+    return next(c for c in verify_invoice(fields, report or {})["checks"] if c["id"] == "rates_give_tax")
+
+
+def test_rates_that_give_the_bills_tax_pass():
+    """MSV: 15,909 of lines less a 10% bill discount, all at 5%."""
+    assert _rates_check(_rate_bill(["5"] * 6))["status"] == "pass"
+
+
+def test_a_misread_rate_is_caught_without_line_tax_amounts():
+    """MSV on production: two 5% lines read as 12% and 18%."""
+    check = _rates_check(_rate_bill(["5", "5", "12", "5", "5", "18"]))
+    assert check["status"] == "fail"
+    assert "line_items[2].gst_percent" in check["fields"]
+
+
+def test_rates_check_skips_what_it_cannot_test():
+    f = _rate_bill(["5", "5", None, "5", "5", "5"])
+    assert _rates_check(f)["status"] == "skipped"                 # a rate not read
+    f = _rate_bill(["5"] * 6)
+    f["invoice"]["total_taxable_amount"] = {"value": "20000.00"}  # not lines less a discount
+    assert _rates_check(f)["status"] == "skipped"
+
+
+def test_a_combined_sgst_utgst_figure_counts_once():
+    f = _rate_bill(["5"] * 6)
+    f["invoice"]["total_utgst_amount"] = {"value": "357.96"}
+    assert _rates_check(f, {"sgst_utgst_combined": True})["status"] == "pass"

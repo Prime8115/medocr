@@ -94,3 +94,12 @@ def test_a_digital_document_end_to_end(title, kind, status):
     assert meta["document_kind"] == kind
     check = next(c for c in meta["verification"]["checks"] if c["id"] == "document_kind")
     assert check["status"] == status
+
+
+def test_an_invoice_title_inside_a_line_in_any_case():
+    """Abbott's first line, as the PDF's text gives it."""
+    line = "Corporate Identity No:U24200MH1997PTC104834 Tax Invoice IPD(IP)/CCDTHROMBIS"
+    assert dk.kind_from_page(line + "\nPhone No:7499158326") == "invoice"
+    # A credit note that mentions the invoice it reverses is still a credit note.
+    assert dk.kind_from_page("CREDIT NOTE\nAgainst Tax Invoice No: 3168532914") == "credit_note"
+    assert dk.kind_from_page("Ref Tax Invoice No: 12\nCredit Note") == "credit_note"

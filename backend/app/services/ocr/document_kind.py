@@ -88,7 +88,11 @@ def kind_from_page(text: Optional[str]) -> Optional[str]:
                 return kind
         m = re.search(r"\b(?:tax\s*invoice|gst\s*invoice|bill\s*of\s*supply)\b"
                       r"(?!\s*(?:no\b|number|date|ref|#|:|\.\s*no))", line, re.I)
-        if m and m.group().isupper():
+        # An invoice title is taken in any case: Abbott's first line runs
+        # "Corporate Identity No:... Tax Invoice IPD(IP)/...". Mistaking a
+        # mention for the title costs nothing here - a credit note's own
+        # heading still wins, and "Tax Invoice No." is a label, not a title.
+        if m:
             found = found or INVOICE
     return found
 

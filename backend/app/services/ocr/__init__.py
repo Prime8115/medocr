@@ -286,6 +286,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
 _NEW_CHECKS = frozenset({
     "cross_foot", "head_totals", "line_tax", "line_net", "line_discount",
     "price_ladder", "gst_rates", "dates", "hsn", "supplier_pan", "printed_not_read", "irn",
+    "rates_give_tax",
 }) | frozenset({"cross_read", "ai_review", "document_kind"})
 
 

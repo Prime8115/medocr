@@ -515,3 +515,27 @@ def test_a_combined_figure_is_counted_once_in_the_line_net():
     # Without the flag the same figures would count the tax twice and fail.
     checks = {c["id"]: c for c in verify_invoice(f, {})["checks"]}
     assert checks["line_net"]["status"] == "fail"
+
+
+def test_a_line_printing_only_the_rate_shows_only_the_rate_under_utgst():
+    """MSV on production: the lines print 'SGST/UTGST 2.5%' but no amounts. The
+    UTGST amount must be blank like SGST's - not the 0.00 an intra-state bill
+    otherwise carries - or every line fails its tax check."""
+    from app.services.ocr.invoice_checks import show_combined_utgst
+    from app.services.ocr.verify import verify_invoice
+
+    f = {
+        "supplier": {"gstin": _leaf("27ABCDE1234F3ZY")}, "bill_to": {"gstin": _leaf("27PQRST6789K1ZW")},
+        "invoice": {"total_amount": _leaf("1050.00"), "total_taxable_amount": _leaf("1000.00"),
+                    "total_cgst_amount": _leaf("25.00"), "total_sgst_amount": _leaf("25.00")},
+        "line_items": [{"amount": _leaf("1000.00"), "gst_percent": _leaf("5.00"),
+                        "cgst_percent": _leaf("2.50"), "sgst_percent": _leaf("2.50")}],
+    }
+    complete_from_the_bill(f)
+    assert _v(f["line_items"][0], "utgst_amount") == "0.00"     # intra-state: no UTGST
+    assert show_combined_utgst(f, "CGST  SGST/UTGST")
+    assert _v(f["line_items"][0], "utgst_percent") == "2.50"
+    assert not _v(f["line_items"][0], "utgst_amount")
+    checks = {c["id"]: c for c in verify_invoice(f, {"sgst_utgst_combined": True})["checks"]}
+    assert checks["line_tax"]["status"] != "fail", checks["line_tax"]
+    assert checks["head_totals"]["status"] != "fail", checks["head_totals"]
