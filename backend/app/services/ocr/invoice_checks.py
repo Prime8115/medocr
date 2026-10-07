@@ -519,14 +519,84 @@ def _leaf(value: str, confidence: float = 1.0) -> dict:
     return {"value": value, "confidence": confidence}
 
 
+# "SGST/UTGST", "SGST / UTGST", "UTGST/SGST": one column or line for the two.
+# No word boundary at the ends: a scan's table rules run into the heading
+# (MSV's OCR reads "—SSGST/UTGST__").
+_COMBINED_SGST_UTGST = re.compile(r"S\s*GST\s*/\s*UT\s*GST|UT\s*GST\s*/\s*S\s*GST", re.I)
+
+
+def show_combined_utgst(fields: dict, page_text: str) -> bool:
+    """Show a printed "SGST/UTGST" figure under UTGST as well as SGST.
+
+    The client's rule: a value the bill prints is shown. MSV and Abbott print
+    one combined "SGST/UTGST" figure (7,722.00 on Abbott); it was filed under
+    SGST and UTGST read 0.00. Now UTGST carries the same printed figure, on
+    the bill's totals and on each line.
+
+    It is ONE tax, printed once, so it is counted once: the caller records
+    meta.sgst_utgst_combined, and every sum of the tax heads (verify.py) then
+    leaves UTGST out. The bill's total GST is fixed before this runs.
+    Returns True when the bill prints the combined heading and a figure was shown.
+    """
+    if not _COMBINED_SGST_UTGST.search(page_text or ""):
+        return False
+    shown = False
+    invoice = fields.get("invoice")
+    if isinstance(invoice, dict) and _v(invoice.get("total_sgst_amount")):
+        leaf = invoice["total_sgst_amount"]
+        invoice["total_utgst_amount"] = {"value": leaf.get("value"), "confidence": leaf.get("confidence")}
+        shown = True
+    for item in fields.get("line_items") or []:
+        for kind in ("percent", "amount"):
+            leaf = item.get(f"sgst_{kind}")
+            if isinstance(leaf, dict) and _v(leaf):
+                item[f"utgst_{kind}"] = {"value": leaf.get("value"), "confidence": leaf.get("confidence")}
+                shown = True
+    return shown
+
+
+def drop_copied_pans(fields: dict, page_text: str) -> List[str]:
+    """Blank a party's PAN that is only the middle of its GSTIN.
+
+    The client's rule: a field the bill does not print stays blank. The model
+    is told not to copy a PAN out of a GSTIN; this holds it to that where the
+    page's own text can show what is printed. A PAN that appears on the page
+    on its own (not inside a GSTIN) is kept. Returns the paths blanked.
+    """
+    from app.services.ocr.invoice_header import _GSTIN_SHAPE
+
+    text = page_text or ""
+    if not text.strip():
+        return []
+    blanked: List[str] = []
+    for party in ("supplier", "bill_to", "ship_to"):
+        block = fields.get(party)
+        if not isinstance(block, dict):
+            continue
+        pan = _v(block.get("pan")).upper()
+        gstin = _v(block.get("gstin")).upper().replace(" ", "")
+        if not pan or gstin[2:12] != pan:
+            continue
+        printed = False
+        for m in re.finditer(re.escape(pan), text, re.I):
+            around = text[max(0, m.start() - 2):m.end() + 3].upper()
+            if not _GSTIN_SHAPE.search(around):
+                printed = True
+                break
+        if not printed:
+            block["pan"] = {"value": None, "confidence": None}
+            blanked.append(f"{party}.pan")
+    return blanked
+
+
 def complete_from_the_bill(fields: dict) -> List[str]:
     """Fill fields that the bill states implicitly, for EITHER reader.
 
     None of this is guessed - each is a fact the printed invoice already fixes:
 
-    * A party's PAN is characters 3-12 of its GSTIN. MSV prints both GSTINs and
-      neither PAN, and the export had blank PAN columns for figures sitting in
-      plain sight.
+    * A party's PAN is NOT taken from its GSTIN. The client's rule is that a
+      field the bill does not print stays blank: MSV prints both GSTINs and no
+      PAN, and its PAN columns must be empty, not characters 3-12 of the GSTIN.
     * The total GST is the sum of the heads the bill prints.
     * A tax head that cannot apply to the sale is zero. An intra-state sale in a
       state carries no IGST and no UTGST; an inter-state one no CGST, SGST or
@@ -536,15 +606,6 @@ def complete_from_the_bill(fields: dict) -> List[str]:
     Returns the dotted paths filled, for the log.
     """
     filled: List[str] = []
-    for party in ("supplier", "bill_to", "ship_to"):
-        block = fields.get(party)
-        if not isinstance(block, dict):
-            continue
-        gstin = _v(block.get("gstin")).upper().replace(" ", "")
-        m = _GSTIN.match(gstin)
-        if m and not _v(block.get("pan")):
-            block["pan"] = _leaf(m.group(1))
-            filled.append(f"{party}.pan")
 
     invoice = fields.get("invoice")
     if not isinstance(invoice, dict):

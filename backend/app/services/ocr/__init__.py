@@ -18,6 +18,8 @@ from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
     complete_from_the_bill,
+    drop_copied_pans,
+    show_combined_utgst,
     dedupe_line_items,
     flag_invalid_gstins,
     mark_free_supplies,
@@ -235,7 +237,7 @@ _NEW_CHECKS = frozenset({
 }) | frozenset({"cross_read"})
 
 
-def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None):
+def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None, extra_warnings=None):
     """Post-process, run integrity checks, and wrap the result.
 
     Invoice integrity (de-duplication, arithmetic, totals reconciliation) runs
@@ -244,12 +246,14 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     """
     hints = hints or {}
     integrity = {"duplicates_removed": 0, "copies_detected": hints.get("copies_detected")}
-    check_warnings = []
+    check_warnings = list(extra_warnings or [])
 
     if resolved_type == "invoice":
-        # Facts the bill fixes without printing them - a PAN inside its
-        # GSTIN, a zero head the sale cannot carry - for either reader.
+        # Facts the bill fixes without printing them - a zero head the sale
+        # cannot carry - for either reader. A PAN is never one of them: what
+        # the bill does not print stays blank.
         complete_from_the_bill(fields)
+        drop_copied_pans(fields, hints.get("document_text") or hints.get("party_text") or "")
         items = fields.get("line_items") or []
         before = len(items)
         items, removed = dedupe_line_items(items)
@@ -318,6 +322,10 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 if filled:
                     integrity["gap_filled"] = filled
                     complete_from_the_bill(fields)
+        # A printed "SGST/UTGST" figure is shown under UTGST too - after the
+        # total GST is fixed, and flagged so every sum counts it once.
+        if show_combined_utgst(fields, hints.get("document_text") or hints.get("party_text") or ""):
+            integrity["sgst_utgst_combined"] = True
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification
@@ -512,8 +520,17 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     hints = {}
     if second_fields:
         hints["cross_read"] = cross_read.compare(fields, second_fields)
+    party_warnings = []
+    if resolved_type == "invoice" and settings.ocr_party_check_enabled:
+        # A GSTIN the AI left blank or misread is caught, not silently lost
+        # (party_check.py). cross_read only compares fields BOTH readers saw,
+        # so a GSTIN the AI dropped would otherwise pass unnoticed.
+        from app.services.ocr.party_check import cross_check, first_page_text
+
+        hints["party_text"] = first_page_text(file_bytes, content_type)
+        party_warnings = cross_check(fields, hints["party_text"])
     result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
-                       hints=hints)
+                       hints=hints, extra_warnings=party_warnings)
     if unsure:
         result["meta"].setdefault("warnings", []).insert(0, TYPE_UNSURE_WARNING)
         result["meta"]["type_unsure"] = True

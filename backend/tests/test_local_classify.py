@@ -8,7 +8,7 @@ from app.services.ocr.classify import classify_text
 # The opening of a real scanned invoice's text layer, garbling included: the
 # scanner wrote "lnvoice", "Exprry" and "Slrips".
 SCANNED_INVOICE = """lnvoice No. M-544 Delivery Note MSV LIFESCIENCES Chennai 600024
-GSTIN/UlN: 33ABEFM0315R1Z8 State Name : Tamil Nadu, Code: 33
+GSTIN/UlN: 27ABCDE1234F1Z0 State Name : Tamil Nadu, Code: 33
 Rate per AmountHSN/SAC IVIRPI Quantltyqt Description Glimedose MP2 Tab 10's
 Batch : OVT-25327 Exprry : 31-May-27 Tax lnvoice 30049099 80.00/Strips
 46.40 Slrips 1,856.00 SGST/UTGST Rate Amount Taxable Value"""

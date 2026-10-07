@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # check now calls this model nightly so the next retirement surfaces within
     # a day instead of being discovered by a pharmacist.
     ocr_fallback_model: Optional[str] = "gemini-3.5-flash"
+    # 0 = the AI gives the same answer for the same page every time. Above it,
+    # each reading varies - the same scan once came back without its Bill-to
+    # GSTIN and once with it.
+    ocr_temperature: float = 0.0
+    # Check the parties' GSTINs against a second, local reading of the page
+    # (services/ocr/party_check.py). Costs a few seconds of CPU on a scan.
+    ocr_party_check_enabled: bool = True
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
     # Requests per minute the app allows itself per key and model, so it paces

@@ -1,11 +1,11 @@
 """A scanned PDF is read from its picture, never from the scanner's text layer.
 
-The MSV Lifesciences bill is a scan whose scanner added its own hidden reading
-of the page - and got it wrong: GSTIN "33ABEFM031 5R128" for 33ABEFM0315R1Z8,
-"33AASCA3306LZZK" for 33AASCA3306L2ZK, date "5-Oct-25" for 6-Oct-25. Treated
-as a digital PDF, that text went to the AI, which copied the mistakes. These
-build the same kind of file (a picture of the page plus an invisible, wrong
-text layer) - the repository is public, so no customer file is committed.
+A real supplier's bill (MSV Lifesciences) is a scan whose scanner added its own
+hidden reading of the page - and got it wrong: a GSTIN's "Z" read as "2",
+another's "2" as "Z", the date a day out. Treated as a digital PDF, that text
+went to the AI, which copied the mistakes. These build the same kind of file
+(a picture of the page plus an invisible, wrong text layer) with made-up
+GSTINs - the repository is public, so no customer file or number is committed.
 """
 import io
 
@@ -18,11 +18,11 @@ from app.services import intake
 from app.services.ocr.base import OCRProvider
 from app.services.ocr.pdf_utils import extract_text_pages, image_only_pdf, is_digital_pdf, is_scanned_pdf
 
-PRINTED = ["Tax Invoice", "Invoice No. S-1029", "Dated 6-Oct-25", "GSTIN/UIN: 33ABEFM0315R1Z8",
-           "Buyer GSTIN/UIN: 33AASCA3306L2ZK", "Paracip 500 Tab  PC-2401  100  18.50  1850.00"]
+PRINTED = ["Tax Invoice", "Invoice No. S-1029", "Dated 6-Oct-25", "GSTIN/UIN: 27ABCDE1234F3ZY",
+           "Buyer GSTIN/UIN: 27PQRST6789K1ZW", "Paracip 500 Tab  PC-2401  100  18.50  1850.00"]
 # The scanner's reading of it: the mistakes the MSV bill's layer made.
-SCANNER_TEXT = ["Tax lnvoice", "lnvoice No. S-1029", "Dated 5-Oct-25", "GSTIN/UlN: 33ABEFM031 5R128",
-                "Buyer GSTIN/UIN : 33AASCA3306LZZK", "Paracip 500 Tab PC-2401 100 Slrips 18.50 1,850.00"]
+SCANNER_TEXT = ["Tax lnvoice", "lnvoice No. S-1029", "Dated 5-Oct-25", "GSTIN/UlN: 27ABCDE1234F 32Y",
+                "Buyer GSTIN/UIN : 27PQRST6789KIZW", "Paracip 500 Tab PC-2401 100 Slrips 18.50 1,850.00"]
 
 
 def _page_picture(lines, label="") -> bytes:
@@ -66,7 +66,7 @@ def digital_pdf() -> bytes:
 
 def test_a_scan_with_a_scanners_text_layer_is_a_scan():
     data = scanned_pdf()
-    assert "33ABEFM031 5R128" in extract_text_pages(data)[0]  # the layer is there, and wrong
+    assert "27ABCDE1234F 32Y" in extract_text_pages(data)[0]  # the layer is there, and wrong
     assert is_scanned_pdf(data)
     assert not is_digital_pdf(data)
 
@@ -113,7 +113,7 @@ def test_the_ai_is_given_the_picture_never_the_scanners_text(monkeypatch):
     for content_type, data in provider.seen:
         assert content_type == "application/pdf"
         text = " ".join(extract_text_pages(data))
-        assert "R128" not in text and "LZZK" not in text and not text.strip()
+        assert "F 32Y" not in text and "KIZW" not in text and not text.strip()
 
 
 def test_a_digital_pdf_is_still_read_from_its_text(monkeypatch):
@@ -123,7 +123,7 @@ def test_a_digital_pdf_is_still_read_from_its_text(monkeypatch):
     ocr.process_document("d", digital_pdf(), "application/pdf", "invoice")
 
     assert provider.seen[0][0] == "text/plain"
-    assert b"33ABEFM0315R1Z8" in provider.seen[0][1]
+    assert b"27ABCDE1234F3ZY" in provider.seen[0][1]
 
 
 def test_a_scans_invoice_numbers_never_split_it():
@@ -143,4 +143,4 @@ def test_manual_entry_reads_a_scan_with_local_ocr_not_its_layer():
         pytest.skip("tesseract not installed")
     text, source, _pages = document_text(scanned_pdf(), "application/pdf")
     assert source == "ocr"
-    assert "R128" not in text
+    assert "F 32Y" not in text and "KIZW" not in text
