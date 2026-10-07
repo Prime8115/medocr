@@ -11,6 +11,16 @@ from app.database import Base, get_db
 from app.main import app
 
 
+@pytest.fixture(autouse=True)
+def _fresh_model_health():
+    """Model rest periods are process-wide; no test inherits another's."""
+    from app.services.ocr.gemini import reset_model_health
+
+    reset_model_health()
+    yield
+    reset_model_health()
+
+
 @pytest.fixture()
 def db_session(monkeypatch):
     """Fresh in-memory SQLite shared across the app for one test."""
