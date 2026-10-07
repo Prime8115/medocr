@@ -159,11 +159,22 @@ def _party_gstins(text: str) -> Tuple[Optional[str], Optional[str]]:
             buyer if gstin_is_valid(buyer) else None)
 
 
+def _standalone_pan(text: str) -> Optional[str]:
+    """The first PAN printed as itself, not as the middle of a GSTIN."""
+    for m in _PAN_SHAPE.finditer(text or ""):
+        around = (text or "")[max(0, m.start() - 2):m.end() + 3]
+        if not _GSTIN_SHAPE.search(around):
+            return m.group(1)
+    return None
+
+
 def _invoice_fields(text: str) -> dict:
     from app.services.ocr.invoice_parser import _extract_total
 
     supplier_gstin, buyer_gstin = _party_gstins(text)
-    supplier_pan = supplier_gstin[2:12] if supplier_gstin else _first(_PAN_SHAPE, text)
+    # Only a PAN the bill prints on its own - never characters 3-12 of a GSTIN:
+    # a field the bill does not print stays blank.
+    supplier_pan = _standalone_pan(text)
 
     licences = drug_licences(text)[:3]
     supplier = {
@@ -185,7 +196,7 @@ def _invoice_fields(text: str) -> dict:
 
     return {
         "supplier": supplier,
-        "bill_to": {"gstin": _leaf(buyer_gstin), "pan": _leaf(buyer_gstin[2:12] if buyer_gstin else None)},
+        "bill_to": {"gstin": _leaf(buyer_gstin), "pan": _leaf(None)},
         "invoice": invoice,
         "line_items": [],
     }

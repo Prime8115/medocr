@@ -30,6 +30,8 @@ INVOICE_PROMPT = (
     "  bill_to    = the party under the \"Bill to\" heading. Fields: name, gstin, pan, address.\n"
     "  ship_to    = the party under the \"Ship to\" heading. Fields: name, gstin, pan, address.\n"
     "A GSTIN is exactly 15 characters (2-digit state code, 10-character PAN, then 3 more). "
+    "pan = a PAN the bill prints as its own field; null when it prints none - never copy it out "
+    "of the GSTIN. "
     "Never put the buyer's GSTIN on the supplier, or the supplier's on the buyer.\n"
     "\n"
     "invoice: invoice_no, invoice_date, total_amount (the final payable amount at the foot "

@@ -257,11 +257,42 @@ def _msv_like():
     }
 
 
-def test_a_pan_is_read_out_of_its_gstin():
+def test_a_pan_the_bill_does_not_print_stays_blank():
+    # The client's rule: not on the invoice -> blank. MSV prints no PAN, so its
+    # PAN columns stay empty, not characters 3-12 of the GSTIN.
     f = _msv_like()
     complete_from_the_bill(f)
+    assert not _v(f["supplier"], "pan")
+    assert not _v(f["bill_to"], "pan")
+
+
+def test_a_pan_copied_out_of_a_gstin_is_blanked():
+    from app.services.ocr.invoice_checks import drop_copied_pans
+
+    f = _msv_like()
+    f["supplier"]["pan"] = _leaf("ABEFM0315R")
+    f["bill_to"]["pan"] = _leaf("AASCA3306L")
+    page = "GSTIN/UIN: 33ABEFM0315R1Z8\nBuyer (Bill to)\nGSTIN/UIN : 33AASCA3306L2ZK"
+    assert drop_copied_pans(f, page) == ["supplier.pan", "bill_to.pan"]
+    assert not _v(f["supplier"], "pan") and not _v(f["bill_to"], "pan")
+
+
+def test_a_printed_pan_is_kept():
+    from app.services.ocr.invoice_checks import drop_copied_pans
+
+    f = _msv_like()
+    f["supplier"]["pan"] = _leaf("ABEFM0315R")
+    page = "GSTIN: 33ABEFM0315R1Z8  PAN No: ABEFM0315R\nBill to\nGSTIN 33AASCA3306L2ZK"
+    assert drop_copied_pans(f, page) == []
     assert _v(f["supplier"], "pan") == "ABEFM0315R"
-    assert _v(f["bill_to"], "pan") == "AASCA3306L"
+
+
+def test_without_the_page_text_nothing_is_blanked():
+    from app.services.ocr.invoice_checks import drop_copied_pans
+
+    f = _msv_like()
+    f["supplier"]["pan"] = _leaf("ABEFM0315R")
+    assert drop_copied_pans(f, "") == []
 
 
 def test_an_intra_state_bill_carries_zero_igst_and_utgst_and_a_total_gst():

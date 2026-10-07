@@ -519,14 +519,48 @@ def _leaf(value: str, confidence: float = 1.0) -> dict:
     return {"value": value, "confidence": confidence}
 
 
+def drop_copied_pans(fields: dict, page_text: str) -> List[str]:
+    """Blank a party's PAN that is only the middle of its GSTIN.
+
+    The client's rule: a field the bill does not print stays blank. The model
+    is told not to copy a PAN out of a GSTIN; this holds it to that where the
+    page's own text can show what is printed. A PAN that appears on the page
+    on its own (not inside a GSTIN) is kept. Returns the paths blanked.
+    """
+    from app.services.ocr.invoice_header import _GSTIN_SHAPE
+
+    text = page_text or ""
+    if not text.strip():
+        return []
+    blanked: List[str] = []
+    for party in ("supplier", "bill_to", "ship_to"):
+        block = fields.get(party)
+        if not isinstance(block, dict):
+            continue
+        pan = _v(block.get("pan")).upper()
+        gstin = _v(block.get("gstin")).upper().replace(" ", "")
+        if not pan or gstin[2:12] != pan:
+            continue
+        printed = False
+        for m in re.finditer(re.escape(pan), text, re.I):
+            around = text[max(0, m.start() - 2):m.end() + 3].upper()
+            if not _GSTIN_SHAPE.search(around):
+                printed = True
+                break
+        if not printed:
+            block["pan"] = {"value": None, "confidence": None}
+            blanked.append(f"{party}.pan")
+    return blanked
+
+
 def complete_from_the_bill(fields: dict) -> List[str]:
     """Fill fields that the bill states implicitly, for EITHER reader.
 
     None of this is guessed - each is a fact the printed invoice already fixes:
 
-    * A party's PAN is characters 3-12 of its GSTIN. MSV prints both GSTINs and
-      neither PAN, and the export had blank PAN columns for figures sitting in
-      plain sight.
+    * A party's PAN is NOT taken from its GSTIN. The client's rule is that a
+      field the bill does not print stays blank: MSV prints both GSTINs and no
+      PAN, and its PAN columns must be empty, not characters 3-12 of the GSTIN.
     * The total GST is the sum of the heads the bill prints.
     * A tax head that cannot apply to the sale is zero. An intra-state sale in a
       state carries no IGST and no UTGST; an inter-state one no CGST, SGST or
@@ -536,15 +570,6 @@ def complete_from_the_bill(fields: dict) -> List[str]:
     Returns the dotted paths filled, for the log.
     """
     filled: List[str] = []
-    for party in ("supplier", "bill_to", "ship_to"):
-        block = fields.get(party)
-        if not isinstance(block, dict):
-            continue
-        gstin = _v(block.get("gstin")).upper().replace(" ", "")
-        m = _GSTIN.match(gstin)
-        if m and not _v(block.get("pan")):
-            block["pan"] = _leaf(m.group(1))
-            filled.append(f"{party}.pan")
 
     invoice = fields.get("invoice")
     if not isinstance(invoice, dict):

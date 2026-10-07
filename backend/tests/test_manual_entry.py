@@ -94,7 +94,7 @@ def test_a_pdf_the_ai_cannot_read_is_filled_from_its_own_text(client):
     assert _v(fields, "invoice.invoice_date") == "5-Oct-25"
     assert _v(fields, "supplier.gstin") == "27ABCDE1234F1Z0"
     assert _v(fields, "bill_to.gstin") == "27PQRST6789K1ZW"
-    assert _v(fields, "supplier.pan") == "ABCDE1234F"
+    assert _v(fields, "supplier.pan") is None  # not printed on its own: blank, never cut from the GSTIN
     assert float(_v(fields, "invoice.total_amount")) == 15034.0  # from the amount in words
     # A pattern match is a suggestion: every value is flagged for checking.
     assert fields["invoice"]["invoice_no"]["confidence"] < settings.low_confidence_threshold

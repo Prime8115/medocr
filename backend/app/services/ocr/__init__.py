@@ -18,6 +18,7 @@ from app.services.ocr.base import OCRError, OCRProvider
 from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
     complete_from_the_bill,
+    drop_copied_pans,
     dedupe_line_items,
     flag_invalid_gstins,
     mark_free_supplies,
@@ -247,9 +248,11 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     check_warnings = list(extra_warnings or [])
 
     if resolved_type == "invoice":
-        # Facts the bill fixes without printing them - a PAN inside its
-        # GSTIN, a zero head the sale cannot carry - for either reader.
+        # Facts the bill fixes without printing them - a zero head the sale
+        # cannot carry - for either reader. A PAN is never one of them: what
+        # the bill does not print stays blank.
         complete_from_the_bill(fields)
+        drop_copied_pans(fields, hints.get("document_text") or hints.get("party_text") or "")
         items = fields.get("line_items") or []
         before = len(items)
         items, removed = dedupe_line_items(items)
@@ -519,7 +522,8 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
         # so a GSTIN the AI dropped would otherwise pass unnoticed.
         from app.services.ocr.party_check import cross_check, first_page_text
 
-        party_warnings = cross_check(fields, first_page_text(file_bytes, content_type))
+        hints["party_text"] = first_page_text(file_bytes, content_type)
+        party_warnings = cross_check(fields, hints["party_text"])
     result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
                        hints=hints, extra_warnings=party_warnings)
     if unsure:
