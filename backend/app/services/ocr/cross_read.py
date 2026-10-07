@@ -151,7 +151,15 @@ def _matching_line(ai_item: dict, others: List[dict], index: int) -> Optional[di
 
 
 def second_reading(data: bytes, content_type: str) -> Optional[dict]:
-    """Tesseract's reading of the scan, or None where it cannot run."""
+    """Tesseract's reading of the scan, or None where it cannot run.
+
+    A scan whose TABLE Tesseract cannot rebuild still has its header read - the
+    invoice number, date, total and GSTINs are what a misread hurts most, and
+    MSV's scan, whose table it cannot rebuild, used to get no second reading
+    at all. Only values that pass their own test are offered for comparison
+    (see _trustworthy): a doubtful one is left out, never compared, so the
+    second reading cannot raise a false alarm.
+    """
     if not settings.ocr_cross_read:
         return None
     from app.services.ocr import tesseract_table
@@ -160,7 +168,37 @@ def second_reading(data: bytes, content_type: str) -> Optional[dict]:
     if not tesseract_table.available():
         return None
     try:
-        return parse_scanned_invoice(data, content_type, max_pages=MAX_PAGES)
+        reading = parse_scanned_invoice(data, content_type, max_pages=MAX_PAGES, header_only_ok=True)
     except Exception as exc:  # noqa: BLE001 - a second opinion that fails is no opinion
         log.warning("cross_read: second reading failed (%s)", exc)
         return None
+    if reading:
+        _trustworthy(reading, (reading.get("_hints") or {}).get("document_text") or "")
+    return reading
+
+
+def _trustworthy(reading: dict, text: str) -> None:
+    """Keep only header values a reader can stand behind.
+
+    * An invoice number holds a digit - a Tally bill's "Invoice No.   Dated"
+      heading otherwise gives "Dated".
+    * GSTINs are the ones whose check character is right, placed by where they
+      sit relative to the buyer's heading (party_check) - never by the flat OCR
+      text's order, which interleaves the party blocks.
+    """
+    from app.services.ocr.party_check import page_party_gstins
+
+    invoice = reading.get("invoice") or {}
+    if not re.search(r"\d", _value(reading, "invoice.invoice_no")):
+        invoice.pop("invoice_no", None)
+    supplier, buyer, _every = page_party_gstins(text)
+    for party, gstin in (("supplier", supplier), ("bill_to", buyer)):
+        block = reading.setdefault(party, {})
+        if gstin:
+            block["gstin"] = {"value": gstin, "confidence": 1.0}
+        else:
+            block.pop("gstin", None)
+
+
+SKIPPED = {"id": "cross_read", "label": "A second reading of the scan agrees", "status": "skipped",
+           "message": "The second reading could not read this scan.", "fields": []}

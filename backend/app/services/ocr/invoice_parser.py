@@ -1179,7 +1179,8 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
 
 
 def parse_scanned_invoice(data: bytes, content_type: str,
-                          max_pages: Optional[int] = None) -> Optional[dict]:
+                          max_pages: Optional[int] = None,
+                          header_only_ok: bool = False) -> Optional[dict]:
     """Read a SCANNED invoice's table with Tesseract instead of the paid model.
 
     Identical in shape to `parse_invoice_pdf`, and deliberately built from the
@@ -1235,7 +1236,7 @@ def parse_scanned_invoice(data: bytes, content_type: str,
             )
         )
 
-    if not line_items:
+    if not line_items and not (header_only_ok and meta):
         return None
 
     fields = meta or {"supplier": {}, "invoice": {}}

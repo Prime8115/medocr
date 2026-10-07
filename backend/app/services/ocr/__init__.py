@@ -520,6 +520,9 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     hints = {}
     if second_fields:
         hints["cross_read"] = cross_read.compare(fields, second_fields)
+    elif is_scan:
+        # Said, not left out: a check that silently vanishes reads as a pass.
+        hints["cross_read"] = [dict(cross_read.SKIPPED)]
     party_warnings = []
     if resolved_type == "invoice" and settings.ocr_party_check_enabled:
         # A GSTIN the AI left blank or misread is caught, not silently lost

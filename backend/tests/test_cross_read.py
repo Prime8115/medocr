@@ -81,3 +81,57 @@ def test_the_cross_read_can_be_switched_off(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "ocr_cross_read", False)
     assert cross_read.second_reading(b"%PDF", "application/pdf") is None
+
+
+# --- a scan whose table cannot be rebuilt still has its header read ----------
+
+SUPPLIER, BUYER = "27ABCDE1234F3ZY", "27PQRST6789K1ZW"  # made up; check characters valid
+HEADER_TEXT = (f"SUNRISE PHARMA\nGSTIN: {SUPPLIER}\nInvoice No.   Dated\n"
+               f"Buyer (Bill to)\nCITY CARE\nGSTIN : {BUYER}\nTotal 15,034.00")
+
+
+def _header_only(invoice_no="Dated"):
+    return {
+        "invoice": {"invoice_no": _leaf(invoice_no), "total_amount": _leaf("15034.00")},
+        "supplier": {"gstin": _leaf(BUYER)},  # the flat OCR text put the wrong one here
+        "line_items": [],
+        "_hints": {"document_text": HEADER_TEXT},
+    }
+
+
+def test_a_header_only_reading_keeps_only_values_that_pass_their_test():
+    reading = _header_only()
+    cross_read._trustworthy(reading, HEADER_TEXT)
+    assert "invoice_no" not in reading["invoice"]          # "Dated" is a label, not a number
+    assert reading["supplier"]["gstin"]["value"] == SUPPLIER  # placed by position, not text order
+    assert reading["bill_to"]["gstin"]["value"] == BUYER
+
+
+def test_a_header_only_reading_confirms_the_ai():
+    reading = _header_only()
+    cross_read._trustworthy(reading, HEADER_TEXT)
+    ai = {"invoice": {"invoice_no": _leaf("M-544"), "total_amount": _leaf("15,034.00")},
+          "supplier": {"gstin": _leaf(SUPPLIER)}, "bill_to": {"gstin": _leaf(BUYER)},
+          "line_items": [{"amount": _leaf("6,070.00")}]}
+    [check] = cross_read.compare(ai, reading)
+    assert check["status"] == "pass" and check["message"].startswith("3 value(s)")
+
+
+def test_a_header_only_reading_still_catches_a_misread_total():
+    reading = _header_only()
+    cross_read._trustworthy(reading, HEADER_TEXT)
+    ai = {"invoice": {"total_amount": _leaf("15,084.00")}, "supplier": {"gstin": _leaf(SUPPLIER)},
+          "bill_to": {"gstin": _leaf(BUYER)}, "line_items": []}
+    [check] = cross_read.compare(ai, reading)
+    assert check["status"] == "fail" and check["fields"] == ["invoice.total_amount"]
+
+
+def test_a_scan_with_no_second_reading_says_so(monkeypatch):
+    import app.services.ocr as ocr
+    from tests.test_scanned_pdf import RecordingProvider, scanned_pdf
+
+    monkeypatch.setattr(ocr, "get_provider", lambda: RecordingProvider())
+    monkeypatch.setattr(cross_read, "second_reading", lambda *_a: None)
+    meta = ocr.process_document("d", scanned_pdf(), "application/pdf", "invoice")["meta"]
+    checks = {c["id"]: c for c in meta["verification"]["checks"]}
+    assert checks["cross_read"]["status"] == "skipped"
