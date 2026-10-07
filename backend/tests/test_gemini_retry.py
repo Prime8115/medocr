@@ -321,3 +321,42 @@ def test_the_calls_reach_the_documents_meta(monkeypatch):
     meta = ocr.process_document("d", b"img", "image/jpeg", "invoice")["meta"]
     assert meta["ai_calls"]["count"] == 2
     assert meta["ai_calls"]["seconds"] == 5.5
+
+
+# --- a model that hung or is overloaded is tried last for a while -------------
+
+def test_after_a_timeout_the_next_scan_starts_on_the_fallback(monkeypatch):
+    ok = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    p = _provider(monkeypatch, [TimedOut(), ok, ok], retries=2)
+    p.extract(b"img", "image/jpeg", "prescription")
+    # The next scan does not wait on the primary again.
+    p.extract(b"img", "image/jpeg", "prescription")
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash"]
+
+
+def test_an_overloaded_primary_rests_too(monkeypatch):
+    ok = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    p = _provider(monkeypatch, [Overloaded("503 overloaded"), Overloaded("503 overloaded"), ok, ok],
+                  retries=2)
+    p.extract(b"img", "image/jpeg", "prescription")
+    p.extract(b"img", "image/jpeg", "prescription")
+    assert p._client.models.calls[-1] == "gemini-2.0-flash"
+    assert p._client.models.calls.count("gemini-2.5-flash") == 2  # not tried on the second scan
+
+
+def test_a_rested_model_is_used_again_once_its_rest_is_over(monkeypatch):
+    monkeypatch.setattr(settings, "ocr_model_rest_seconds", 0)
+    ok = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    p = _provider(monkeypatch, [TimedOut(), ok, ok], retries=2)
+    p.extract(b"img", "image/jpeg", "prescription")
+    p.extract(b"img", "image/jpeg", "prescription")
+    assert p._client.models.calls[-1] == "gemini-2.5-flash"
+
+
+def test_when_both_are_resting_the_primary_still_goes_first(monkeypatch):
+    gem.rest_model("gemini-2.5-flash")
+    gem.rest_model("gemini-2.0-flash")
+    ok = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    p = _provider(monkeypatch, [ok], retries=2)
+    p.extract(b"img", "image/jpeg", "prescription")
+    assert p._client.models.calls == ["gemini-2.5-flash"]

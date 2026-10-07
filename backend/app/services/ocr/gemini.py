@@ -8,6 +8,7 @@ surfacing an error to the pharmacist on every hiccup.
 import json
 import logging
 import re
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -81,6 +82,29 @@ def make_client(api_key: str):
         api_key=api_key,
         http_options=types.HttpOptions(timeout=int(settings.ocr_request_timeout_seconds * 1000)),
     )
+
+
+# Models resting after a timeout or an overload, until the time given. Shared by
+# every scan in this process: on production the primary model timed out on
+# every request for a whole morning, and each scan spent 3 minutes rediscovering
+# it before the fallback read the bill in 16 seconds.
+_resting: dict = {}
+_resting_lock = threading.Lock()
+
+
+def rest_model(model: str) -> None:
+    with _resting_lock:
+        _resting[model] = time.monotonic() + settings.ocr_model_rest_seconds
+
+
+def model_is_resting(model: str) -> bool:
+    with _resting_lock:
+        return time.monotonic() < _resting.get(model, 0.0)
+
+
+def reset_model_health() -> None:
+    with _resting_lock:
+        _resting.clear()
 
 
 def _is_timeout(exc: Exception) -> bool:
@@ -259,8 +283,12 @@ class GeminiProvider(OCRProvider):
                                    "outcome": "timeout" if _is_timeout(exc) else _brief(exc, 80)})
                 if _is_timeout(exc):
                     # A model that let one request hang will most likely hang
-                    # the next: go to the fallback now, not after another wait.
+                    # the next: go to the fallback now, not after another wait,
+                    # and let the next scans start there too.
+                    rest_model(model)
                     raise
+                if _is_transient(exc) and not self._is_rate_limit(exc):
+                    rest_model(model)  # 503 overloaded / 500: rest it, still retried below
                 if self._is_rate_limit(exc):
                     retry_after, daily = _rate_limit_info(exc)
                     if self._key_pool is not None:
@@ -292,21 +320,21 @@ class GeminiProvider(OCRProvider):
                 kind="busy", retry_after=retry_after, daily_quota=daily,
             )
 
-        try:
-            return self._generate(self._primary, contents, config)
-        except Exception as exc:  # noqa: BLE001
-            if self._fallback and self._fallback != self._primary and _is_transient(exc):
-                try:
-                    return self._generate(self._fallback, contents, config)
-                except Exception as exc2:  # noqa: BLE001
-                    if not _is_transient(exc2):
-                        raise OCRError(
-                            f"AI request was rejected: {_brief(exc2)}", kind="rejected"
-                        ) from exc2
-                    raise busy(exc2, (exc,)) from exc2
-            if _is_transient(exc):
-                raise busy(exc) from exc
-            raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
+        order = [self._primary]
+        if self._fallback and self._fallback != self._primary:
+            order.append(self._fallback)
+        # A primary resting after a timeout or overload is tried last, not first.
+        if len(order) == 2 and model_is_resting(order[0]) and not model_is_resting(order[1]):
+            order.reverse()
+        errors: list = []
+        for model in order:
+            try:
+                return self._generate(model, contents, config)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_transient(exc):
+                    raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
+                errors.append(exc)
+        raise busy(errors[-1], tuple(errors[:-1])) from errors[-1]
 
     def classify(self, file_bytes: bytes, content_type: str) -> str:
         from google.genai import types

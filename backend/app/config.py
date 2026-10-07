@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # production with nothing logged. A timed-out request goes straight to the
     # fallback model rather than being retried on the one that hung.
     ocr_request_timeout_seconds: float = 90.0
+    # After a timeout or an overload, a model is tried last for this long, so
+    # the scans that follow start on the model that is working.
+    ocr_model_rest_seconds: float = 600.0
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
     # Requests per minute the app allows itself per key and model, so it paces
