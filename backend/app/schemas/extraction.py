@@ -315,6 +315,9 @@ class ExtractionMeta(BaseModel):
     # The AI could not say whether it is an invoice or a prescription; it was
     # read as an invoice and the reviewer is asked to check.
     type_unsure: bool = False
+    # The bill prints ONE combined "SGST/UTGST" figure. It is shown in both the
+    # SGST and the UTGST fields, as printed, and counted once in every total.
+    sgst_utgst_combined: bool = False
 
 
 class ExtractionPayload(BaseModel):

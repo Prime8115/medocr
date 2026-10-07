@@ -19,6 +19,7 @@ from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
     complete_from_the_bill,
     drop_copied_pans,
+    show_combined_utgst,
     dedupe_line_items,
     flag_invalid_gstins,
     mark_free_supplies,
@@ -321,6 +322,10 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 if filled:
                     integrity["gap_filled"] = filled
                     complete_from_the_bill(fields)
+        # A printed "SGST/UTGST" figure is shown under UTGST too - after the
+        # total GST is fixed, and flagged so every sum counts it once.
+        if show_combined_utgst(fields, hints.get("document_text") or hints.get("party_text") or ""):
+            integrity["sgst_utgst_combined"] = True
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification

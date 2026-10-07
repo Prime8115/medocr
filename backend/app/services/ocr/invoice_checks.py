@@ -519,6 +519,42 @@ def _leaf(value: str, confidence: float = 1.0) -> dict:
     return {"value": value, "confidence": confidence}
 
 
+# "SGST/UTGST", "SGST / UTGST", "UTGST/SGST": one column or line for the two.
+# No word boundary at the ends: a scan's table rules run into the heading
+# (MSV's OCR reads "—SSGST/UTGST__").
+_COMBINED_SGST_UTGST = re.compile(r"S\s*GST\s*/\s*UT\s*GST|UT\s*GST\s*/\s*S\s*GST", re.I)
+
+
+def show_combined_utgst(fields: dict, page_text: str) -> bool:
+    """Show a printed "SGST/UTGST" figure under UTGST as well as SGST.
+
+    The client's rule: a value the bill prints is shown. MSV and Abbott print
+    one combined "SGST/UTGST" figure (7,722.00 on Abbott); it was filed under
+    SGST and UTGST read 0.00. Now UTGST carries the same printed figure, on
+    the bill's totals and on each line.
+
+    It is ONE tax, printed once, so it is counted once: the caller records
+    meta.sgst_utgst_combined, and every sum of the tax heads (verify.py) then
+    leaves UTGST out. The bill's total GST is fixed before this runs.
+    Returns True when the bill prints the combined heading and a figure was shown.
+    """
+    if not _COMBINED_SGST_UTGST.search(page_text or ""):
+        return False
+    shown = False
+    invoice = fields.get("invoice")
+    if isinstance(invoice, dict) and _v(invoice.get("total_sgst_amount")):
+        leaf = invoice["total_sgst_amount"]
+        invoice["total_utgst_amount"] = {"value": leaf.get("value"), "confidence": leaf.get("confidence")}
+        shown = True
+    for item in fields.get("line_items") or []:
+        for kind in ("percent", "amount"):
+            leaf = item.get(f"sgst_{kind}")
+            if isinstance(leaf, dict) and _v(leaf):
+                item[f"utgst_{kind}"] = {"value": leaf.get("value"), "confidence": leaf.get("confidence")}
+                shown = True
+    return shown
+
+
 def drop_copied_pans(fields: dict, page_text: str) -> List[str]:
     """Blank a party's PAN that is only the middle of its GSTIN.
 

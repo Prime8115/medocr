@@ -198,11 +198,14 @@ def _check_line_tax(c: _Checks, items: List[dict]) -> None:
              describe=lambda b: f"line {b[0] + 1} {b[1].upper()}")
 
 
-def _check_line_net(c: _Checks, items: List[dict]) -> None:
+def _check_line_net(c: _Checks, items: List[dict], combined: bool = False) -> None:
+    # A bill printing one "SGST/UTGST" figure shows it under both heads; it is
+    # one tax, so it is added once.
+    heads = tuple(h for h in _HEADS if not (combined and h == "utgst"))
     bad, tested = [], 0
     for i, it in enumerate(items):
         net, taxable = _n(it.get("net_amount")), _n(it.get("amount"))
-        taxes = [_n(it.get(f"{h}_amount")) for h in _HEADS]
+        taxes = [_n(it.get(f"{h}_amount")) for h in heads]
         known = [t for t in taxes if t is not None]
         # Only a net the bill PRINTED tests anything - one we added up passes
         # by construction.
@@ -416,7 +419,7 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_head_totals(c, fields, items)
     _check_line_arithmetic(c, items)
     _check_line_tax(c, items)
-    _check_line_net(c, items)
+    _check_line_net(c, items, combined=bool(report.get("sgst_utgst_combined")))
     _check_line_discount(c, items)
     _check_price_ladder(c, items)
     _check_gst_rates(c, items)

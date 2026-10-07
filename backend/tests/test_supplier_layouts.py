@@ -456,3 +456,62 @@ def test_a_rate_printed_on_the_wrapped_line_beneath_its_tax():
     assert _v(item, "cgst_percent") == "2.5"
     assert _v(item, "cgst_amount") == "28.08"
     assert _v(item, "sgst_percent") == "2.5"
+
+
+# --- a printed "SGST/UTGST" figure is shown under UTGST, counted once ------------
+
+def _abbott_like():
+    # Abbott: one "SGST/UTGST" column, Maharashtra to Maharashtra.
+    return {
+        "supplier": {"gstin": _leaf("27AAACK3935D1ZS")},
+        "bill_to": {"gstin": _leaf("27AAECD7847H1ZC")},
+        "ship_to": {},
+        "invoice": {"total_cgst_amount": _leaf("7722.00"), "total_sgst_amount": _leaf("7722.00"),
+                    "total_amount": _leaf("144144.00"), "total_taxable_amount": _leaf("128700.00")},
+        "line_items": [{"amount": _leaf("128700.00"), "net_amount": _leaf("144144.00"),
+                        "cgst_percent": _leaf("6.00"), "cgst_amount": _leaf("7722.00"),
+                        "sgst_percent": _leaf("6.00"), "sgst_amount": _leaf("7722.00")}],
+    }
+
+
+def test_a_printed_sgst_utgst_figure_is_shown_under_utgst():
+    from app.services.ocr.invoice_checks import show_combined_utgst
+
+    f = _abbott_like()
+    complete_from_the_bill(f)  # fixes total GST from the heads first
+    assert show_combined_utgst(f, "CGST :Rs. 7,722.00\nSGST/UTGST :Rs. 7,722.00")
+    assert _v(f["invoice"], "total_utgst_amount") == "7722.00"
+    assert _v(f["line_items"][0], "utgst_amount") == "7722.00"
+    assert _v(f["line_items"][0], "utgst_percent") == "6.00"
+    assert _v(f["invoice"], "total_gst_amount") == "15444.00"  # once, not 23,166
+
+
+def test_a_heading_with_table_rules_run_into_it_is_still_found():
+    from app.services.ocr.invoice_checks import show_combined_utgst
+
+    f = _abbott_like()
+    # MSV's scan, as local OCR reads it.
+    assert show_combined_utgst(f, "7 Taxable CGST _—|~—SSGST/UTGST__|~—sTotal SC")
+    assert _v(f["invoice"], "total_utgst_amount") == "7722.00"
+
+
+def test_without_a_combined_heading_utgst_stays_as_it_was():
+    from app.services.ocr.invoice_checks import show_combined_utgst
+
+    f = _abbott_like()
+    complete_from_the_bill(f)
+    assert not show_combined_utgst(f, "CGST 7,722.00\nSGST 7,722.00")
+    assert _v(f["invoice"], "total_utgst_amount") == "0.00"
+
+
+def test_a_combined_figure_is_counted_once_in_the_line_net():
+    from app.services.ocr.invoice_checks import show_combined_utgst
+    from app.services.ocr.verify import verify_invoice
+
+    f = _abbott_like()
+    show_combined_utgst(f, "SGST / UTGST")
+    checks = {c["id"]: c for c in verify_invoice(f, {"sgst_utgst_combined": True})["checks"]}
+    assert checks["line_net"]["status"] == "pass"
+    # Without the flag the same figures would count the tax twice and fail.
+    checks = {c["id"]: c for c in verify_invoice(f, {})["checks"]}
+    assert checks["line_net"]["status"] == "fail"

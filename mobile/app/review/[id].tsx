@@ -11,6 +11,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -67,6 +68,7 @@ export default function ReviewScreen() {
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const { height: windowHeight } = useWindowDimensions();
   const [headerOpen, setHeaderOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [rawTextOpen, setRawTextOpen] = useState(false);
@@ -475,76 +477,82 @@ export default function ReviewScreen() {
           </View>
         </View>
 
-        {/* Integrity warnings are full sentences ("the invoice states 143 items
-            but 429 were read"); low-confidence warnings are dotted field paths.
-            Show the sentences — they are the ones that change a decision. */}
-        {/* The verdict: every check the bill's own figures allow, passed or
-            not. Tapping a failing verdict shows just the lines to check. */}
-        {verdict && (
-          <TouchableOpacity
-            activeOpacity={verdict.ok ? 1 : 0.7}
-            onPress={() => {
-              if (!verdict.ok) setAttentionOnly(true);
-            }}
-            style={[styles.verdict, verdict.ok ? styles.verdictOk : styles.verdictWarn]}
-          >
-            <Text style={[styles.verdictTitle, { color: verdict.ok ? colors.success : colors.warning }]}>
-              {verdict.ok ? '✓ ' : '⚠ '}
-              {verdict.title}
-            </Text>
-            <Text style={styles.verdictDetail}>{verdict.detail}</Text>
-            {filledNotes(payload).map((note) => (
-              <Text key={note} style={styles.verdictDetail}>ⓘ {note}</Text>
-            ))}
-          </TouchableOpacity>
-        )}
+        {/* The verdict, its notes and any choices scroll in a band of their own,
+            capped at a third of the screen. Abbott's bill (a failed check, notes
+            and a two-option choice) filled the whole fixed top on a phone and
+            pushed the line items off the screen - "headers only, lines missing". */}
+        <ScrollView style={{ maxHeight: Math.round(windowHeight * 0.33) }} nestedScrollEnabled>
+          {/* Integrity warnings are full sentences ("the invoice states 143 items
+              but 429 were read"); low-confidence warnings are dotted field paths.
+              Show the sentences — they are the ones that change a decision. */}
+          {/* The verdict: every check the bill's own figures allow, passed or
+              not. Tapping a failing verdict shows just the lines to check. */}
+          {verdict && (
+            <TouchableOpacity
+              activeOpacity={verdict.ok ? 1 : 0.7}
+              onPress={() => {
+                if (!verdict.ok) setAttentionOnly(true);
+              }}
+              style={[styles.verdict, verdict.ok ? styles.verdictOk : styles.verdictWarn]}
+            >
+              <Text style={[styles.verdictTitle, { color: verdict.ok ? colors.success : colors.warning }]}>
+                {verdict.ok ? '✓ ' : '⚠ '}
+                {verdict.title}
+              </Text>
+              <Text style={styles.verdictDetail}>{verdict.detail}</Text>
+              {filledNotes(payload).map((note) => (
+                <Text key={note} style={styles.verdictDetail}>ⓘ {note}</Text>
+              ))}
+            </TouchableOpacity>
+          )}
 
-        {/* Fields the bill gives two answers to: the reviewer decides. A
-            remembered decision (from this supplier's earlier bills) shows as
-            such and can still be changed. */}
-        {choices.map((choice) => (
-          <View key={choice.id} style={[styles.choiceCard, choice.chosen == null && styles.choicePending]}>
-            <Text style={styles.choiceTitle}>
-              {choice.label}
-              {choice.chosen == null ? ' - choose one' : choice.remembered ? ' · remembered for this supplier' : ''}
-            </Text>
-            <Text style={styles.choiceQuestion}>{choice.question}</Text>
-            {choice.options.map((opt, i) => {
-              const on = choice.chosen === i;
+          {/* Fields the bill gives two answers to: the reviewer decides. A
+              remembered decision (from this supplier's earlier bills) shows as
+              such and can still be changed. */}
+          {choices.map((choice) => (
+            <View key={choice.id} style={[styles.choiceCard, choice.chosen == null && styles.choicePending]}>
+              <Text style={styles.choiceTitle}>
+                {choice.label}
+                {choice.chosen == null ? ' - choose one' : choice.remembered ? ' · remembered for this supplier' : ''}
+              </Text>
+              <Text style={styles.choiceQuestion}>{choice.question}</Text>
+              {choice.options.map((opt, i) => {
+                const on = choice.chosen === i;
+                return (
+                  <TouchableOpacity
+                    key={opt.label}
+                    style={[styles.choiceOption, on && styles.choiceOptionOn]}
+                    onPress={() => pick(choice, i)}
+                    disabled={busy !== null}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: on }}
+                  >
+                    <Text style={styles.choiceOptionLabel}>
+                      {on ? '● ' : '○ '}
+                      {opt.label}
+                    </Text>
+                    <Text style={styles.choiceOptionValue}>{optionText(opt) || 'blank on the bill'}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ))}
+
+          {!verdict && warnings.length > 0 &&
+            (() => {
+              const sentences = warnings.filter((w) => w.includes(' ')).slice(0, 2);
+              const shown = sentences.length > 0 ? sentences : [t('lowConfidence')];
               return (
-                <TouchableOpacity
-                  key={opt.label}
-                  style={[styles.choiceOption, on && styles.choiceOptionOn]}
-                  onPress={() => pick(choice, i)}
-                  disabled={busy !== null}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: on }}
-                >
-                  <Text style={styles.choiceOptionLabel}>
-                    {on ? '● ' : '○ '}
-                    {opt.label}
-                  </Text>
-                  <Text style={styles.choiceOptionValue}>{optionText(opt) || 'blank on the bill'}</Text>
-                </TouchableOpacity>
+                <View style={styles.warnBanner}>
+                  {shown.map((w) => (
+                    <Text key={w} style={styles.warnText}>
+                      {w}
+                    </Text>
+                  ))}
+                </View>
               );
-            })}
-          </View>
-        ))}
-
-        {!verdict && warnings.length > 0 &&
-          (() => {
-            const sentences = warnings.filter((w) => w.includes(' ')).slice(0, 2);
-            const shown = sentences.length > 0 ? sentences : [t('lowConfidence')];
-            return (
-              <View style={styles.warnBanner}>
-                {shown.map((w) => (
-                  <Text key={w} style={styles.warnText}>
-                    {w}
-                  </Text>
-                ))}
-              </View>
-            );
-          })()}
+            })()}
+        </ScrollView>
 
         {/* In table mode the supplier/invoice fields live behind this line, so the
             table gets the full height of the screen. */}
