@@ -557,11 +557,16 @@ def show_combined_utgst(fields: dict, page_text: str) -> bool:
         invoice["total_utgst_amount"] = {"value": leaf.get("value"), "confidence": leaf.get("confidence")}
         shown = True
     for item in fields.get("line_items") or []:
-        for kind in ("percent", "amount"):
-            leaf = item.get(f"sgst_{kind}")
-            if isinstance(leaf, dict) and _v(leaf):
-                item[f"utgst_{kind}"] = {"value": leaf.get("value"), "confidence": leaf.get("confidence")}
-                shown = True
+        # The line's SGST pair is mirrored whole - a blank included. Copying the
+        # rate alone left MSV's lines, which print no tax amounts, showing
+        # "UTGST 2.5%, 0.00" - a pair no line can have.
+        sgst = {kind: item.get(f"sgst_{kind}") for kind in ("percent", "amount")}
+        if not any(isinstance(leaf, dict) and _v(leaf) for leaf in sgst.values()):
+            continue
+        for kind, leaf in sgst.items():
+            item[f"utgst_{kind}"] = ({"value": leaf.get("value"), "confidence": leaf.get("confidence")}
+                                     if isinstance(leaf, dict) else {"value": None, "confidence": None})
+        shown = True
     return shown
 
 
