@@ -186,13 +186,22 @@ def _resplit_unit(data: bytes, content_type: str):
     return [(c, "application/pdf") for c in split_pdf(data, 1)]
 
 
-def _process_unit(provider, data, content_type, doc_type):
+def _process_unit(provider, data, content_type, doc_type, n_pages=1):
     """Process one unit; on unusable output re-split to single pages.
     Returns (merged_fields_or_None, failed_pages, last_error_or_None).
 
     The error comes back rather than being dropped: when nothing could be read,
-    it is the only explanation the pharmacist - and we - will get.
+    it is the only explanation the pharmacist - and we - will get. Never raises:
+    one unit's failure must not throw away the units that were read.
     """
+    try:
+        return _read_unit(provider, data, content_type, doc_type, n_pages)
+    except Exception as exc:  # noqa: BLE001 - anything unforeseen costs this unit only
+        log.exception("extraction crashed on a %d-byte %s unit", len(data), content_type)
+        return None, n_pages, exc
+
+
+def _read_unit(provider, data, content_type, doc_type, n_pages):
     try:
         return _extract_one(provider, data, content_type, doc_type), 0, None
     except (OCRError, ValueError) as exc:
@@ -200,15 +209,15 @@ def _process_unit(provider, data, content_type, doc_type):
         # Smaller pieces fix a truncated or malformed answer, nothing else. An
         # overloaded AI or a refused request would only fail once per page.
         if getattr(exc, "kind", None) in ("busy", "rejected"):
-            return None, 1, exc
+            return None, n_pages, exc
         pages = _resplit_unit(data, content_type)
         if len(pages) <= 1:
-            return None, 1, exc
+            return None, n_pages, exc
         merged, failed, last = None, 0, exc
         for pdata, pct in pages:
             try:
                 merged = _merge_fields(doc_type, merged, _extract_one(provider, pdata, pct, doc_type))
-            except (OCRError, ValueError) as page_exc:
+            except Exception as page_exc:  # noqa: BLE001 - one page never sinks the rest
                 log.warning("extraction failed for a single page: %s", page_exc)
                 failed += 1
                 last = page_exc
@@ -243,7 +252,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     # Fast path: a single unit — run inline and surface errors.
     if len(units) == 1:
         data, ct, _n = units[0]
-        fields, failed, error = _process_unit(provider, data, ct, doc_type)
+        fields, failed, error = _process_unit(provider, data, ct, doc_type, _n)
         if fields is None:
             raise _unreadable("Could not read the document", error)
         return fields, failed, total_pages
@@ -253,12 +262,15 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     done_pages = 0
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_process_unit, provider, data, ct, doc_type): (i, n)
+            pool.submit(_process_unit, provider, data, ct, doc_type, n): (i, n)
             for i, (data, ct, n) in enumerate(units)
         }
         for fut in cf.as_completed(futures):
             i, n = futures[fut]
-            results[i] = fut.result()
+            try:
+                results[i] = fut.result()
+            except Exception as exc:  # noqa: BLE001 - _process_unit never raises; belt and braces
+                results[i] = (None, n, exc)
             done_pages = min(done_pages + n, total_pages)
             if on_progress:
                 try:
@@ -471,7 +483,8 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
                     hints = parsed.pop("_hints", {})
                     fields = validate_fields("invoice", parsed)
                     result = _finalize(
-                        "invoice", fields, "pdf_parser", page_count(file_bytes), hints=hints
+                        "invoice", fields, "pdf_parser", page_count(file_bytes), hints=hints,
+                        extra_warnings=_supplier_licences(fields, file_bytes),
                     )
                     # Safety net for the page-skipping: if we judged this file to
                     # hold repeated copies and the lines then do NOT add up to the
@@ -561,6 +574,62 @@ def _second_read(document_id, unreconciled, file_bytes, content_type, doc_type, 
     return unreconciled
 
 
+def _supplier_licences(fields: dict, file_bytes: bytes) -> List[str]:
+    """The supplier's own drug licences, from beside its GSTIN on a digital PDF
+    (licences.py). Never fails the reading."""
+    from app.services.ocr.licences import apply_supplier_licences
+
+    return _safely("the supplier licence check", lambda: apply_supplier_licences(fields, file_bytes), [])
+
+
+def _safely(what: str, step, default=None):
+    """Run a check that follows the AI's reading. A check that crashes is a
+    check that could not run - never a reason to lose the reading itself."""
+    try:
+        return step()
+    except Exception:  # noqa: BLE001
+        log.exception("%s could not run; the reading is kept", what)
+        return default
+
+
+CHECKS_FAILED_WARNING = ("The checks could not run on this reading. Please check every value "
+                         "against the invoice before approving.")
+
+
+def _finalize_safely(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None, extra_warnings=None):
+    """_finalize, or - if the checks themselves crash - the reading as read,
+    with one failed check saying nothing was verified. The AI's reading is
+    never thrown away because a check had a bug, and never shown as checked
+    when it was not."""
+    import copy
+
+    original = copy.deepcopy(fields)
+    try:
+        return _finalize(resolved_type, fields, pipeline, pages, failed_pages,
+                         hints=hints, extra_warnings=extra_warnings)
+    except Exception:  # noqa: BLE001
+        log.exception("the checks crashed on a %s reading; keeping it, marked unchecked", resolved_type)
+    fields = original
+    warnings = [CHECKS_FAILED_WARNING] + list(extra_warnings or [])
+    if failed_pages:
+        warnings.insert(0, f"{failed_pages} of {pages} page(s) could not be read; review may be incomplete.")
+    meta = ExtractionMeta(
+        overall_confidence=_overall_confidence(fields), language="en", pipeline=pipeline,
+        processed_at=time.time(), warnings=warnings,
+    ).model_dump()
+    if resolved_type == "invoice":
+        meta["verification"] = {
+            "checks": [{"id": "checks_ran", "label": "Every check ran", "status": "fail",
+                        "message": CHECKS_FAILED_WARNING, "fields": []}],
+            "passed": 0, "failed": 1, "skipped": 0, "verdict": "needs_check", "acknowledged": [],
+        }
+    list_key = _LIST_KEY.get(resolved_type)
+    meta["pages"] = pages
+    meta["item_count"] = len(fields.get(list_key, []) or []) if list_key else 0
+    meta["pages_failed"] = failed_pages
+    return {"schema_version": SCHEMA_VERSION, "doc_type": resolved_type, "fields": fields, "meta": meta}
+
+
 def _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress):
     # --- Tier 2: AI vision/text pipeline (images, scanned PDFs, non-invoice PDFs) ---
     provider = get_provider()
@@ -606,11 +675,13 @@ def _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress):
         fields, failed_pages, total_pages = _extract_chunked(
             provider, file_bytes, content_type, resolved_type, on_progress=on_progress
         )
-        second_fields = second.result() if second else None
-    conflict_warnings = chunk_conflict_warnings(fields)
+        second_fields = _safely("the second reading", lambda: second.result() if second else None)
+    conflict_warnings = _safely("chunk merge notes", lambda: chunk_conflict_warnings(fields), [])
+    fields.pop(_CONFLICTS, None)
     hints = {}
     if second_fields:
-        hints["cross_read"] = cross_read.compare(fields, second_fields)
+        hints["cross_read"] = _safely("the cross-read", lambda: cross_read.compare(fields, second_fields),
+                                      [dict(cross_read.SKIPPED)])
     elif is_scan:
         # Said, not left out: a check that silently vanishes reads as a pass.
         hints["cross_read"] = [dict(cross_read.SKIPPED)]
@@ -621,8 +692,10 @@ def _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress):
         # so a GSTIN the AI dropped would otherwise pass unnoticed.
         from app.services.ocr.party_check import cross_check, first_page_text
 
-        hints["party_text"] = first_page_text(file_bytes, content_type)
-        party_warnings = cross_check(fields, hints["party_text"])
+        hints["party_text"] = _safely("the page text", lambda: first_page_text(file_bytes, content_type), "")
+        party_warnings = _safely("the party check", lambda: cross_check(fields, hints["party_text"]), [])
+    if resolved_type == "invoice" and content_type == "application/pdf" and not is_scan:
+        party_warnings = party_warnings + _supplier_licences(fields, file_bytes)
     if is_scan and settings.ocr_ai_review:
         # A second AI checks the reading against the page, value by value, as
         # a reviewer would (ai_review.py). After party_check, so a GSTIN filled
@@ -631,8 +704,8 @@ def _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress):
 
         hints.setdefault("cross_read", []).append(
             ai_review.review(provider, fields, file_bytes, content_type))
-    result = _finalize(resolved_type, fields, provider.name, total_pages, failed_pages,
-                       hints=hints, extra_warnings=conflict_warnings + party_warnings)
+    result = _finalize_safely(resolved_type, fields, provider.name, total_pages, failed_pages,
+                              hints=hints, extra_warnings=conflict_warnings + party_warnings)
     calls = getattr(provider, "calls", None)
     calls = list(calls) if isinstance(calls, list) else []
     if calls:

@@ -342,6 +342,17 @@ def validate_fields(doc_type: str, fields: dict) -> dict:
     model = FIELDS_MODEL.get(doc_type)
     if model is None:
         raise ValueError(f"Unknown doc_type: {doc_type!r}")
+    if isinstance(fields, list):
+        # The AI sometimes wraps its one answer in a list. A list of several
+        # answers is not one reading: refused, so the unit is re-read page by
+        # page rather than guessed at.
+        objects = [f for f in fields if isinstance(f, dict)]
+        if len(fields) == 1 and len(objects) == 1:
+            fields = objects[0]
+        else:
+            raise ValueError(f"Invalid {doc_type} fields: a list of {len(fields)} item(s), not one object")
+    if fields is not None and not isinstance(fields, dict):
+        raise ValueError(f"Invalid {doc_type} fields: {type(fields).__name__}, not an object")
     try:
         return model(**(fields or {})).model_dump()
     except ValidationError as exc:

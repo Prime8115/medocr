@@ -113,6 +113,13 @@ class Settings(BaseSettings):
     # A digital invoice whose table reading does not add up to its total is
     # read again by the AI, and the AI's reading kept if IT adds up.
     ocr_second_read_unreconciled: bool = True
+    # Longest one scan may be read for (not counting time waiting for a busy
+    # AI). Past it, the scan goes to manual entry with its text.
+    ocr_job_deadline_seconds: float = 1200.0
+    # How often the worker looks for documents left queued with no job, and
+    # how old such a document must be (so an upload in flight is never caught).
+    ocr_orphan_sweep_seconds: float = 60.0
+    ocr_orphan_min_age_seconds: float = 120.0
     ocr_ai_review_max_pages: int = 6
     ocr_ai_review_max_lines: int = 60
     # Ask the AI, from the page text, for fields a reading left blank - only

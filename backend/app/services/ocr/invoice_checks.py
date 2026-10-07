@@ -604,6 +604,67 @@ def drop_copied_pans(fields: dict, page_text: str) -> List[str]:
     return blanked
 
 
+# A line's tax worked out from its printed rate rather than read: held below
+# full confidence, the same as the table reader holds it (invoice_parser.py).
+_DERIVED_CONFIDENCE = 0.85
+
+
+def _lines_are_the_taxable_value(fields: dict) -> bool:
+    """Whether each line's amount is its taxable value - no discount taken off
+    the whole bill at its foot. MSV takes 10% off below the lines, so a line's
+    tax there is NOT its amount at the rate."""
+    invoice = fields.get("invoice") or {}
+    items = fields.get("line_items") or []
+    amounts = [_num(it.get("amount")) for it in items]
+    if not items or any(a is None for a in amounts):
+        return False
+    taxable = _num(invoice.get("total_taxable_amount"))
+    if taxable is not None:
+        return abs(sum(amounts) - taxable) <= total_tolerance(taxable, len(items))
+    discount = _num(invoice.get("total_discount_amount"))
+    return not discount
+
+
+def _complete_line_tax(item: dict, i: int, present: List[str], amounts_too: bool = True) -> List[str]:
+    """A line's tax heads and net amount, from its printed GST rate.
+
+    V. N. Pharma prints one "IGST %" column (18.00) and the tax only as a bill
+    total; the AI read the rate as the line's GST % and left IGST % and amount
+    and the net amount blank. What the bill fixes:
+      * the rate splits by law - all IGST on an inter-state sale, half CGST and
+        half SGST (or UTGST) within a state;
+      * each head's amount is the line's taxable value at that rate;
+      * the net amount is the taxable value plus its tax.
+    Only blanks are filled. The head_totals check then holds the lines' tax
+    against the bill's printed totals, so a misread rate is still caught.
+    """
+    filled: List[str] = []
+    rate_leaf = item.get("gst_percent") or {}
+    rate = _num(rate_leaf)
+    if rate is not None and rate >= 0:
+        share = rate if present == ["igst"] else rate / 2
+        for head in present:
+            key = f"{head}_percent"
+            if not _v(item.get(key)):
+                item[key] = _leaf(f"{share:.2f}", rate_leaf.get("confidence") or 1.0)
+                filled.append(f"line_items[{i}].{key}")
+    taxable = _num(item.get("amount"))
+    if taxable is None or not amounts_too:
+        return filled
+    for head in present:
+        pct, key = _num(item.get(f"{head}_percent")), f"{head}_amount"
+        if pct is not None and not _v(item.get(key)):
+            item[key] = _leaf(_fmt(round(taxable * pct / 100.0 + 1e-9, 2)), _DERIVED_CONFIDENCE)
+            filled.append(f"line_items[{i}].{key}")
+    if not _v(item.get("net_amount")):
+        taxes = [item.get(f"{head}_amount") for head in present]
+        if all(_num(t) is not None for t in taxes):
+            sure = min([(t or {}).get("confidence") or 1.0 for t in taxes] or [1.0])
+            item["net_amount"] = _leaf(_fmt(taxable + sum(_num(t) for t in taxes)), sure)
+            filled.append(f"line_items[{i}].net_amount")
+    return filled
+
+
 def complete_from_the_bill(fields: dict) -> List[str]:
     """Fill fields that the bill states implicitly, for EITHER reader.
 
@@ -644,6 +705,10 @@ def complete_from_the_bill(fields: dict) -> List[str]:
                 if not _v(invoice.get(key)):
                     invoice[key] = _leaf("0.00")
                     filled.append(f"invoice.{key}")
+        # Each line's own tax, where the bill fixes it without printing it.
+        amounts_too = _lines_are_the_taxable_value(fields)
+        for i, item in enumerate(fields.get("line_items") or []):
+            filled += _complete_line_tax(item, i, present, amounts_too)
         # ...and on each line whose applicable heads were read, so its UTGST %
         # and amount read 0 like the bill's total does, rather than blank.
         for i, item in enumerate(fields.get("line_items") or []):
