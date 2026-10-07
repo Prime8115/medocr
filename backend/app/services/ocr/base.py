@@ -1,5 +1,6 @@
 """OCR provider interface."""
 from abc import ABC, abstractmethod
+from typing import Optional
 
 
 class OCRError(Exception):
@@ -38,6 +39,12 @@ class OCRProvider(ABC):
         """Answer a plain-text prompt with a JSON object. Used to fill specific
         gaps in a reading (gap_fill.py). Providers that cannot, return {}."""
         return {}
+
+    def review_json(self, prompt: str, file_bytes: bytes, content_type: str) -> Optional[dict]:
+        """Answer a prompt about the document itself (the page image) with a
+        JSON object, preferably from a different model than the one that read
+        it. Used by the AI reviewer (ai_review.py). None where unsupported."""
+        return None
 
     @abstractmethod
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:

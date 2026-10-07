@@ -106,6 +106,15 @@ class Settings(BaseSettings):
     # AI's reading, field by field (services/ocr/cross_read.py). A checker,
     # not a reader - on wherever Tesseract is installed.
     ocr_cross_read: bool = True
+    # A second AI, acting as a reviewer: a different model is shown the scan
+    # and every value read, and says which it sees differently
+    # (services/ocr/ai_review.py). Scans and photos only - one extra AI call.
+    ocr_ai_review: bool = True
+    # A digital invoice whose table reading does not add up to its total is
+    # read again by the AI, and the AI's reading kept if IT adds up.
+    ocr_second_read_unreconciled: bool = True
+    ocr_ai_review_max_pages: int = 6
+    ocr_ai_review_max_lines: int = 60
     # Ask the AI, from the page text, for fields a reading left blank - only
     # when one is printed but unread or essential, and only keeping answers
     # printed on the page word for word (services/ocr/gap_fill.py).

@@ -90,6 +90,8 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
                     "total_igst_amount", "total_utgst_amount"):
             header[key] = _v(inv.get(key))
         header["final_amount"] = _v(inv.get("total_amount"))
+        # A credit note or challan must not be imported as a purchase unseen.
+        header["document_kind"] = (payload.get("meta") or {}).get("document_kind") or ""
         invoice_no = _v(inv.get("invoice_no"))
         invoice_date = _v(inv.get("invoice_date"))
         for item in data.get("line_items", []) or []:
@@ -394,6 +396,12 @@ def render_tally_xml(payload: dict, config: dict) -> str:
     invoice_no = _v(inv.get("invoice_no"))
     tconf = config.get("tally", {}) or {}
     purchase_ledger = tconf.get("purchase_ledger", "Purchase")
+    kind = (payload.get("meta") or {}).get("document_kind")
+    narration = ""
+    if kind and kind != "invoice":
+        # Said on the voucher, so a credit note is not booked as a purchase unseen.
+        narration = (f"\n          <NARRATION>Supplier document is a {escape(kind.replace('_', ' '))}, "
+                     "not a tax invoice - check before posting.</NARRATION>")
 
     items_xml = []
     for item in data.get("line_items", []) or []:
@@ -421,7 +429,7 @@ def render_tally_xml(payload: dict, config: dict) -> str:
           <PARTYLEDGERNAME>{escape(supplier)}</PARTYLEDGERNAME>
           <VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>
           <REFERENCE>{escape(invoice_no)}</REFERENCE>
-          <PURCHASELEDGER>{escape(purchase_ledger)}</PURCHASELEDGER>
+          <PURCHASELEDGER>{escape(purchase_ledger)}</PURCHASELEDGER>{narration}
 {chr(10).join(items_xml)}
         </VOUCHER>
       </TALLYMESSAGE>

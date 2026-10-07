@@ -360,3 +360,54 @@ def test_when_both_are_resting_the_primary_still_goes_first(monkeypatch):
     p = _provider(monkeypatch, [ok], retries=2)
     p.extract(b"img", "image/jpeg", "prescription")
     assert p._client.models.calls == ["gemini-2.5-flash"]
+
+
+def test_the_reviewer_asks_the_model_that_did_not_read(monkeypatch):
+    p = _provider(monkeypatch, [json.dumps({"supplier": {}}), json.dumps({"match": ["H1"]})])
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    answer = p.review_json("check", b"img", "image/jpeg")
+    assert answer == {"match": ["H1"]}
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_the_reviewer_falls_back_to_the_reader_when_the_other_is_busy(monkeypatch):
+    p = _provider(monkeypatch, [json.dumps({"supplier": {}}), Overloaded("503"), Overloaded("503"),
+                                Overloaded("503"), json.dumps({"match": []})])
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    assert p.review_json("check", b"img", "image/jpeg") == {"match": []}
+    assert p._client.models.calls[-1] == "gemini-2.5-flash"
+
+
+def test_a_reviewer_answer_that_is_not_an_object_is_none(monkeypatch):
+    p = _provider(monkeypatch, [json.dumps(["H1"])])
+    assert p.review_json("check", b"img", "image/jpeg") is None
+
+
+def test_each_call_records_which_key_served_it_never_the_key(monkeypatch):
+    from app.services.ocr.key_pool import KeyPool
+
+    clients = {}
+
+    def factory(key):
+        clients[key] = FakeClient([json.dumps({"supplier": {}})] * 4)
+        return clients[key]
+
+    monkeypatch.setattr(settings, "ocr_model", "gemini-2.5-flash")
+    monkeypatch.setattr(settings, "ocr_fallback_model", "gemini-2.0-flash")
+    pool = KeyPool(["key-one", "key-two"], client_factory=factory)
+    p = gem.GeminiProvider(sleep=lambda _s: None, key_pool=pool)
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    p.extract(b"%PDF", "application/pdf", "invoice")
+    assert [c["key"] for c in p.calls] == [1, 2]          # the keys take turns
+    assert "key-one" not in json.dumps(p.calls)
+
+
+def test_health_says_how_many_keys_are_loaded(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.setattr(settings, "gemini_api_keys", "a,b")
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    body = TestClient(app).get("/health").json()
+    assert body == {"status": "ok", "ai_keys": 2}

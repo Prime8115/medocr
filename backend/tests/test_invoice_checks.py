@@ -108,9 +108,23 @@ def test_reconcile_passes_when_lines_match_the_printed_total():
     assert report["warnings"] == []
 
 
-def test_reconcile_allows_roundoff_and_freight():
-    report = reconcile_invoice(_fields([_item("A")], "202.00"))
+def test_reconcile_allows_roundoff():
+    report = reconcile_invoice(_fields([_item("A")], "201.00"))
     assert report["total_reconciles"] is True
+
+
+def test_reconcile_flags_a_gap_beyond_roundoff():
+    """2,000 rupees misread on a 1-lakh bill used to pass under a 2% margin."""
+    report = reconcile_invoice(_fields([_item("A", amount="98000.00")], "100000.00"))
+    assert report["total_reconciles"] is False
+    assert any("short by 2,000.00" in w or "short by 2000.00" in w for w in report["warnings"])
+
+
+def test_reconcile_tolerance_grows_only_with_round_off():
+    from app.services.ocr.invoice_checks import total_tolerance
+    assert total_tolerance(200.0, 1) == 1.55
+    assert total_tolerance(100000.0, 2) == 100.0   # 0.1% of a large bill
+    assert total_tolerance(2000.0, 40) == 3.5      # each line's GST rounded to the paisa
 
 
 def test_reconcile_warns_when_lines_do_not_add_up():

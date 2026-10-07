@@ -251,6 +251,12 @@ class GeminiProvider(OCRProvider):
         msg = str(exc).lower()
         return "429" in msg or "resource_exhausted" in msg or "rate limit" in msg
 
+    def _key_number(self, key: str) -> int:
+        """1-based position of `key` in the pool; 1 for a single key."""
+        if self._key_pool is not None and key in self._key_pool.keys:
+            return self._key_pool.keys.index(key) + 1
+        return 1
+
     def _generate(self, model: str, contents, config=None):
         """Attempts against one model: through the shared key pool (which rotates
         keys, paces requests and remembers cooldowns), else a single client with
@@ -269,17 +275,21 @@ class GeminiProvider(OCRProvider):
                 client = make_client(settings.gemini_api_key)
                 key = "default"
 
+            # Which key served the call, by position in GEMINI_API_KEYS - never
+            # the key itself - so the meta shows the keys taking turns.
+            key_no = self._key_number(key)
             started = time.monotonic()
             try:
                 resp = client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
-                self.calls.append({"model": model, "seconds": round(time.monotonic() - started, 1),
-                                   "outcome": "ok"})
+                self.calls.append({"model": model, "key": key_no,
+                                   "seconds": round(time.monotonic() - started, 1), "outcome": "ok"})
                 return resp
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                self.calls.append({"model": model, "seconds": round(time.monotonic() - started, 1),
+                self.calls.append({"model": model, "key": key_no,
+                                   "seconds": round(time.monotonic() - started, 1),
                                    "outcome": "timeout" if _is_timeout(exc) else _brief(exc, 80)})
                 if _is_timeout(exc):
                     # A model that let one request hang will most likely hang
@@ -304,7 +314,7 @@ class GeminiProvider(OCRProvider):
                 self._sleep(min(60.0, self._base_backoff * (2 ** (attempt - 1))))
         raise last_exc  # pragma: no cover
 
-    def _generate_with_fallback(self, contents, config=None):
+    def _generate_with_fallback(self, contents, config=None, first: Optional[str] = None):
         """Try the primary model (with retries); on persistent transient failure,
         try the fallback model, which has a quota of its own. Non-transient errors
         propagate. A busy outcome says how long to wait, and whether it is the
@@ -323,7 +333,11 @@ class GeminiProvider(OCRProvider):
         order = [self._primary]
         if self._fallback and self._fallback != self._primary:
             order.append(self._fallback)
-        # A primary resting after a timeout or overload is tried last, not first.
+        # A caller may ask for a particular model first - the reviewer wants the
+        # one that did NOT read the document.
+        if first and len(order) == 2 and order[1] == first:
+            order.reverse()
+        # A model resting after a timeout or overload is tried last, not first.
         if len(order) == 2 and model_is_resting(order[0]) and not model_is_resting(order[1]):
             order.reverse()
         errors: list = []
@@ -364,6 +378,30 @@ class GeminiProvider(OCRProvider):
         except json.JSONDecodeError as exc:
             raise OCRError(f"Model returned unreadable output: {exc}", kind="output") from exc
         return out if isinstance(out, dict) else {}
+
+    def review_json(self, prompt: str, file_bytes: bytes, content_type: str) -> Optional[dict]:
+        """The reviewer's answer about the page itself, from the model that did
+        not read it where there are two - two models agreeing is worth more than
+        one agreeing with itself."""
+        from google.genai import types
+
+        read_by = next((c["model"] for c in reversed(self.calls) if c.get("outcome") == "ok"), None)
+        other = next((m for m in (self._primary, self._fallback) if m and m != read_by), None)
+        resp = self._generate_with_fallback(
+            self._content_parts(prompt, file_bytes, content_type),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                max_output_tokens=settings.ocr_max_output_tokens,
+                temperature=settings.ocr_temperature,
+            ),
+            first=other,
+        )
+        raw = (getattr(resp, "text", "") or "").strip()
+        try:
+            out = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise OCRError(f"Model returned unreadable output: {exc}", kind="output") from exc
+        return out if isinstance(out, dict) else None
 
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
         prompt = EXTRACTION_PROMPT.get(doc_type)

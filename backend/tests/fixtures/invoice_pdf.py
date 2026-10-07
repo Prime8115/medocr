@@ -51,7 +51,7 @@ def rows_total(n_items: int, with_rate: bool = False) -> float:
 
 
 def _story(copy_label: Optional[str], n_items: int, header: Sequence[str],
-           with_rate: bool, total: float, stated_count: bool):
+           with_rate: bool, total: float, stated_count: bool, title: str = "TAX INVOICE"):
     """Flowables for one printed copy of the invoice."""
     small = ParagraphStyle("small", fontName="Helvetica", fontSize=7, leading=9)
     bold = ParagraphStyle("bold", fontName="Helvetica-Bold", fontSize=9, leading=12)
@@ -59,7 +59,7 @@ def _story(copy_label: Optional[str], n_items: int, header: Sequence[str],
     out = []
     if copy_label:
         out.append(Paragraph(copy_label, bold))
-    out.append(Paragraph("Zydus Healthcare Limited &nbsp; TAX INVOICE", bold))
+    out.append(Paragraph(f"Zydus Healthcare Limited &nbsp; {title}", bold))
     out.append(Paragraph("GSTIN: 27AAACG1895Q1ZY", small))
     out.append(Paragraph("Invoice No: 2299707688 Dt: 30.06.2025", small))
     out.append(Spacer(1, 8))
@@ -82,7 +82,8 @@ def _story(copy_label: Optional[str], n_items: int, header: Sequence[str],
 
 
 def build_invoice_pdf(n_items: int = 12, copies: int = 1, with_rate: bool = False,
-                      stated_count: bool = True, label_copies: bool = True) -> bytes:
+                      stated_count: bool = True, label_copies: bool = True,
+                      title: str = "TAX INVOICE") -> bytes:
     """A digital invoice PDF.
 
     `copies` > 1 reproduces the GST habit of printing the same invoice as
@@ -102,7 +103,7 @@ def build_invoice_pdf(n_items: int = 12, copies: int = 1, with_rate: bool = Fals
     story = []
     for c in range(copies):
         label = labels[c] if (copies > 1 and label_copies) else None
-        story.extend(_story(label, n_items, header, with_rate, total, stated_count))
+        story.extend(_story(label, n_items, header, with_rate, total, stated_count, title))
         if c < copies - 1:
             from reportlab.platypus import PageBreak
 

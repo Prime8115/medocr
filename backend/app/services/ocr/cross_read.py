@@ -105,7 +105,11 @@ def compare(ai: dict, second: dict) -> List[dict]:
     ai_items = ai.get("line_items") or []
     tx_items = second.get("line_items") or []
     if ai_items and tx_items:
-        if len(ai_items) == len(tx_items):
+        # A second reading of only the first pages of a long scan holds only
+        # their lines: its count says nothing about the whole bill.
+        if second.get("_partial"):
+            pass
+        elif len(ai_items) == len(tx_items):
             agree += 1
         elif len(tx_items) > 1:
             disagree.append(f"Line count: AI read {len(ai_items)}, second reading {len(tx_items)}")
@@ -174,6 +178,10 @@ def second_reading(data: bytes, content_type: str) -> Optional[dict]:
         return None
     if reading:
         _trustworthy(reading, (reading.get("_hints") or {}).get("document_text") or "")
+        if content_type == "application/pdf":
+            from app.services.ocr.pdf_utils import page_count
+
+            reading["_partial"] = page_count(data) > MAX_PAGES
     return reading
 
 

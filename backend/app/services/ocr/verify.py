@@ -428,6 +428,11 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_irn(c, fields)
     _check_gstins(c, fields)
     _check_supplier_pan(c, fields)
+    from app.services.ocr.document_kind import check as kind_check
+
+    kind = kind_check(report.get("document_kind"))
+    if kind:
+        c.items.append(kind)
     # Whatever the bill prints that we did not read (missed_fields.py).
     from app.services.ocr.missed_fields import missed_check
 
@@ -483,6 +488,10 @@ def open_checks(verification: Optional[dict]) -> List[Dict[str, str]]:
     ]
 
 
+# Checks made from the page itself, which an edit cannot re-run: carried over.
+_CARRIED_CHECKS = ("cross_read", "ai_review")
+
+
 def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     """The document's meta, re-checked after a reviewer's edit.
 
@@ -507,7 +516,7 @@ def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     old_fields = (old_payload or {}).get("fields") or {}
     carried = []
     for check in ((meta.get("verification") or {}).get("checks") or []):
-        if check.get("id") != "cross_read":
+        if check.get("id") not in _CARRIED_CHECKS:
             continue
         if check["status"] == "fail":
             changed = [p for p in check.get("fields") or []

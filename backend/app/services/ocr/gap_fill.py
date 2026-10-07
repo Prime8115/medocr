@@ -72,6 +72,9 @@ def _squash(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip().lower()
 
 
+_MONEY_TOKEN = re.compile(r"(?<![\d.])\d[\d,]*(?:\.\d+)?(?![\d])")
+
+
 def _acceptable(path: str, value: str, page: str, fields: dict) -> bool:
     """On the page word for word, and the right shape for its field."""
     kind = _ASKABLE[path]
@@ -79,7 +82,11 @@ def _acceptable(path: str, value: str, page: str, fields: dict) -> bool:
         digits = value.replace(",", "")
         if not re.fullmatch(r"\d+(?:\.\d{1,2})?", digits):
             return False
-        return digits in page.replace(",", "")
+        # A whole figure on the page, not a run of digits inside one: "100"
+        # must not be accepted because the page prints 1,000.00.
+        wanted_amount = float(digits)
+        return any(abs(float(tok.replace(",", "")) - wanted_amount) < 0.005
+                   for tok in _MONEY_TOKEN.findall(page))
     if kind == "irn":
         # Printed wrapped over lines - compare with the line breaks taken out.
         return (bool(re.fullmatch(r"[A-Fa-f0-9]{64}", value))
