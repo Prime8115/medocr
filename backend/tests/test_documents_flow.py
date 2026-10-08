@@ -306,7 +306,7 @@ def test_retrying_an_auto_detected_scan_detects_its_type_again(client, monkeypat
 
     seen = []
 
-    def fail_then_record(document_id, data, content_type, doc_type, on_progress=None):
+    def fail_then_record(document_id, data, content_type, doc_type, on_progress=None, **_k):
         seen.append(doc_type)
         if len(seen) == 1:
             raise OCRError("Could not read the document.")
@@ -330,7 +330,7 @@ def test_retrying_keeps_a_type_the_user_chose(client, monkeypatch):
 
     seen = []
 
-    def fail_then_record(document_id, data, content_type, doc_type, on_progress=None):
+    def fail_then_record(document_id, data, content_type, doc_type, on_progress=None, **_k):
         seen.append(doc_type)
         if len(seen) == 1:
             raise OCRError("Could not read the document.")

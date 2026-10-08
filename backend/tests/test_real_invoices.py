@@ -218,6 +218,11 @@ def test_extraction_is_fast_enough_to_wait_for(case):
 
     data = (HERE / case["file"]).read_bytes()
     budget = _BUDGET_SECONDS.get(case["pages"], 8.0)
+    if os.environ.get("CI"):
+        # Measured on a developer machine; a shared CI runner is slower. The
+        # regression this guards (re-reading every page: 11s -> 33s) still
+        # fails by a wide margin at three times the budget.
+        budget *= 3
 
     started = time.perf_counter()
     process_document("perf", data, "application/pdf", doc_type="invoice")

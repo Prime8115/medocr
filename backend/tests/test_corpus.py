@@ -39,13 +39,16 @@ _MONEY = {"invoice.total_amount", "invoice.total_taxable_amount", "invoice.total
           "gst_percent", "net_amount", "cgst_amount", "sgst_amount", "igst_amount"}
 
 
-def _entries():
+def _manifest() -> dict:
     if not MANIFEST or not MANIFEST.exists():
-        return []
-    return json.loads(MANIFEST.read_text(encoding="utf-8"))["invoices"]
+        return {}
+    return json.loads(MANIFEST.read_text(encoding="utf-8"))
 
 
-ENTRIES = _entries()
+ENTRIES = _manifest().get("invoices") or []
+# The GSTINs of the shops these bills were sent to - read as production reads a
+# known shop's bills (services/shop_identity.py).
+SHOP_GSTINS = tuple(_manifest().get("shop_gstins") or ())
 
 
 def test_the_corpus_is_present_where_it_is_required():
@@ -72,7 +75,8 @@ def _read(entry: dict) -> dict:
         settings.gemini_api_key, settings.gemini_api_keys = None, None
         try:
             data = (ROOT / entry["file"]).read_bytes()
-            _cache[entry["file"]] = process_document("corpus", data, "application/pdf", doc_type="invoice")
+            _cache[entry["file"]] = process_document("corpus", data, "application/pdf", doc_type="invoice",
+                                                     own_gstins=SHOP_GSTINS)
         finally:
             settings.gemini_api_key, settings.gemini_api_keys = saved
     return _cache[entry["file"]]

@@ -50,6 +50,7 @@ from app.services.ocr.verify import open_checks, reverify
 from app.services.supplier_choices import apply_remembered, decide
 from app.services.supplier_coverage import arrival as arrival_snapshot
 from app.services.supplier_coverage import coverage as supplier_coverage
+from app.services.shop_identity import own_gstins, set_own_gstins
 from app.services.supplier_labels import apply_learned, changed_paths, learn_from_edit
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
@@ -141,7 +142,8 @@ def _process_job(db: Session, job: OcrJob) -> None:
 
     failure: Optional[Exception] = None
     try:
-        result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress)
+        result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress,
+                                  own_gstins=own_gstins(db, doc.shop_id))
     except OCRError as exc:
         db.rollback()
         if exc.kind == "busy" and _requeue_when_busy(db, job_id, exc):

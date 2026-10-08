@@ -12,6 +12,7 @@ import {
   type ConnectorType,
 } from '../api/connectors';
 import { changePassword } from '../api/auth';
+import ShopGstins from './ShopGstins';
 
 const TYPE_LABEL: Record<ConnectorType, string> = {
   webhook: 'Webhook (HTTP / REST API)',
@@ -127,6 +128,8 @@ export default function Settings() {
           <Plus size={16} /> Add connector
         </button>
       </div>
+
+      <ShopGstins />
 
       {showForm && (
         <form onSubmit={add} className="glass-card" style={{ marginBottom: 24 }}>

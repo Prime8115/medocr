@@ -88,7 +88,7 @@ def same(kind, a, b):
     return key(a) == key(b)
 
 
-def read_free(data: bytes) -> dict:
+def read_free(data: bytes, own_gstins=()) -> dict:
     """The full pipeline with the AI switched off."""
     from app.config import settings
     from app.services.ocr import process_document
@@ -96,7 +96,7 @@ def read_free(data: bytes) -> dict:
     saved = (settings.gemini_api_key, settings.gemini_api_keys)
     settings.gemini_api_key, settings.gemini_api_keys = None, None
     try:
-        return process_document("corpus", data, "application/pdf", doc_type="invoice")
+        return process_document("corpus", data, "application/pdf", doc_type="invoice", own_gstins=own_gstins)
     finally:
         settings.gemini_api_key, settings.gemini_api_keys = saved
 
@@ -119,10 +119,11 @@ def summary(result: dict) -> dict:
 def snapshot(corpus: pathlib.Path, out: pathlib.Path) -> None:
     import logging
     logging.disable(logging.WARNING)
-    entries = json.loads((corpus / "corpus.json").read_text(encoding="utf-8"))["invoices"]
+    manifest = json.loads((corpus / "corpus.json").read_text(encoding="utf-8"))
+    entries, own = manifest["invoices"], tuple(manifest.get("shop_gstins") or ())
     snap = {}
     for n, e in enumerate(entries, 1):
-        snap[e["file"]] = summary(read_free((corpus / e["file"]).read_bytes()))
+        snap[e["file"]] = summary(read_free((corpus / e["file"]).read_bytes(), own))
         print(f"\r{n}/{len(entries)}", end="", flush=True)
     out.write_text(json.dumps(snap, indent=1, ensure_ascii=False), encoding="utf-8")
     print(f"\nsaved {len(snap)} readings to {out}")
@@ -161,7 +162,9 @@ def add(corpus: pathlib.Path, rel: str) -> None:
     from app.services.ocr.gemini import GeminiProvider
 
     data = (corpus / rel).read_bytes()
-    ours = read_free(data)
+    manifest_path = corpus / "corpus.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"invoices": []}
+    ours = read_free(data, tuple(manifest.get("shop_gstins") or ()))
     if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GEMINI_API_KEYS"):
         sys.exit("set GEMINI_API_KEY for the independent reading")
     ai = GeminiProvider().extract(data, "application/pdf", "invoice")
@@ -184,8 +187,6 @@ def add(corpus: pathlib.Path, rel: str) -> None:
         entry["todo"].append(f"lines: ours={len(ol)} (sum {sa}) ai={len(al)} (sum {sb})")
     ver = (ours.get("meta") or {}).get("verification") or {}
     entry["expected_failed"] = sorted(c["id"] for c in ver.get("checks") or [] if c["status"] == "fail")
-    manifest_path = corpus / "corpus.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"invoices": []}
     manifest["invoices"] = [e for e in manifest["invoices"] if e["file"] != rel] + [entry]
     manifest_path.write_text(json.dumps(manifest, indent=1, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(entry, indent=1, ensure_ascii=False))

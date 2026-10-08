@@ -472,7 +472,21 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
     return False
 
 
-def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None) -> dict:
+def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None,
+                     own_gstins=None) -> dict:
+    """Read one document. `own_gstins` are the shop's own GSTINs, when known:
+    the shop is the buyer on its own purchase bills (parties.py)."""
+    from app.services.ocr.parties import OWN_GSTINS
+
+    token = OWN_GSTINS.set(tuple(own_gstins or ()))
+    try:
+        return _process_document(document_id, file_bytes, content_type, doc_type, on_progress)
+    finally:
+        OWN_GSTINS.reset(token)
+
+
+def _process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None,
+                      on_progress=None) -> dict:
     unreconciled = None
     # --- Tier 1: deterministic parse of digital PDF invoices (free, exact, unlimited
     # pages). Real (not mock) — runs whenever the input is a digital PDF and the

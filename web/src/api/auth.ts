@@ -33,3 +33,21 @@ export async function changePassword(currentPassword: string, newPassword: strin
     new_password: newPassword,
   });
 }
+
+/** The shop and the GSTINs it is known by (GET /v1/auth/shop). */
+export interface ShopProfile {
+  name: string | null;
+  /** Stated by the owner, then learned from approved bills. */
+  gstins: string[];
+  stated: string[];
+}
+
+export async function getShop(): Promise<ShopProfile> {
+  const res = await api.get('/v1/auth/shop');
+  return res.data as ShopProfile;
+}
+
+export async function setShopGstins(gstins: string[]): Promise<string[]> {
+  const res = await api.put('/v1/auth/shop/gstins', { gstins });
+  return (res.data as { gstins: string[] }).gstins;
+}

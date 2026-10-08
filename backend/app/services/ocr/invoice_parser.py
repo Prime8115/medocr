@@ -1444,6 +1444,49 @@ def parse_scanned_invoice(data: bytes, content_type: str,
 _READABLE = re.compile(r"\b(INVOICE|TOTAL|AMOUNT|GST|QTY|BATCH|RATE|MRP|DATE|PRODUCT)\b", re.I)
 
 
+def _is_sideways(page) -> bool:
+    """Whether a page's text is drawn a quarter turn round (see upright_pdf)."""
+    chars = page.chars or []
+    if not chars:
+        return False
+    if sum(1 for c in chars if not c.get("upright", True)) >= 0.6 * len(chars):
+        return True
+    # Text run down the page can still be flagged upright; it then reads one
+    # letter per "word" - "G", "r", "a", "n", "d". Told cheaply from a sample:
+    # consecutive letters share an x and step down the page, not across it.
+    sample = [c for c in chars[:400] if str(c.get("text", "")).strip()]
+    pairs = list(zip(sample, sample[1:]))
+    down = sum(1 for a, b in pairs
+               if abs(float(a["x0"]) - float(b["x0"])) < 1.0 and abs(float(a["top"]) - float(b["top"])) > 2.0)
+    return len(pairs) >= 30 and down >= 0.6 * len(pairs)
+
+
+def _turned(data: bytes) -> bytes:
+    """The PDF turned whichever way puts real words on page 1. Returns the
+    input when neither way does."""
+    import io
+
+    import pdfplumber
+    import pypdf
+
+    best, best_hits = data, 0
+    for angle in (90, 270):
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        writer = pypdf.PdfWriter()
+        for page in reader.pages:
+            page.rotate(angle)
+            page.transfer_rotation_to_content()
+            writer.add_page(page)
+        buf = io.BytesIO()
+        writer.write(buf)
+        with pdfplumber.open(io.BytesIO(buf.getvalue())) as turned:
+            words = " ".join(w["text"] for w in turned.pages[0].extract_words())
+        hits = len(_READABLE.findall(words))
+        if hits > best_hits:
+            best, best_hits = buf.getvalue(), hits
+    return best
+
+
 def upright_pdf(data: bytes) -> bytes:
     """The PDF with its text the right way up, for reading by position.
 
@@ -1462,40 +1505,9 @@ def upright_pdf(data: bytes) -> bytes:
 
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
-            chars = pdf.pages[0].chars if pdf.pages else []
-            if not chars:
+            if not pdf.pages or not _is_sideways(pdf.pages[0]):
                 return data
-            sideways = sum(1 for c in chars if not c.get("upright", True)) >= 0.6 * len(chars)
-            if not sideways:
-                # Text run down the page can still be flagged upright; it then
-                # reads one letter per "word" - "G", "r", "a", "n", "d". Told
-                # cheaply from a sample: consecutive letters share an x and
-                # step down the page instead of across it.
-                sample = [c for c in chars[:400] if str(c.get("text", "")).strip()]
-                pairs = list(zip(sample, sample[1:]))
-                down = sum(1 for a, b in pairs
-                           if abs(float(a["x0"]) - float(b["x0"])) < 1.0 and abs(float(a["top"]) - float(b["top"])) > 2.0)
-                sideways = len(pairs) >= 30 and down >= 0.6 * len(pairs)
-            if not sideways:
-                return data
-        import pypdf
-
-        best, best_hits = data, 0
-        for angle in (90, 270):
-            reader = pypdf.PdfReader(io.BytesIO(data))
-            writer = pypdf.PdfWriter()
-            for page in reader.pages:
-                page.rotate(angle)
-                page.transfer_rotation_to_content()
-                writer.add_page(page)
-            buf = io.BytesIO()
-            writer.write(buf)
-            with pdfplumber.open(io.BytesIO(buf.getvalue())) as turned:
-                words = " ".join(w["text"] for w in turned.pages[0].extract_words())
-            hits = len(_READABLE.findall(words))
-            if hits > best_hits:
-                best, best_hits = buf.getvalue(), hits
-        return best
+        return _turned(data)
     except Exception as exc:  # noqa: BLE001 - reading it as it is is no worse than before
         log.info("invoice_parser: could not turn the page upright (%s)", exc)
         return data
@@ -1515,7 +1527,8 @@ def _stream_text(data: bytes) -> str:
         return ""
 
 
-def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[dict]:
+def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
+                      _turned_already: bool = False) -> Optional[dict]:
     """Return an invoice `fields` dict parsed deterministically, or None if the
     table can't be recognised (caller then falls back to the AI pipeline).
 
@@ -1530,7 +1543,6 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     except ImportError:  # pragma: no cover
         return None
 
-    data = upright_pdf(data)
     line_items: List[dict] = []
     party_text = ""
     page_items: Dict[int, List[dict]] = {}
@@ -1545,6 +1557,13 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             total_pages = len(pdf.pages)
+            # Checked on the PDF already open - opening it a second time to look
+            # cost a third of a second on every bill. A sideways page is turned
+            # upright and read again from the start.
+            if not _turned_already and total_pages and _is_sideways(pdf.pages[0]):
+                turned = _turned(data)
+                if turned is not data:
+                    return parse_invoice_pdf(turned, read_every_page, _turned_already=True)
 
             # Read only the first printed copy. Settled by comparing two pages
             # rather than by reading every page's text, which was the single

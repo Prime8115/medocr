@@ -1,6 +1,9 @@
 """Authentication endpoints: register a shop+owner, login, current user."""
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
@@ -65,3 +68,37 @@ def change_password(
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="user.password_changed", target=user.id))
     db.commit()
     return {"status": "ok", "message": "Password changed"}
+
+
+class ShopGstins(BaseModel):
+    gstins: List[str]
+
+
+@router.get("/shop")
+def shop_profile(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The shop and the GSTINs it is known by - stated by the owner, or learned
+    from the bills it approved. The shop is the buyer on its own purchase bills,
+    so knowing these settles who is who on every bill it scans."""
+    from app.services.shop_identity import own_gstins
+
+    shop = db.get(Shop, user.shop_id)
+    stated = list((shop.settings or {}).get("gstins") or []) if shop else []
+    return {"name": shop.name if shop else None, "gstins": own_gstins(db, user.shop_id), "stated": stated}
+
+
+@router.put("/shop/gstins")
+def set_shop_gstins(body: ShopGstins, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The owner states the shop's GSTINs. Invalid ones (wrong check digit) are refused."""
+    from app.services.ocr.invoice_header import gstin_is_valid
+    from app.services.shop_identity import set_own_gstins
+
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the shop owner can change its GSTINs.")
+    bad = [g for g in body.gstins if not gstin_is_valid(str(g).strip().upper())]
+    if bad:
+        raise HTTPException(status_code=422, detail=f"Not a valid GSTIN: {', '.join(bad)}")
+    saved = set_own_gstins(db, user.shop_id, body.gstins)
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="shop.gstins_set", target=user.shop_id,
+                    detail={"gstins": saved}))
+    db.commit()
+    return {"gstins": saved}

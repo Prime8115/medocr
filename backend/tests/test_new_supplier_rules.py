@@ -61,14 +61,32 @@ def test_the_buyers_gstin_read_as_the_suppliers_is_corrected():
 
 
 def test_a_supplier_name_run_on_into_the_buyers_column_is_cut():
+    # Aaraf prints the two blocks side by side; the shop knows it is Eastern.
     text = (f"AARAF PHARMA M/s EASTERN AGENCIES HEALTHCARE PRIVATE\nGST : {EASTERN}\n"
             f"GSTIN : 27BPVPK4192N1ZW\nReciver For AARAF PHARMATerms & Conditions\n")
     fields = {"supplier": {"name": _leaf("AARAF PHARMA M/s EASTERN AGENCIES HEALTHCARE PRIVATE"),
                            "gstin": _leaf(EASTERN)}, "bill_to": {}}
-    parties.resolve(fields, text)
+    token = parties.OWN_GSTINS.set((EASTERN,))
+    try:
+        parties.resolve(fields, text)
+    finally:
+        parties.OWN_GSTINS.reset(token)
     assert _v(fields["supplier"], "name") == "AARAF PHARMA"
     assert _v(fields["supplier"], "gstin") == "27BPVPK4192N1ZW"
     assert _v(fields["bill_to"], "gstin") == EASTERN
+
+
+def test_the_shops_own_gstin_is_never_left_as_the_supplier():
+    # Only the shop's own GSTIN reads cleanly (R M prints its own unreadably).
+    fields = {"supplier": {"gstin": _leaf(EASTERN)}, "bill_to": {}}
+    token = parties.OWN_GSTINS.set((EASTERN,))
+    try:
+        notes = parties.resolve(fields, f"GSTIN: {EASTERN}\nGSTIN: 27AYEPM1405FIZT\n")
+    finally:
+        parties.OWN_GSTINS.reset(token)
+    assert not _v(fields["supplier"], "gstin")
+    assert _v(fields["bill_to"], "gstin") == EASTERN
+    assert notes and "shop's own" in notes[0]
 
 
 def test_three_businesses_and_no_label_are_left_as_read():
