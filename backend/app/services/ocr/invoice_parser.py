@@ -36,7 +36,7 @@ from app.services.ocr.invoice_header import (
     supplier_gstin_for_pan,
     _has_doubled_glyphs,
 )
-from app.services.ocr.invoice_checks import line_arithmetic_holds
+from app.services.ocr.invoice_checks import SUMMED_CONFIDENCE, line_arithmetic_holds
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables
 
 log = logging.getLogger(__name__)
@@ -115,7 +115,9 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # against. `net_amount` and `gross_amount` are separate columns above, so
     # they are no longer allowed to stand in for this one.
     "amount": (
-        ["taxableamount", "taxablevalue", "taxableamt", "amount", "value", "total"],
+        # Bare "TAXABLE" (the Marg-style ERP layout: "AMOUNT | DISC | TAXABLE")
+        # names the taxable value; its "AMOUNT" is the figure before discount.
+        ["taxableamount", "taxablevalue", "taxableamt", "taxable", "amount", "value", "total"],
         # A tax column is not the line's own amount, and neither is a discount
         # column. Overseas prints "Disc Value" and "CGST Amount" beside its
         # taxable "Trans. Value"; without these, the sum of the invoice was the
@@ -147,6 +149,9 @@ _GST_RATES = (0.0, 0.1, 0.125, 0.25, 0.5, 1.0, 1.5, 2.5, 3.0, 5.0, 6.0, 7.5, 9.0
 # Confidence for a figure computed from others on the bill rather than read off
 # it. Below the review threshold's "certain", so it is marked for a glance.
 _DERIVED_CONFIDENCE = 0.85
+# A bill total summed from its own lines. Shares the derived figure's standing,
+# and is what invoice_checks._derived recognises.
+_SUMMED_CONFIDENCE = SUMMED_CONFIDENCE
 
 
 def _is_gst_rate(n: float) -> bool:
@@ -211,6 +216,31 @@ def _map_columns(header_row) -> dict:
             if hit is not None:
                 mapping[field] = hit
                 taken.add(hit)
+                break
+    # When the taxable column is headed as such, a plain "AMOUNT" beside it is
+    # the line before its discount - the gross.
+    amount_at = mapping.get("amount")
+    if amount_at is not None and "taxable" in norms[amount_at] and "gross_amount" not in mapping:
+        plain = next((i for i, h in enumerate(norms) if h in ("amount", "amt", "value") and i not in taken), None)
+        if plain is not None:
+            mapping["gross_amount"] = plain
+            taken.add(plain)
+    # A lone "%" column just left of a tax head's amount is that head's rate:
+    # "% | CGST AMOUNT" printed as a two-line heading that split apart.
+    for i, h in enumerate(norms[:-1]):
+        if h not in ("%", "rate", "per", "per%") or i in taken:
+            continue
+        nxt = norms[i + 1]
+        # ...and just left of a discount amount, the discount's rate: Kanchan
+        # prints "% | Disc. Amt." and 2.00 under the "%".
+        if nxt.startswith(("discamt", "discountamt", "discamount")) and "discount_percent" not in mapping:
+            mapping["discount_percent"] = i
+            taken.add(i)
+            continue
+        for head in ("cgst", "sgst", "igst", "utgst"):
+            if nxt.startswith(head) and f"{head}_percent" not in mapping:
+                mapping[f"{head}_percent"] = i
+                taken.add(i)
                 break
     return mapping
 
@@ -439,6 +469,35 @@ _DETAIL_LABEL = re.compile(
 _GSTIN_SHAPE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][A-Z0-9])\b")
 _GSTIN = re.compile(r"\bG\s*S\s*T\s*(?:IN|No)?\.?\s*(?:no\.?)?\s*[:\-]?\s*([0-9A-Z]{15})\b", re.I)
 _INVOICE_NO = re.compile(r"\binvoice\s*(?:no|num(?:ber)?|#)\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", re.I)
+# How suppliers label the number, most specific first. Not \b-anchored on the
+# left: Aaraf's licence runs straight into "...21B-585861Invoice No. : A000298".
+_NO_VALUE = r"[ \t]*[:\-#]?[ \t]*([A-Za-z0-9][A-Za-z0-9\-/]*[A-Za-z0-9])"
+_INVOICE_NO_LABELS = [
+    re.compile(r"(?<![A-Za-z])(?:tax\s*|gst\s*|sales\s*)?inv(?:oice)?\.?[ \t]*(?:no|num(?:ber)?|#)\.?"
+               + _NO_VALUE, re.I),
+    # Never the e-way bill's number: IPCA prints "Eway Bill NO: 271987615581".
+    re.compile(r"(?<![A-Za-z])(?<!way )(?<!way-)(?<!way)bill[ \t]*(?:no|num(?:ber)?)\.?" + _NO_VALUE, re.I),
+    re.compile(r"(?<![A-Za-z])invoice[ \t]*:" + _NO_VALUE, re.I),
+    re.compile(r"(?<![A-Za-z])doc(?:ument)?\.?[ \t]*no\.?" + _NO_VALUE, re.I),
+]
+_LOOKS_LIKE_DATE = re.compile(r"^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{2,4}$")
+
+
+def find_invoice_no(text: str) -> Optional[str]:
+    """The invoice's own number, under whichever label the supplier uses.
+
+    "Invoice No.", "GST Inv. No.", "Bill No.", a bare "Invoice:", and - for a
+    credit note - "Doc No". A candidate must carry a digit and must not be a
+    date, so a label printed with its value elsewhere ("Invoice No. Date")
+    does not hand over the wrong field.
+    """
+    for pattern in _INVOICE_NO_LABELS:
+        for m in pattern.finditer(text or ""):
+            value = m.group(1)
+            if not any(ch.isdigit() for ch in value) or _LOOKS_LIKE_DATE.match(value) or len(value) > 30:
+                continue
+            return value
+    return None
 # A date as Indian invoices print it. The third form is the one that matters
 # here: Menarini dates every field "22-Sep-2025", and with only numeric months
 # accepted its invoice date, due date, LR date and PO date were ALL blank while
@@ -612,6 +671,9 @@ def _extract_header_meta(
         or _GSTIN.search(text or "")
     )
     inv_no = _INVOICE_NO.search(text or "")
+    number = inv_no.group(1) if inv_no else None
+    if not number or not any(ch.isdigit() for ch in number) or _LOOKS_LIKE_DATE.match(number):
+        number = find_invoice_no(text)
     inv_dt = next((m for m in (p.search(text or "") for p in _INVOICE_DATE) if m), None)
 
     supplier = {
@@ -695,7 +757,7 @@ def _extract_header_meta(
         **party_fields,
         "supplier": supplier,
         "invoice": {
-            "invoice_no": _f(inv_no.group(1) if inv_no else None),
+            "invoice_no": _f(number),
             "invoice_date": _f(inv_dt.group(1) if inv_dt else None),
             "total_amount": _f(_extract_total(text)),
             **{k: _f(v) for k, v in references.items()},
@@ -845,6 +907,44 @@ def reassign_merged_tax_columns(cols: dict, header_row, interstate: Optional[boo
     return out
 
 
+_EXPIRY_TOKEN = re.compile(r"^(\d{1,2}[/\-.]\d{2,4}|[A-Za-z]{3}[-/' ]?\d{2,4})$")
+
+
+def _split_side_by_side(heading, value: str) -> Dict[str, str]:
+    """Maker, expiry and batch from one cell whose heading names them in a row.
+
+    Only for a heading naming the expiry AND the batch, and only when the cell
+    holds exactly one expiry-shaped token - otherwise nothing is split. The
+    words before the expiry are the maker (when the heading names one first),
+    the words after it the batch, joined: a batch never contains a space, and
+    "E JV01ABA" is how the PDF spaced "EJV01ABA".
+    """
+    head = _norm(heading)
+    at_exp = head.find("exp")
+    at_batch = max(head.find("batch"), head.find("bno"), head.find("lot"))
+    if at_exp < 0 or at_batch < 0 or not value:
+        return {}
+    tokens = value.split()
+    found = [i for i, t in enumerate(tokens) if _EXPIRY_TOKEN.match(t)]
+    if len(found) != 1:
+        return {}
+    k = found[0]
+    before, after = tokens[:k], tokens[k + 1:]
+    out = {"expiry": tokens[k]}
+    if at_exp < at_batch:
+        if not after:
+            return {}
+        out["batch_no"] = "".join(after)
+        maker = " ".join(before).strip(" -")
+        if maker and re.search(r"mfg|mfr|mkt|company", head[:at_exp]):
+            out["manufacturer"] = maker
+    else:
+        if not before:
+            return {}
+        out["batch_no"] = "".join(before)
+    return out
+
+
 def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 interstate: Optional[bool] = None,
                 local: Optional[str] = None) -> Optional[dict]:
@@ -881,6 +981,27 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             continue
         for field, value in zip(order, parts):
             item[field] = _f(_strip_stray(_clean(value)))
+
+    # One column heading several fields side by side, on ONE line: the
+    # Marg-style ERP heads "MFGR EXP. BATCH NO. DATE" and prints "ABLT 12/26
+    # CH-2501" - maker, expiry, batch. Read as one value the batch was "ABLT
+    # 12/26 CH-2501" and the expiry blank.
+    for idx, heading in enumerate(header_row):
+        if idx >= len(row) or "\n" in str(row[idx] or "").strip():
+            continue
+        split = _split_side_by_side(heading, _clean(row[idx]))
+        for field, value in split.items():
+            if field == "manufacturer" and cols.get("manufacturer") not in (None, idx):
+                continue
+            if field == "expiry" and cols.get("expiry") not in (None, idx):
+                continue
+            item[field] = _f(value)
+
+    # A "discount %" over 100 is money, not a rate: the ERP above heads its
+    # discount column just "DISC" and prints 870.46 rupees in it.
+    disc = _num((item.get("discount_percent") or {}).get("value"))
+    if disc is not None and float(disc) > 100 and not (item.get("discount_amount") or {}).get("value"):
+        item["discount_amount"] = item.pop("discount_percent")
 
     # Anything the mapping did not claim is kept verbatim under the supplier's
     # own heading. A column we have never seen before - a scheme percentage, a
@@ -946,7 +1067,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     elif (item.get("gst_percent") or {}).get("value") in (None, "0.0", "0"):
         heads_pct = [_num((item.get(f"{h}_percent") or {}).get("value"))
                      for h in ("cgst", "sgst", "igst", "utgst")]
-        known_pcts = [p for p in heads_pct if p is not None and p > 0]
+        known_pcts = [float(p) for p in heads_pct if p is not None and float(p) > 0]
         if known_pcts:
             item["gst_percent"] = _f(str(round(sum(known_pcts), 2)), confidence=_DERIVED_CONFIDENCE)
 
@@ -1023,6 +1144,31 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 )
                 item["net_amount"] = _f(f"{float(taxable) + sum(known):.2f}", confidence=sure)
 
+    # A quantity the reading lost - printed hard against a scheme column, as
+    # "10 (23.08%)" under "QTY SCH" - is still stated by the bill: it is the
+    # line's amount before discount over its rate. Taken only when that comes
+    # out a whole number, and held below full confidence.
+    if not (item.get("quantity") or {}).get("value"):
+        rate = _num((item.get("rate") or {}).get("value"))
+        gross = _num((item.get("gross_amount") or {}).get("value")) or _num((item.get("amount") or {}).get("value"))
+        try:
+            if rate and gross and float(rate) > 0:
+                q = float(gross) / float(rate)
+                if q >= 1 and abs(q - round(q)) < 0.005:
+                    item["quantity"] = _f(str(int(round(q))), confidence=_DERIVED_CONFIDENCE)
+        except (TypeError, ValueError):
+            pass
+
+    # GST% is the sum of the heads' rates. Where only one head's rate column
+    # was recognised (the other's "%" printed apart from its heading), the
+    # heads read separately still say it: 2.5 + 2.5 is 5, not 2.5.
+    pcts = {h: _num((item.get(f"{h}_percent") or {}).get("value")) for h in ("cgst", "sgst", "utgst", "igst")}
+    local_sum = (float(pcts["cgst"] or 0) + max(float(pcts["sgst"] or 0), float(pcts["utgst"] or 0)))
+    heads_sum = local_sum if local_sum else float(pcts["igst"] or 0)
+    current = _num((item.get("gst_percent") or {}).get("value"))
+    if heads_sum and _is_gst_rate(heads_sum) and (current is None or float(current) < heads_sum):
+        item["gst_percent"] = _f(f"{heads_sum:g}")
+
     # A footer line that slips past the text filters gives itself away here: its
     # "quantity" is an IRN or invoice number a dozen digits long. Kanchan's IRN
     # line was being kept as an item, and its amount - the invoice's own basic
@@ -1044,8 +1190,16 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         if _SUMMARY_ROW.search(desc) or _looks_like_prose(desc):
             return None
 
-    # Only keep rows that have at least a quantity or a batch.
-    if item.get("quantity", {}).get("value") or item.get("batch_no", {}).get("value"):
+    # Only keep rows that have at least a quantity or a batch. A quantity of
+    # nothing is not one (an IRN line read "0.00" there), and a money figure in
+    # the batch column is not a batch (a totals row read "91891.60" there).
+    batch = (item.get("batch_no") or {}).get("value") or ""
+    real_batch = bool(batch) and not re.fullmatch(r"[\d,]+\.\d{2}", batch.strip())
+    if re.fullmatch(r"[0-9a-fA-F]{32,}", desc.replace(" ", "")):
+        return None  # an IRN or hash printed in the grid
+    if (item.get("quantity") or {}).get("value") and (real_batch or not batch):
+        return item
+    if real_batch:
         return item
     return None
 
@@ -1171,11 +1325,32 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             continue  # not a line-item table we understand
         gst_cols = _gst_columns(header_row)
         labels.update(price_labels(cols, header_row))
+        rows = []
         for row in table[data_from:]:
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
-                out.append(item)
+                rows.append(item)
+        out.extend(rows)
     return out
+
+
+def _total_from_words_if_missing(fields: dict, full_text: str) -> None:
+    """The total as the bill spells it out, when no figure could be read.
+
+    Marg-style bills print "Grand Total" in one place and its figure in a box
+    elsewhere, and some carry a literal "GRAND TOTAL 0.00" in the text layer -
+    yet every one of them spells the amount out: "Rs. Twenty two thousand
+    three hundred and twenty only". That is the bill's own statement of what
+    is payable, so it stands in for the figure - a total of 0.00 on a bill
+    with lines is never the real one. Held below a direct reading.
+    """
+    invoice = fields.setdefault("invoice", {})
+    current = _num((invoice.get("total_amount") or {}).get("value"))
+    if current is not None and float(current) > 0:
+        return
+    words = total_from_words(full_text)
+    if words:
+        invoice["total_amount"] = _f(words, confidence=0.9)
 
 
 def parse_scanned_invoice(data: bytes, content_type: str,
@@ -1243,11 +1418,14 @@ def parse_scanned_invoice(data: bytes, content_type: str,
     full_text = "\n".join(page_texts)
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
         fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+    _total_from_words_if_missing(fields, full_text)
 
     invoice_meta = fields.setdefault("invoice", {})
     for key, value in sum_line_totals(line_items).items():
         if not (invoice_meta.get(key) or {}).get("value"):
-            invoice_meta[key] = _f(value)
+            # Added up from the lines, not read off the bill - held below a
+            # printed figure, so nothing mistakes it for the bill's own total.
+            invoice_meta[key] = _f(value, confidence=_SUMMED_CONFIDENCE)
 
     fields["line_items"] = line_items
     fields["_hints"] = {
@@ -1261,6 +1439,80 @@ def parse_scanned_invoice(data: bytes, content_type: str,
         "total_in_words": total_from_words(full_text),
     }
     return fields
+
+
+_READABLE = re.compile(r"\b(INVOICE|TOTAL|AMOUNT|GST|QTY|BATCH|RATE|MRP|DATE|PRODUCT)\b", re.I)
+
+
+def upright_pdf(data: bytes) -> bytes:
+    """The PDF with its text the right way up, for reading by position.
+
+    AIOCD's ERP lays a landscape bill sideways on a portrait page: every
+    character is drawn rotated a quarter turn. A plain text dump copes, but a
+    reader that rebuilds columns from x and y sees the whole page sideways -
+    "TNUOMA" for AMOUNT - and finds no table at all. Turning the page so the
+    text stands up puts every word back where the eye sees it.
+
+    Which way to turn is decided by which reading has words in it. Returns the
+    input untouched when the text already stands up, or when nothing helps.
+    """
+    import io
+
+    import pdfplumber
+
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            chars = pdf.pages[0].chars if pdf.pages else []
+            if not chars:
+                return data
+            sideways = sum(1 for c in chars if not c.get("upright", True)) >= 0.6 * len(chars)
+            if not sideways:
+                # Text run down the page can still be flagged upright; it then
+                # reads one letter per "word" - "G", "r", "a", "n", "d". Told
+                # cheaply from a sample: consecutive letters share an x and
+                # step down the page instead of across it.
+                sample = [c for c in chars[:400] if str(c.get("text", "")).strip()]
+                pairs = list(zip(sample, sample[1:]))
+                down = sum(1 for a, b in pairs
+                           if abs(float(a["x0"]) - float(b["x0"])) < 1.0 and abs(float(a["top"]) - float(b["top"])) > 2.0)
+                sideways = len(pairs) >= 30 and down >= 0.6 * len(pairs)
+            if not sideways:
+                return data
+        import pypdf
+
+        best, best_hits = data, 0
+        for angle in (90, 270):
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            writer = pypdf.PdfWriter()
+            for page in reader.pages:
+                page.rotate(angle)
+                page.transfer_rotation_to_content()
+                writer.add_page(page)
+            buf = io.BytesIO()
+            writer.write(buf)
+            with pdfplumber.open(io.BytesIO(buf.getvalue())) as turned:
+                words = " ".join(w["text"] for w in turned.pages[0].extract_words())
+            hits = len(_READABLE.findall(words))
+            if hits > best_hits:
+                best, best_hits = buf.getvalue(), hits
+        return best
+    except Exception as exc:  # noqa: BLE001 - reading it as it is is no worse than before
+        log.info("invoice_parser: could not turn the page upright (%s)", exc)
+        return data
+
+
+def _stream_text(data: bytes) -> str:
+    """Page 1 in the PDF's own drawing order (see parties.resolve). Empty when
+    it cannot be read - the layout text is then used alone."""
+    import io
+
+    try:
+        import pypdf
+
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        return reader.pages[0].extract_text() or "" if reader.pages else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[dict]:
@@ -1278,6 +1530,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     except ImportError:  # pragma: no cover
         return None
 
+    data = upright_pdf(data)
     line_items: List[dict] = []
     party_text = ""
     page_items: Dict[int, List[dict]] = {}
@@ -1381,6 +1634,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     # A total printed only on the last page won't be in the first page's text.
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
         fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+    _total_from_words_if_missing(fields, full_text)
     # Nor will references printed only on a later page: Kanchan and Zydus print
     # their IRN in the foot of the last page. Read from every page of the copy,
     # filling only what the first page left blank.
@@ -1400,10 +1654,13 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False) -> Optional[di
     invoice_meta = fields.setdefault("invoice", {})
     for key, value in sum_line_totals(line_items).items():
         if not (invoice_meta.get(key) or {}).get("value"):
-            invoice_meta[key] = _f(value)
+            # Added up from the lines, not read off the bill - held below a
+            # printed figure, so nothing mistakes it for the bill's own total.
+            invoice_meta[key] = _f(value, confidence=_SUMMED_CONFIDENCE)
 
     fields["line_items"] = line_items
     fields["_hints"] = {
+        "stream_text": _stream_text(data),
         "copies_detected": copies,
         "stated_item_count": stated_count,
         "price_labels": labels,

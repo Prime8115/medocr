@@ -77,9 +77,18 @@ jobs:
       - name: Install deps
         working-directory: ./backend
         run: pip install -r requirements.txt
+      - name: Fetch the private invoice corpus
+        # See ci.yml: every real invoice, read again before anything ships.
+        uses: actions/checkout@v7
+        with:
+          repository: Prime8115/medocr-invoices
+          ssh-key: ${{ secrets.INVOICE_CORPUS_KEY }}
+          path: invoice-corpus
       - name: Run tests
         working-directory: ./backend
-        # The real-invoice suite skips here: those PDFs are gitignored.
+        env:
+          INVOICE_CORPUS: ${{ github.workspace }}/invoice-corpus
+          INVOICE_CORPUS_REQUIRED: '1'
         run: python -m pytest -q
 
   deploy:

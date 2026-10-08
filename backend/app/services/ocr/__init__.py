@@ -314,6 +314,13 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
     check_warnings = list(extra_warnings or [])
 
     if resolved_type == "invoice":
+        # Supplier and buyer settled by the GSTINs printed - the buyer's under
+        # whatever label the supplier uses, or none (parties.py).
+        from app.services.ocr import parties
+
+        check_warnings.extend(parties.resolve(
+            fields, hints.get("document_text") or hints.get("party_text") or "",
+            hints.get("stream_text") or ""))
         # Facts the bill fixes without printing them - a zero head the sale
         # cannot carry - for either reader. A PAN is never one of them: what
         # the bill does not print stays blank.
@@ -361,7 +368,8 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             )
         check_warnings.extend(flag_invalid_gstins(fields))
         report = reconcile_invoice(
-            fields, hints.get("stated_item_count"), hints.get("total_in_words")
+            fields, hints.get("stated_item_count"), hints.get("total_in_words"),
+            page_text=hints.get("document_text") or hints.get("party_text"),
         )
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)

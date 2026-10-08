@@ -56,7 +56,18 @@ _LABEL = re.compile(
     # Indian form, carrying no "in words" label and no colon at all. Without it
     # the first alternative matched "rupees", then took the hyphen inside
     # "FIFTY-FOUR" for the label separator, and the line parsed as 8.
-    r"|\brupees?\s+(?P<words4>[A-Za-z][A-Za-z \-]{9,200}?)\s+only\b",
+    r"|\brupees?\s+(?P<words4>[A-Za-z][A-Za-z \-]{9,200}?)\s+only\b"
+    # "Rs. Five Thousand Eight Hundred Sixty One Only" - the Marg ERP's form.
+    r"|\b(?:rs|inr)\.?\s+(?P<words5>[A-Za-z][A-Za-z \-]{9,200}?)\s+only\b"
+    # "Amount in SEVENTY EIGHT THOUSAND SIX HUNDRED TWENTY THREE RUPEES" (Pfizer).
+    r"|\bamount\s+in\s+(?P<words6>[A-Za-z][A-Za-z \-]{9,200}?)\s+rupees?\b"
+    # No label at all: "Twenty-Four Thousand Seven Hundred Sixty Only"
+    # (Centaur). Only a run that starts with a number word and names a scale,
+    # so ordinary prose ending in "only" is never taken for an amount.
+    r"|(?<![A-Za-z])(?P<words7>(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|"
+    r"sixty|seventy|eighty|ninety)[A-Za-z \-]{0,120}?(?:thousand|lakhs?|lacs?|crores?)"
+    r"[A-Za-z \-]{0,120}?)\s+only\b",
     re.I,
 )
 
@@ -157,7 +168,7 @@ def total_from_words(text: str) -> Optional[str]:
     """
     best: Optional[int] = None
     for match in _LABEL.finditer(text or ""):
-        name = next((n for n in ("words", "words2", "words3", "words4")
+        name = next((n for n in ("words", "words2", "words3", "words4", "words5", "words6", "words7")
                      if match.group(n)), None)
         if name is None:
             continue

@@ -46,6 +46,18 @@ def _v(field) -> str:
     return str(field.get("value") or "").strip()
 
 
+# The confidence the parser gives a bill total it SUMMED from the lines rather
+# than read off the page. An exact marker, not a threshold: the AI reports its
+# own readings at 0.9 and the like, and those are printed figures.
+SUMMED_CONFIDENCE = 0.849
+
+
+def _derived(field) -> bool:
+    """A bill total the parser added up from the lines, not one the bill prints."""
+    conf = (field or {}).get("confidence") if isinstance(field, dict) else None
+    return conf is not None and abs(float(conf) - SUMMED_CONFIDENCE) < 1e-9
+
+
 def _num(field) -> Optional[float]:
     raw = _v(field).replace(",", "")
     m = re.search(r"-?\d*\.?\d+", raw)
@@ -386,8 +398,37 @@ def _implied_discount(line_total: float, taxable: Optional[float]) -> Optional[T
     return None
 
 
+# Invoice-level totals a bill prints besides its amount payable: "Total Amt :
+# 99230.21" before a credit note brings AIOCD's payable to 95,055. Never a page
+# sub-total or a carried-forward figure - those match a PARTIAL reading.
+_PAGE_TOTAL = re.compile(
+    r"(?<![a-z])(?:total\s*(?:amt|amount|value)|invoice\s*(?:value|total|amount)|gross\s*total|"
+    r"bill\s*(?:amount|value)|net\s*value)\s*(?:\(\s*rs\.?\s*\))?\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*"
+    r"(-?[\d,]+\.\d{2})",
+    re.I,
+)
+_NOT_INVOICE_LEVEL = re.compile(r"(sub|page|carried|c\s*/\s*f|b\s*/\s*f|brought)\s*$", re.I)
+
+
+def printed_invoice_totals(text: str) -> List[float]:
+    """Every invoice-level total figure printed on the page."""
+    out = []
+    for m in _PAGE_TOTAL.finditer(text or ""):
+        before = (text or "")[max(0, m.start() - 12):m.start()]
+        if _NOT_INVOICE_LEVEL.search(before):
+            continue
+        try:
+            value = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if value > 0:
+            out.append(value)
+    return out
+
+
 def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
-                      total_in_words: Optional[str] = None) -> dict:
+                      total_in_words: Optional[str] = None,
+                      page_text: Optional[str] = None) -> dict:
     """Cross-check the extracted lines against the invoice's own totals.
 
     Returns a dict of meta keys plus a `warnings` list. Never mutates values.
@@ -426,11 +467,39 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
             # lines read correctly, summing to exactly the 102,864.00 the bill
             # prints as its basic amount, yet rejected for want of a tax column.
             printed_taxable = _num(invoice.get("total_taxable_amount"))
-            if printed_taxable:
+            # Only a figure the bill PRINTS. A taxable total the parser summed
+            # from these very lines always "matches" them - AANAV reconciled
+            # on 1 line of its 14 that way.
+            if printed_taxable and not _derived(invoice.get("total_taxable_amount")):
                 taxable_tolerance = total_tolerance(printed_taxable, len(items))
                 if abs(line_total - printed_taxable) <= taxable_tolerance:
                     reconciles = True
                     reconciled_by = "the invoice's printed taxable total"
+
+        if not reconciles and page_text:
+            # The bill may print its invoice value AND a smaller amount payable
+            # after a credit note or advance it settles on the same bill. Lines
+            # that build up exactly to a printed invoice-level total are proven;
+            # the step down to the payable is the bill's own, and is said.
+            for figure in printed_invoice_totals(page_text):
+                if abs(figure - printed_total) <= tolerance:
+                    continue
+                hit = next(((n, v) for n, v in candidates
+                            if abs(v - figure) <= total_tolerance(figure, len(items))), None)
+                if hit:
+                    reconciles = True
+                    reconciled_by = f"{hit[0]} = the invoice value the bill prints ({_fmt(figure)})"
+                    # After the bill's own adjustment, the lines build up to
+                    # what it asks for - which is what its words spell out.
+                    built_from_lines = printed_total + (hit[1] - figure)
+                    warnings.append(
+                        f"The bill's lines and tax come to {_fmt(figure)}, which it prints as its "
+                        f"invoice value; the amount payable is {_fmt(printed_total)} - "
+                        f"{_fmt(abs(figure - printed_total))} the bill itself "
+                        f"{'deducts' if figure > printed_total else 'adds'} (a credit note, advance "
+                        "or other adjustment). Please confirm it."
+                    )
+                    break
 
         if not reconciles:
             # Name the gap. "Short by 12,344.00" is what sends a reviewer to the
@@ -445,6 +514,13 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                 "Please check the items before approving."
             )
     elif printed_total is None:
+        # No grand total to hold the lines to - but a printed TAXABLE total
+        # is still the bill's own figure, and the lines must reach it.
+        printed_taxable = _num(invoice.get("total_taxable_amount"))
+        if line_total is not None and printed_taxable and not _derived(invoice.get("total_taxable_amount")):
+            if abs(line_total - printed_taxable) <= total_tolerance(printed_taxable, len(items)):
+                reconciles = True
+                reconciled_by = "the invoice's printed taxable total"
         warnings.append("Invoice total could not be read - please enter it before approving.")
 
     # The bill against itself. An Indian tax invoice states its total twice: in

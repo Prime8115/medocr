@@ -13,6 +13,7 @@ copies, which price column the bill is charged on - and no money figures.
 To run them: drop the PDFs into tests/real_invoices/.
 """
 import json
+import os
 import pathlib
 
 import pytest
@@ -20,8 +21,13 @@ import pytest
 from app.services.ocr import process_document
 from app.services.ocr.invoice_parser import parse_invoice_pdf
 
-HERE = pathlib.Path(__file__).parent / "real_invoices"
-MANIFEST = HERE / "manifest.json"
+MANIFEST = pathlib.Path(__file__).parent / "real_invoices" / "manifest.json"
+# The PDFs: here when dropped in by hand, or in the private invoice corpus
+# (INVOICE_CORPUS - see test_corpus.py), which is how CI reads them.
+_CORPUS = os.environ.get("INVOICE_CORPUS")
+HERE = (pathlib.Path(_CORPUS) / "pdfs" / "original"
+        if _CORPUS and (pathlib.Path(_CORPUS) / "pdfs" / "original").is_dir()
+        else MANIFEST.parent)
 
 
 def _cases():
@@ -354,7 +360,7 @@ def test_no_column_is_silently_discarded(case, results):
 
     import pdfplumber
 
-    from app.services.ocr.invoice_parser import _find_header_row, _gst_columns, _map_columns
+    from app.services.ocr.invoice_parser import _find_header_row, _gst_columns, _map_columns, _norm
     from app.services.ocr.pdf_table import extract_word_tables
 
     data = (HERE / case["file"]).read_bytes()
@@ -372,10 +378,18 @@ def test_no_column_is_silently_discarded(case, results):
                 # reach cgst_percent / cgst_amount that way, exactly as _build_item
                 # counts them.
                 mapped = set(_map_columns(header).values()) | set(_gst_columns(header))
+                # Only columns that hold something: a heading printed over an
+                # empty column ("%" beside Kanchan's discount) has nothing to keep.
+                body = table[hi + 1:]
+                # A heading printed twice ("Pack | Pack") is one column to the
+                # word reader, which is the one the results come from.
+                mapped_names = {_norm(header[i]) for i in mapped if i < len(header)}
                 headings = {
                     str(h).replace("\n", " ").strip()
                     for i, h in enumerate(header)
                     if i not in mapped and str(h or "").strip()
+                    and any(i < len(r) and str(r[i] or "").strip() for r in body)
+                    and _norm(h) not in mapped_names
                 }
                 if not headings:
                     return

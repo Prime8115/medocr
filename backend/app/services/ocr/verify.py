@@ -313,9 +313,15 @@ def _check_cross_foot(c: _Checks, fields: dict, report: dict) -> None:
         return
     # A rupee of round-off, and anything the lines themselves already accounted
     # for (a bill-level discount the reconciliation matched) is allowed for.
-    if _close(taxable + gst, total, 1.5, 0.002) or report.get("total_reconciled_by", "").startswith(
-            "lines - "):
+    reconciled_by = report.get("total_reconciled_by") or ""
+    if _close(taxable + gst, total, 1.5, 0.002) or reconciled_by.startswith("lines - "):
         c.add("cross_foot", "Taxable value plus GST gives the total", "pass")
+    elif "invoice value the bill prints" in reconciled_by:
+        # The bill foots to its printed invoice value, then deducts a credit
+        # note or advance to reach what is payable - said in the warnings.
+        c.add("cross_foot", "Taxable value plus GST gives the total", "pass",
+              "Taxable value plus GST gives the invoice value the bill prints; the amount payable "
+              "differs by an adjustment the bill applies itself.")
     else:
         c.add("cross_foot", "Taxable value plus GST gives the total", "fail",
               f"{taxable:.2f} + {gst:.2f} = {taxable + gst:.2f}, but the bill's total is "
@@ -551,7 +557,8 @@ def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     meta = dict((old_payload or {}).get("meta") or {})
     if doc_type != "invoice":
         return meta
-    report = reconcile_invoice(fields, meta.get("stated_item_count"), meta.get("total_in_words"))
+    report = reconcile_invoice(fields, meta.get("stated_item_count"), meta.get("total_in_words"),
+                               page_text=meta.get("page_text"))
     report.pop("warnings", None)
     meta.update({k: v for k, v in report.items() if k != "total_in_words" or v is not None})
 

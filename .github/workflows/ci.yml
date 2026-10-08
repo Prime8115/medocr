@@ -42,8 +42,23 @@ jobs:
       - name: Install deps
         working-directory: ./backend
         run: pip install -r requirements.txt
+      - name: Fetch the private invoice corpus
+        # Every real invoice we have been sent, with its confirmed values, so
+        # no change can break one that already reads right (tests/test_corpus.py).
+        # A read-only deploy key on the private repo; never for a fork's PR,
+        # which cannot see the secret.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@v7
+        with:
+          repository: Prime8115/medocr-invoices
+          ssh-key: ${{ secrets.INVOICE_CORPUS_KEY }}
+          path: invoice-corpus
       - name: Run tests
         working-directory: ./backend
+        env:
+          INVOICE_CORPUS: ${{ github.workspace }}/invoice-corpus
+          # On main the corpus must be there: a gate that can be skipped is not one.
+          INVOICE_CORPUS_REQUIRED: ${{ github.ref == 'refs/heads/main' && '1' || '0' }}
         run: python -m pytest -q
 
   mobile:
