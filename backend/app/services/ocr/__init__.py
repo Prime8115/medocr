@@ -147,6 +147,15 @@ def chunk_conflict_warnings(fields: dict) -> List[str]:
 
 def _extract_one(provider: OCRProvider, data: bytes, content_type: str, doc_type: str) -> dict:
     raw = provider.extract(data, content_type, doc_type)
+    list_key = _LIST_KEY.get(doc_type)
+    if list_key and isinstance(raw, dict) and raw and list_key not in raw:
+        # An answer without its list at all - not an empty one - is the model
+        # skipping it: AREX and an MSV scan came back with the header and no
+        # line_items key, and were kept as bills of nothing. Asked once more.
+        log.warning("the AI's answer has no %s; asking once more", list_key)
+        again = provider.extract(data, content_type, doc_type)
+        if isinstance(again, dict) and list_key in again:
+            raw = again
     return validate_fields(doc_type, raw)
 
 

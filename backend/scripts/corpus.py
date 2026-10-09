@@ -373,13 +373,18 @@ def read_with(data: bytes, provider, own_gstins=()) -> dict:
     # reading: the first depends on the machine's Tesseract, the second asks
     # about every value read, so any upstream change would leave it unanswered.
     # Both are off when recording and replaying, the same way.
-    saved = (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review)
+    # Page chunks are read one at a time, so a scan's readings are recorded -
+    # and replayed - in page order.
+    saved = (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review,
+             settings.ocr_chunk_concurrency)
     ocr.get_provider = lambda: provider
     settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review = False, False, False
+    settings.ocr_chunk_concurrency = 1
     try:
         return process_document("corpus", data, "application/pdf", doc_type="invoice", own_gstins=own_gstins)
     finally:
-        ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review = saved
+        (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review,
+         settings.ocr_chunk_concurrency) = saved
 
 
 def ai_path_pins(result: dict, independent: Optional[dict]) -> dict:
@@ -412,9 +417,12 @@ def record(corpus: pathlib.Path, names: list, independent_dir: Optional[pathlib.
     import logging
 
     from app.services.ocr.gemini import GeminiProvider
-    from app.services.ocr.recorded import RecordingProvider
+    from app.services.ocr.recorded import RecordingProvider, answers_dir
 
-    logging.disable(logging.WARNING)
+    # Each AI call is shown as it happens: recording is slow, and the reason
+    # (the model resting, a rate limit, a retry) should be visible.
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(message)s")
+    logging.getLogger("app.services.ocr.gemini").setLevel(logging.INFO)
     if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GEMINI_API_KEYS"):
         sys.exit("set GEMINI_API_KEY - recording asks the real AI")
     manifest_path = corpus / "corpus.json"
@@ -427,7 +435,7 @@ def record(corpus: pathlib.Path, names: list, independent_dir: Optional[pathlib.
         if "part" in entry:
             from app.services import intake
             data = intake.pdf_pages(data, intake.invoice_groups(data)[int(entry["part"])])
-        provider = RecordingProvider(GeminiProvider(), corpus / ANSWERS)
+        provider = RecordingProvider(GeminiProvider(), answers_dir(corpus / ANSWERS, entry["file"], entry.get("part")))
         try:
             result = read_with(data, provider, own)
         except Exception as exc:  # noqa: BLE001 - one bill's failure is reported, the rest go on
@@ -442,7 +450,7 @@ def record(corpus: pathlib.Path, names: list, independent_dir: Optional[pathlib.
         manifest_path.write_text(json.dumps(manifest, indent=1, ensure_ascii=False), encoding="utf-8")
         meta = result.get("meta") or {}
         print(f"{entry['file'][:50]:50} {meta.get('pipeline')} lines={meta.get('item_count')} "
-              f"rec={meta.get('total_reconciles')} pinned={len(entry['ai_path']['expect'])}")
+              f"rec={meta.get('total_reconciles')} pinned={len(entry['ai_path']['expect'])}", flush=True)
 
 
 if __name__ == "__main__":

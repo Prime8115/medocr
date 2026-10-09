@@ -8,17 +8,30 @@ once against a real key (scripts/corpus.py record) and kept in the private
 invoice corpus beside the PDF; the corpus test replays them, offline and free,
 and pins what the pipeline makes of them.
 
-An answer is keyed by the question: the method, and the exact bytes, type and
-text it was asked about. A question never asked before has no answer - for
+Each bill keeps its answers in a folder of its own (answers_dir), each keyed
+by the question: the method, and the exact bytes, type and text it was asked
+about. A question never asked before has no answer - for
 the reading itself that is an error (re-record), while an optional follow-up
 (the gap-fill, the AI review) simply goes unanswered, as when the AI is busy.
 """
 import hashlib
 import json
 import pathlib
+import re
 from typing import Any, Optional
 
 from app.services.ocr.base import OCRError, OCRProvider
+
+
+ORDER = "picture-order.json"
+
+
+def answers_dir(root: pathlib.Path, file: str, part: Optional[int] = None) -> pathlib.Path:
+    """The folder holding one bill's recorded answers."""
+    # The batch folder is part of the name: the same bill can be in two batches.
+    parts = [p for p in pathlib.PurePosixPath(file).parts if p != "pdfs"]
+    name = "__".join(re.sub(r"[^A-Za-z0-9]+", "_", p).strip("_") for p in parts)
+    return pathlib.Path(root) / (name + (f"__part{part}" if part is not None else ""))
 
 
 def question_key(method: str, *args: Any) -> str:
@@ -55,7 +68,15 @@ class RecordingProvider(OCRProvider):
         return self._ask("classify", file_bytes, content_type)
 
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
-        return self._ask("extract", file_bytes, content_type, doc_type)
+        answer = self._ask("extract", file_bytes, content_type, doc_type)
+        if content_type == "application/pdf":
+            # The order page pictures were asked in (one at a time while
+            # recording): their bytes are not the same from run to run.
+            order = self.store / ORDER
+            asked = json.loads(order.read_text(encoding="utf-8")) if order.exists() else []
+            asked.append(question_key("extract", file_bytes, content_type, doc_type))
+            order.write_text(json.dumps(asked, indent=1), encoding="utf-8")
+        return answer
 
     def complete_json(self, prompt: str) -> dict:
         return self._ask("complete_json", prompt)
@@ -72,6 +93,7 @@ class ReplayProvider(OCRProvider):
         self.name = name
         self.calls: list = []
         self.unanswered: list = []
+        self._pictures_asked = 0
 
     def _answer(self, method: str, *args):
         path = self.store / f"{question_key(method, *args)}.json"
@@ -86,6 +108,20 @@ class ReplayProvider(OCRProvider):
 
     def extract(self, file_bytes: bytes, content_type: str, doc_type: str) -> dict:
         answer, found = self._answer("extract", file_bytes, content_type, doc_type)
+        if content_type == "application/pdf":
+            n, self._pictures_asked = self._pictures_asked, self._pictures_asked + 1
+        if not found and content_type == "application/pdf":
+            # A scan is sent as page pictures, whose bytes differ from run to
+            # run and machine to machine. Its readings are served in the order
+            # they were asked (chunks are read one at a time when recording
+            # and replaying) - and a bill read in one piece has just one.
+            order = self.store / ORDER
+            asked = json.loads(order.read_text(encoding="utf-8")) if order.exists() else []
+            only = sorted(self.store.glob("extract-*.json"))
+            path = (self.store / f"{asked[n]}.json") if n < len(asked) else (only[0] if len(only) == 1 else None)
+            if path is not None and path.exists():
+                self.unanswered.pop()
+                return json.loads(path.read_text(encoding="utf-8"))
         if not found:
             raise OCRError("no recorded answer for this reading - record it again "
                            "(scripts/corpus.py record)", kind="rejected")

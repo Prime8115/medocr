@@ -154,7 +154,7 @@ def _differences(entry: dict, result: dict) -> dict:
     if "count" in spec and len(lines) != spec["count"]:
         wrong["lines.count"] = {"read": len(lines), "confirmed": spec["count"]}
     if "sum_amount" in spec:
-        total = round(sum(float(_value(i, "amount") or 0) for i in lines), 2)
+        total = round(sum(float(str(_value(i, "amount") or 0).replace(",", "")) for i in lines), 2)
         if not _same("amount", total, spec["sum_amount"]):
             wrong["lines.sum_amount"] = {"read": total, "confirmed": spec["sum_amount"]}
     for n, want_line in enumerate(entry.get("line_expect") or []):
@@ -185,21 +185,22 @@ AI_ENTRIES = [e for e in ENTRIES if e.get("ai_path")]
 def _read_on_recorded_answers(entry: dict) -> dict:
     import app.services.ocr as ocr
     from app.config import settings
-    from app.services.ocr.recorded import ReplayProvider
+    from app.services.ocr.recorded import ReplayProvider, answers_dir
 
-    provider = ReplayProvider(ROOT / "ai_answers")
+    provider = ReplayProvider(answers_dir(ROOT / "ai_answers", entry["file"], entry.get("part")))
     saved = (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review,
-             settings.gemini_api_key, settings.gemini_api_keys)
+             settings.gemini_api_key, settings.gemini_api_keys, settings.ocr_chunk_concurrency)
     # The same switches as when the answers were recorded (scripts/corpus.py).
     ocr.get_provider = lambda: provider
     settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review = False, False, False
     settings.gemini_api_key = settings.gemini_api_keys = None
+    settings.ocr_chunk_concurrency = 1
     try:
         data = _as_uploaded((ROOT / entry["file"]).read_bytes(), entry.get("part"))
         return process_document_for_corpus(data)
     finally:
         (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review,
-         settings.gemini_api_key, settings.gemini_api_keys) = saved
+         settings.gemini_api_key, settings.gemini_api_keys, settings.ocr_chunk_concurrency) = saved
 
 
 def process_document_for_corpus(data: bytes) -> dict:
