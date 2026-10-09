@@ -461,7 +461,9 @@ def printed_invoice_totals(text: str) -> List[float]:
 # (Raptakos), "Less C/N Amount: 6667.00" (Aristo). The payable plus it is the
 # invoice's own value - what its lines and tax must build up to.
 _CREDIT_NOTE_SET_OFF = re.compile(
-    r"\bless\s*:?\s*(?:c\s*/\s*n|credit\s*notes?)\s*(?:amount|amt|value)?\s*[:\-]?\s*"
+    # ...and "CR Notes(-) 38,642.00" (Medley).
+    r"(?:\bless\s*:?\s*(?:c\s*/\s*n|credit\s*notes?)|\bcn\s*/\s*dn|\bcr\s*notes?\s*\(\s*-\s*\))"
+    r"\s*(?:amount|amt|value)?\s*[:\-]*\s*"
     r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2})",
     re.I,
 )
@@ -835,6 +837,102 @@ def _complete_line_tax(item: dict, i: int, present: List[str], amounts_too: bool
             item["net_amount"] = _leaf(_fmt(taxable + sum(_num(t) for t in taxes)), sure)
             filled.append(f"line_items[{i}].net_amount")
     return filled
+
+
+def amounts_net_of_own_discount(fields: dict, page_text: Optional[str] = None) -> Optional[str]:
+    """An AI-read line given its value BEFORE its own discount, corrected.
+
+    The AI is asked for each line's taxable value. On Meridian's bill it gave
+    Flatuna's "Total" column, 1,654.62 - exactly 22 x 75.21 - not its taxable
+    value after the 9.09% discount, 1,504.22; every other line was right, and
+    the bill came out 150 over. A line whose amount is exactly quantity x rate
+    while it carries a discount of its own is taken net of that discount -
+    and kept only when that makes the bill add up when it did not before.
+    """
+    import copy
+
+    if reconcile_invoice(fields, page_text=page_text).get("total_reconciles") is not False:
+        return None
+    changes = {}
+    for n, item in enumerate(fields.get("line_items") or []):
+        qty, rate, amount = _num(item.get("quantity")), _num(item.get("rate")), _num(item.get("amount"))
+        pct, off = _num(item.get("discount_percent")), _num(item.get("discount_amount"))
+        if not (qty and rate and amount) or abs(qty * rate - amount) > max(0.05, 0.001 * amount):
+            continue
+        if off and 0 < off < amount:
+            changes[n] = amount - off
+        elif pct and 0 < pct < 100:
+            changes[n] = amount * (1 - pct / 100.0)
+    if not changes:
+        return None
+    # The fewest lines whose correction makes the bill add up - and only when
+    # exactly one such set exists. Meridian's AI reading also put discounts on
+    # lines the bill shows undiscounted; correcting all of them breaks it.
+    from itertools import combinations
+
+    def adds_up(subset) -> bool:
+        trial = copy.deepcopy(fields)
+        for n in subset:
+            trial["line_items"][n]["amount"] = _leaf(f"{changes[n]:.2f}", _DERIVED_CONFIDENCE)
+        return reconcile_invoice(trial, page_text=page_text).get("total_reconciles") is True
+
+    found = None
+    for size in range(1, min(3, len(changes)) + 1):
+        hits = [s for s in combinations(sorted(changes), size) if adds_up(s)]
+        if len(hits) > 1:
+            return None   # more than one way to make it add up: not ours to choose
+        if hits:
+            found = hits[0]
+            break
+    if not found:
+        return None
+    for n in found:
+        fields["line_items"][n]["amount"] = _leaf(f"{changes[n]:.2f}", _DERIVED_CONFIDENCE)
+    lines = ", ".join(str(n + 1) for n in found)
+    return (f"Line {lines}: the amount read was the value before the line's own discount; taken "
+            "after it, the lines add up to the bill's total. Please check.")
+
+
+def tax_heads_from_rates(fields: dict) -> Optional[str]:
+    """Tax heads that break the bill's own arithmetic, replaced by the lines'
+    rates when those restore it.
+
+    Ferring prints two slabs per head (CGST 2.5% 423.89 and 6% 12,210.54); the
+    AI reported only the 6% one, so the taxable value and the tax fell 848 short
+    of the bill's total. The lines' own GST rates give 25,268.86, and the
+    taxable value plus that IS the printed total - so that figure is taken,
+    marked worked out, and said. Nothing changes unless the heads read fail
+    taxable + tax = total and the rates make it hold to the rupee.
+    """
+    invoice = fields.get("invoice") or {}
+    items = fields.get("line_items") or []
+    taxable, total = _num(invoice.get("total_taxable_amount")), _num(invoice.get("total_amount"))
+    heads = {h: _num(invoice.get(f"total_{h}_amount")) for h in _HEADS}
+    read = sum(v for v in heads.values() if v)
+    if not taxable or not total or not read or abs(taxable + read - total) <= 1.0 or not items:
+        return None
+    amounts = [_num(i.get("amount")) for i in items]
+    rates = [_num(i.get("gst_percent")) for i in items]
+    if any(a is None for a in amounts) or any(r is None for r in rates):
+        return None
+    line_sum = sum(amounts)
+    if line_sum <= 0 or abs(line_sum - taxable) > 1.0:
+        return None
+    from_rates = round(sum(a * r / 100.0 for a, r in zip(amounts, rates)), 2)
+    if abs(taxable + from_rates - total) > 1.0:
+        return None
+    inter = bool(heads.get("igst")) and not heads.get("cgst")
+    if inter:
+        invoice["total_igst_amount"] = _leaf(f"{from_rates:.2f}", _DERIVED_CONFIDENCE)
+    else:
+        half = f"{from_rates / 2:.2f}"
+        local = "utgst" if heads.get("utgst") and not heads.get("sgst") else "sgst"
+        invoice["total_cgst_amount"] = _leaf(half, _DERIVED_CONFIDENCE)
+        invoice[f"total_{local}_amount"] = _leaf(half, _DERIVED_CONFIDENCE)
+    invoice["total_gst_amount"] = _leaf(f"{from_rates:.2f}", _DERIVED_CONFIDENCE)
+    return (f"The tax heads read come to {_fmt(read)}, which with the taxable value does not reach the "
+            f"bill's total; the lines' own GST rates give {_fmt(from_rates)}, which does - taken from the "
+            "rates. Please check the tax heads against the bill.")
 
 
 def complete_from_the_bill(fields: dict) -> List[str]:

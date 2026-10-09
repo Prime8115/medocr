@@ -178,8 +178,15 @@ def _check_line_arithmetic(c: _Checks, items: List[dict]) -> None:
              lambda i: [_line(i, "quantity"), _line(i, "rate"), _line(i, "amount")])
 
 
-def _check_line_tax(c: _Checks, items: List[dict]) -> None:
+def _check_line_tax(c: _Checks, items: List[dict], fields: Optional[dict] = None) -> None:
     bad, tested = [], 0
+    # A bill-wide discount taken before the tax (Hindustan Capsule's 3%):
+    # each line is taxed on its share of the bill's printed taxable value.
+    amounts = [_n(it.get("amount")) for it in items]
+    taxable_total = _n(((fields or {}).get("invoice") or {}).get("total_taxable_amount"))
+    line_sum = sum(a for a in amounts if a is not None)
+    bill_share = (taxable_total / line_sum if taxable_total and line_sum > 0 and None not in amounts
+                  and 0.5 <= taxable_total / line_sum < 1 else None)
     for i, it in enumerate(items):
         taxable = _n(it.get("amount"))
         if not taxable:
@@ -192,7 +199,11 @@ def _check_line_tax(c: _Checks, items: List[dict]) -> None:
             # ...or its value after the line's own discount % (Aurowin's 5%,
             # Sumbiotic's 10%: the tax is charged on what is left).
             disc = _n(it.get("discount_percent"))
-            bases = [taxable] + ([taxable * (1 - disc / 100.0)] if disc and 0 < disc < 100 else [])
+            bases = [taxable]
+            if disc and 0 < disc < 100:
+                bases.append(taxable * (1 - disc / 100.0))
+            if bill_share:
+                bases.append(taxable * bill_share)
             if not any(_close(b * rate / 100.0, tax, 0.10, 0.01) for b in bases):
                 bad.append((i, head))
     _verdict(c, "line_tax", "Each line's tax is its taxable value at the rate", tested,
@@ -489,7 +500,7 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_item_count(c, report, items)
     _check_head_totals(c, fields, items)
     _check_line_arithmetic(c, items)
-    _check_line_tax(c, items)
+    _check_line_tax(c, items, fields)
     _check_line_net(c, items, combined=bool(report.get("sgst_utgst_combined")))
     _check_line_discount(c, items)
     _check_price_ladder(c, items)

@@ -95,6 +95,17 @@ def printed_value(text: str, spec: Printed) -> Optional[tuple]:
     return None
 
 
+def _buyers_address(fields: dict, email: str) -> bool:
+    """An e-mail whose domain is the buyer's own name: Medley prints the
+    pharmacy's "purchase@easternagencies.co.in" under its address block, and
+    it was reported as the supplier's e-mail we failed to read."""
+    domain = re.sub(r"[^a-z0-9]", "", email.lower().partition("@")[2].split(".")[0])
+    if len(domain) < 5:
+        return False
+    names = [str(_get(fields, f"{p}.name") or "") for p in ("bill_to", "ship_to")]
+    return any(domain in re.sub(r"[^a-z0-9]", "", n.lower()) for n in names)
+
+
 def find_missed(fields: dict, page_text: str) -> List[Dict[str, str]]:
     """Every field the bill prints a value for that we left empty.
 
@@ -108,6 +119,8 @@ def find_missed(fields: dict, page_text: str) -> List[Dict[str, str]]:
         if _get(fields, spec.path):
             continue
         found = printed_value(page_text, spec)
+        if found and spec.path == "supplier.email" and _buyers_address(fields, found[1]):
+            continue
         if found:
             missed.append({"path": spec.path, "label": spec.label,
                            "printed_label": found[0], "printed_value": found[1]})

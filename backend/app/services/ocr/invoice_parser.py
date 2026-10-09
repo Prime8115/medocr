@@ -69,8 +69,9 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # never be mistaken for the billed quantity.
     # "Fr. Qty." (Kanchan) normalises to "frqty", which matched nothing before.
     # "D.Qty" (IPCA): the deal quantity - goods given free on the scheme.
+    # Not "Bonus Disc." (Medley): a discount rate, not free goods.
     "free_quantity": (["freeqty", "frqty", "schemeqty", "dealqty", "free", "fqty", "scheme", "bonus"],
-                      ["%", "value", "amount"]),
+                      ["%", "value", "amount", "disc"]),
     # "Billed Qty." before a bare "qty": Cipla prints "Loose Qty" (mostly empty)
     # first, and its billed quantity is the one the stock and the amount follow.
     "quantity": (["quantity", "billedqty", "billqty", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
@@ -425,6 +426,8 @@ def _copy_groups(labels: List[Optional[str]]) -> List[List[int]]:
 _TOTAL_PATTERNS = [
     r"net\s*payable",
     r"net\s*to\s*pay",
+    # "TOTALPAY 12,799.00" (Hindustan Capsule, set without spaces).
+    r"total\s*pay(?:able)?\b",
     r"grand\s*total",
     r"bill\s*amount",
     r"invoice\s*(?:total|amount|amt|value)",
@@ -580,6 +583,8 @@ _INVOICE_NO_LABELS = [
     re.compile(r"(?<![A-Za-z])(?:invoice|inv|bill|doc(?:ument)?)\.?[ \t]*no\.?[ \t]*/[ \t]*(?:date|dt)\.?"
                r"[ \t]*[:\-]?[ \t]*([A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])(?=[ \t]*/)", re.I),
     re.compile(r"(?<![A-Za-z])doc(?:ument)?\.?[ \t]*no\.?" + _NO_VALUE, re.I),
+    # A credit note's own number: "CREDITNOTENO.C000084" (Hindustan Capsule).
+    re.compile(r"(?<![A-Za-z])credit[ \t]*note[ \t]*no\.?" + _NO_VALUE, re.I),
 ]
 _LOOKS_LIKE_DATE = re.compile(r"^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{2,4}$")
 
@@ -610,7 +615,8 @@ _DATE_VALUE = (
     r"|[0-3]?\d[\s./\-](?:" + _MONTH_NAME + r")[a-z]*[\s./\-]\d{2,4})"
 )
 _INVOICE_DATE = [
-    re.compile(r"\binvoice\s*date\s*[:\-]?\s*" + _DATE_VALUE, re.I),
+    # "INVOICEDATE:-05/09/2025" (Hindustan Capsule): a colon and a dash.
+    re.compile(r"\binvoice\s*date\s*[:\-]{0,2}\s*" + _DATE_VALUE, re.I),
     re.compile(r"\binvoice\s*no.*?\bdt\.?\s*[:\-]?\s*" + _DATE_VALUE, re.I),
     # "Doc. No/Date : 5403626760/25.08.2025" - the date after the number.
     re.compile(r"(?<![A-Za-z])(?:invoice|inv|bill|doc(?:ument)?)\.?[ \t]*no\.?[ \t]*/[ \t]*(?:date|dt)\.?"
@@ -1808,7 +1814,8 @@ def _better_reading(word_items: List[dict], ruled_items: List[dict]) -> bool:
 # Words that only ever appear as a SUB-heading under another one, never as a
 # column heading in their own right. A row made of these is the second half of
 # a stacked header, not a line item.
-_SUBHEADINGS = ("%", "amount", "amt", "rate", "value", "qty", "no", "date", "free")
+# "Sold | Free" under "Quantity" (Medley).
+_SUBHEADINGS = ("%", "amount", "amt", "rate", "value", "qty", "no", "date", "free", "sold", "billed")
 
 
 def _merge_stacked_header(table, hi: int):
@@ -1960,9 +1967,56 @@ def _slab_tax_totals(invoice_meta: dict, text: str) -> None:
 # end so a group heading "SGST% : 6.00 631.05" (rate, then amount) is not one.
 _SUMMARY_TAX = re.compile(
     r"(?:^|\s)(CGST|SGST|IGST|UTGST)\s*(?:@?\s*([\d.]+)\s*%|value|amount|amt|payable|payble)?\s*[:\-]?\s*"
-    r"(?:rs\.?\s*)?([\d,]+\.\d{1,2})\s*$",
+    r"(?:rs\.?\s*|₹\s*)?([\d,]+\.\d{1,2})\s*$",
     re.I | re.M,
 )
+# Any figure printed after a "Total" label - candidates for the bill's total.
+_ANY_TOTAL = re.compile(r"\btotal\b[^\n\d₹]{0,25}(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2})", re.I)
+
+
+def _total_by_cross_foot(invoice_meta: dict, text: str, items: Optional[List[dict]] = None) -> None:
+    """The total that the bill's own taxable value and tax add up to.
+
+    H&H prints "Total Amount ₹ 189093.15" - its lines BEFORE a 75,637.26
+    discount - and only then "Total ₹ 132786.38", which is subtotal plus
+    IGST. A label alone cannot tell them apart; the arithmetic can. When the
+    total read is not taxable + tax, and another figure printed after a
+    "Total" label is, that figure is the bill's total.
+    """
+    def printed(key):
+        leaf = invoice_meta.get(key) or {}
+        if not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE:
+            return None
+        return _num(leaf.get("value"))
+
+    # The taxable value may be the lines' own sum: lines plus the printed tax
+    # meeting a printed total is the proof either way.
+    total = printed("total_amount")
+    taxable = _num((invoice_meta.get("total_taxable_amount") or {}).get("value"))
+    if not taxable and items:
+        amounts = [_num((i.get("amount") or {}).get("value")) for i in items]
+        taxable = sum(float(a) for a in amounts) if None not in amounts else None
+    heads = [printed(f"total_{h}_amount") for h in ("cgst", "sgst", "igst", "utgst")]
+    tax = sum(float(h) for h in heads if h)
+    if not total or not taxable or not tax:
+        return
+    built = float(taxable) + tax
+    if abs(built - float(total)) <= 1.0:
+        return
+    # A total the bill also spells out, or one a credit note it sets off
+    # explains (Medley: 672,940.80 less 38,642 of notes = 634,299), stands.
+    from app.services.ocr.invoice_checks import credit_notes_set_off
+
+    words = total_from_words(text)
+    if words is not None and abs(float(words) - float(total)) < 1.0:
+        return
+    if any(abs(float(total) + cn - built) <= 1.0 for cn in credit_notes_set_off(text)):
+        return
+    for m in _ANY_TOTAL.finditer(text or ""):
+        figure = float(m.group(1).replace(",", ""))
+        if abs(figure - built) <= 1.0:
+            invoice_meta["total_amount"] = _f(f"{figure:.2f}")
+            return
 
 
 def _summary_tax_totals(invoice_meta: dict, text: str) -> None:
@@ -2015,6 +2069,111 @@ def _taxable_from_sub_total(invoice_meta: dict, text: str) -> None:
         if abs(value + tax - float(total)) <= 1.0:
             invoice_meta["total_taxable_amount"] = _f(f"{value:.2f}")
             return
+
+
+def _labelled_totals(invoice_meta: dict, text: str) -> None:
+    """The bill's labelled totals read from EVERY page. The header is read
+    from the first page, but a multi-page bill prints its foot on the last:
+    Medley's "Less Scheme Disc 66760.00" and "Total Amount Before Tax
+    600,840.00" are on page 2. Fills only what no page-one label gave."""
+    for key, value in extract_totals(text).items():
+        leaf = invoice_meta.get(key) or {}
+        if value and (not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE):
+            invoice_meta[key] = _f(value)
+
+
+_SUMMARY_FIGURE = re.compile(r"^₹?-?[\d,]*\d\.\d{2}%?$")
+
+
+def _slab_summary_table(invoice_meta: dict, text: str) -> None:
+    """The bill's totals from its GST slab summary: a heading line naming the
+    taxable value and the tax heads, then one row of figures per slab.
+
+    Hindustan Capsule prints "Amount SchAmt Discamt Taxable CSGT% CGSTRs.
+    SGST% SGSTRs. TotalAmt." with a row for each slab - its only statement of
+    the 3% discount, the taxable value and the tax. Each column is summed;
+    taken only when the bill's own arithmetic holds (taxable + tax = the
+    table's total), and never over a figure the bill states elsewhere.
+    """
+    lines = (text or "").splitlines()
+    for at, line in enumerate(lines):
+        low = line.lower()
+        if "taxable" not in low or not re.search(r"cgst|sgst|igst", low):
+            continue
+        rows = []
+        for row in lines[at + 1:at + 12]:
+            tail = []
+            for token in reversed(row.split()):
+                if not _SUMMARY_FIGURE.match(token):
+                    break
+                tail.append(token)
+            if len(tail) >= 4:
+                rows.append(list(reversed(tail)))
+        width = max((len(r) for r in rows), default=0)
+        rows = [r for r in rows if len(r) == width]
+        heads = line.split()[-width:] if width else []
+        if not rows or len(heads) != width:
+            continue
+        sums: Dict[str, float] = {}
+        for i, head in enumerate(heads):
+            h = _norm(head)
+            if "%" in head:
+                continue
+            key = ("total_discount_amount" if "disc" in h or h.startswith("sch") else
+                   "total_taxable_amount" if "taxable" in h else
+                   next((f"total_{t}_amount" for t in ("cgst", "sgst", "igst", "utgst") if t in h), None) or
+                   ("bill_total" if "total" in h else None))
+            if key:
+                sums[key] = sums.get(key, 0.0) + sum(
+                    float(r[i].lstrip("₹").replace(",", "").rstrip("%")) for r in rows)
+        taxable, total = sums.get("total_taxable_amount"), sums.get("bill_total")
+        tax = sum(v for k, v in sums.items() if k.endswith("gst_amount"))
+        if not taxable or not total or abs(taxable + tax - total) > 1.0:
+            continue
+        for key, value in sums.items():
+            if key == "bill_total":
+                continue
+            leaf = invoice_meta.get(key) or {}
+            if not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE:
+                invoice_meta[key] = _f(f"{value:.2f}")
+        return
+
+
+def _scale_worked_out_tax(items: List[dict], invoice_meta: dict) -> None:
+    """Line tax we worked out, charged on what the bill-wide discount leaves.
+
+    A line's tax worked out as its amount at its rate is too much when the
+    bill takes a discount off every line before the tax: Hindustan Capsule's
+    3% (printed only in its slab summary), Cosmin's 5% (never printed). When
+    the lines less the discount the bill states - or a round rate - come to its
+    printed taxable value, each worked-out tax is scaled by the same share.
+    Only worked-out figures change; a tax the line prints stands.
+    """
+    def printed(key):
+        leaf = invoice_meta.get(key) or {}
+        if not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE:
+            return None
+        return _num(leaf.get("value"))
+
+    taxable = printed("total_taxable_amount")
+    amounts = [_num((i.get("amount") or {}).get("value")) for i in items]
+    if not taxable or not items or any(a is None for a in amounts):
+        return
+    line_total = sum(float(a) for a in amounts)
+    if line_total <= 0 or float(taxable) >= line_total:
+        return
+    gap = line_total - float(taxable)
+    discount = printed("total_discount_amount")
+    pct = gap / line_total * 100
+    if not ((discount and abs(float(discount) - gap) <= 1.0) or abs(pct - round(pct * 2) / 2) <= 0.02):
+        return
+    scale = float(taxable) / line_total
+    for item in items:
+        for head in ("cgst", "sgst", "igst", "utgst"):
+            leaf = item.get(f"{head}_amount") or {}
+            if leaf.get("value") and leaf.get("confidence") == _DERIVED_CONFIDENCE:
+                item[f"{head}_amount"] = _f(f"{float(_num(leaf['value'])) * scale:.2f}",
+                                            confidence=_DERIVED_CONFIDENCE)
 
 
 def _gst_total_from_heads(invoice_meta: dict) -> None:
@@ -2143,11 +2302,15 @@ def parse_scanned_invoice(data: bytes, content_type: str,
     _total_from_words_if_missing(fields, full_text)
 
     invoice_meta = fields.setdefault("invoice", {})
+    _labelled_totals(invoice_meta, full_text)
     _slab_tax_totals(invoice_meta, full_text)
     _summary_tax_totals(invoice_meta, full_text)
     _taxable_from_sub_total(invoice_meta, full_text)
+    _slab_summary_table(invoice_meta, full_text)
     _gst_total_from_heads(invoice_meta)
+    _total_by_cross_foot(invoice_meta, full_text, line_items)
     _drop_impossible_tax_total(invoice_meta)
+    _scale_worked_out_tax(line_items, invoice_meta)
     for key, value in sum_line_totals(line_items).items():
         if not (invoice_meta.get(key) or {}).get("value"):
             # Added up from the lines, not read off the bill - held below a
@@ -2425,11 +2588,15 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     # Any invoice-level total the bill did not print is summed from the lines,
     # so the tax split always reaches the shop's accounts.
     invoice_meta = fields.setdefault("invoice", {})
+    _labelled_totals(invoice_meta, full_text)
     _slab_tax_totals(invoice_meta, full_text)
     _summary_tax_totals(invoice_meta, full_text)
     _taxable_from_sub_total(invoice_meta, full_text)
+    _slab_summary_table(invoice_meta, full_text)
     _gst_total_from_heads(invoice_meta)
+    _total_by_cross_foot(invoice_meta, full_text, line_items)
     _drop_impossible_tax_total(invoice_meta)
+    _scale_worked_out_tax(line_items, invoice_meta)
     for key, value in sum_line_totals(line_items).items():
         if not (invoice_meta.get(key) or {}).get("value"):
             # Added up from the lines, not read off the bill - held below a

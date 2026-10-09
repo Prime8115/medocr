@@ -589,3 +589,137 @@ def test_the_billed_quantity_wins_over_loose_units():
     # Cipla: "Box | Loose Qty | ... | Billed Qty." - the loose column is mostly empty.
     header = ["Batch Number", "Box", "Loose Qty", "Product Description", "Billed Qty.", "Taxable Value"]
     assert header[_map_columns(header)["quantity"]] == "Billed Qty."
+
+
+# --- the last four AI-read bills --------------------------------------------------------
+
+def test_figures_printed_with_a_currency_mark_are_still_figures():
+    from app.services.ocr.pdf_table import _is_record_start
+
+    assert _is_record_start(["OMPRAZZD", "10", "₹138.00", "₹88.71", "₹887.10"], [1, 2, 3, 4])
+
+
+def test_a_name_title_over_other_columns_does_not_merge_them():
+    from app.services.ocr.pdf_table import _cluster_columns
+
+    def w(text, x0, x1, top):
+        return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 5}
+
+    # Hindustan Capsule's own positions.
+    main = [w("QTY", 117.8, 126.5, 154), w("PRODUCTS", 194.3, 217.9, 154), w("BATCH", 227.8, 242.3, 154),
+            w("EXPDT", 255.3, 270.2, 154), w("RATE", 392.8, 403.7, 154)]
+    title = [w("DESCRIPTION", 231.7, 260.4, 147)]
+    labels = [c["label"] for c in _cluster_columns([(147, title), (154, main)])]
+    assert "BATCH" in labels and "EXPDT" in labels
+
+
+def test_the_slab_summary_table_gives_the_bills_discount_taxable_and_tax():
+    from app.services.ocr.invoice_parser import _slab_summary_table
+
+    text = ("KINDLYCHECKYOURGSTNO.PRINTED Amount SchAmt Discamt Taxable CSGT% CGSTRs. SGST% SGSTRs. TotalAmt.\n"
+            "PayinWords:-THREE ₹0.00 ₹0.00 ₹0.00 ₹0.00 6.00% ₹0.00 6.00% ₹0.00 ₹0.00\n"
+            "₹5,162.10 ₹0.00 ₹154.86 ₹5,007.24 6.00% ₹300.43 6.00% ₹300.43 ₹5,608.11\n"
+            "ForHINDUSTAN ₹6,785.10 ₹0.00 ₹203.55 ₹6,581.55 9.00% ₹592.34 9.00% ₹592.34 ₹7,766.23\n"
+            "AuthorisedSignatory\n")
+    invoice: dict = {}
+    _slab_summary_table(invoice, text)
+    assert (_v(invoice, "total_taxable_amount"), _v(invoice, "total_discount_amount"),
+            _v(invoice, "total_cgst_amount")) == ("11588.79", "358.41", "892.77")
+
+
+def test_a_credit_note_page_after_an_invoice_is_its_own_document():
+    from app.services.intake import _page_note_numbers
+
+    page = "CREDITNOTEINVOICE\nCREDITNOTENO.C000084\nTelNo.-913\nDEBITNOTENO.18169\nINVOICEDATE:-05/09/2025"
+    assert _page_note_numbers(page) == {"C000084"}
+    from app.services.ocr.document_kind import kind_from_page
+
+    assert kind_from_page("HINDUSTANCAPSULELLP EASTERNAGENCIES CREDITNOTEINVOICE") == "credit_note"
+    assert kind_from_page("CREDITNOTENO.C000084") is None
+
+
+def test_totals_and_set_offs_under_more_labels():
+    from app.services.ocr.invoice_checks import credit_notes_set_off
+    from app.services.ocr.invoice_parser import _extract_total
+
+    assert _extract_total("143 TOTALPAY ₹12,799.00\n") == "12799.00"
+    assert credit_notes_set_off("CN/DNAmt:- ₹575.00") == [575.0]
+    assert credit_notes_set_off("TDS : 0.00 CR Notes(-) 38,642.00") == [38642.0]
+
+
+def test_the_foot_on_the_last_page_is_read_but_never_a_rate():
+    from app.services.ocr.invoice_parser import _labelled_totals
+
+    invoice: dict = {}
+    _labelled_totals(invoice, "page one\n...\nLess Scheme Disc 66760.00\nTotal Amount Before Tax 600,840.00\n"
+                              "Cr. Total:\nCGST 9.00 % ON 37254.08 = 3352.87 :\n")
+    assert _v(invoice, "total_discount_amount") == "66760.00"
+    assert _v(invoice, "total_taxable_amount") == "600840.00"
+    assert "total_cgst_amount" not in invoice
+
+
+def test_sub_headings_sold_and_free_and_a_bonus_discount_column():
+    from app.services.ocr.invoice_parser import _merge_stacked_header
+
+    table = [["Product Description", "Batch No.", "Quantity", None, "Bonus\nDisc.", "CGST", None, "Amount"],
+             ["", None, "Sold", "Free", "%", "Rate", "Amount", ""],
+             ["O2", "E50845", "5000", "", "10.00", "6", "36050.40", "667,600.00"]]
+    header, data_from = _merge_stacked_header(table, 0)
+    cols = _map_columns(header)
+    assert data_from == 2 and "free_quantity" in cols and header[cols["free_quantity"]] == "Quantity Free"
+    item = _build_item(table[2], cols, header, [], interstate=False)
+    assert _v(item, "discount_percent") == "10.00" and _v(item, "free_quantity") in (None, "")
+
+
+def test_ai_tax_heads_that_break_the_bill_are_taken_from_the_rates():
+    from app.services.ocr.invoice_checks import tax_heads_from_rates
+
+    fields = {"invoice": {"total_taxable_amount": _leaf("2,20,464.66"), "total_amount": _leaf("2,45,734.00"),
+                          "total_cgst_amount": _leaf("12,210.54"), "total_sgst_amount": _leaf("12,210.54")},
+              "line_items": [{"amount": _leaf("203509.00"), "gst_percent": _leaf("12%")},
+                             {"amount": _leaf("16955.66"), "gst_percent": _leaf("5%")}]}
+    assert tax_heads_from_rates(fields)
+    assert _v(fields["invoice"], "total_cgst_amount") == "12634.43"   # 423.89 + 12,210.54, as printed
+
+
+def test_an_ai_line_given_before_its_discount_is_corrected_only_when_it_proves_out():
+    from app.services.ocr.invoice_checks import amounts_net_of_own_discount
+
+    def line(qty, rate, amount, pct=None, off=None):
+        return {"quantity": _leaf(qty), "rate": _leaf(rate), "amount": _leaf(amount),
+                "discount_percent": _leaf(pct), "discount_amount": _leaf(off)}
+
+    # 1,504.22 + 1,581.40 + 100.00 = 3,185.62, and 12% GST: 3,567.89.
+    fields = {"invoice": {"total_amount": _leaf("3568.00"), "total_cgst_amount": _leaf("191.14"),
+                          "total_sgst_amount": _leaf("191.14")},
+              "line_items": [line("22", "75.21", "1654.62", "9.09", "150.40"),    # given before its discount
+                             line("10", "158.14", "1581.40", "9.09", "68.37"),   # a stray discount: no
+                             line("1", "100.00", "100.00")]}
+    assert amounts_net_of_own_discount(fields)
+    assert [_v(i, "amount") for i in fields["line_items"]] == ["1504.22", "1581.40", "100.00"]
+
+
+def test_the_buyers_own_email_is_not_a_missed_supplier_email():
+    from app.services.ocr.missed_fields import find_missed
+
+    fields = {"supplier": {}, "bill_to": {"name": _leaf("EASTERN AGENCIES HEALTHCARE PV")}}
+    missed = find_missed(fields, "Email ID: purchase@easternagencies.co.in\n")
+    assert not [m for m in missed if m["path"] == "supplier.email"]
+
+
+def test_the_total_the_bills_own_arithmetic_points_to():
+    from app.services.ocr.invoice_parser import _total_by_cross_foot
+
+    # H&H: "Total Amount" is the lines before a discount; "Total" is subtotal + IGST.
+    text = ("Total Amount ₹ 189093.15\nSubtotal ₹ 113455.88\nDiscount ₹ 75637.26\n"
+            "IGST ₹ 19330.50\nTotal ₹ 132786.38\n")
+    invoice = {"total_amount": _leaf("189093.15"), "total_taxable_amount": _leaf("113455.88"),
+               "total_igst_amount": _leaf("19330.50")}
+    _total_by_cross_foot(invoice, text)
+    assert _v(invoice, "total_amount") == "132786.38"
+    # Medley: the payable after credit notes, which the bill spells out, stands.
+    medley = {"total_amount": _leaf("634299.00"), "total_taxable_amount": _leaf("600840.00"),
+              "total_cgst_amount": _leaf("36050.40"), "total_sgst_amount": _leaf("36050.40")}
+    _total_by_cross_foot(medley, "Total Amount After Tax 672,940.80\nCR Notes(-) 38,642.00\n"
+                                 "Net Amount Payable 634,299.00\n")
+    assert _v(medley, "total_amount") == "634299.00"

@@ -85,7 +85,11 @@ def kind_from_page(text: Optional[str]) -> Optional[str]:
             found = found or INVOICE
             continue
         for kind, pattern, _words in _KINDS:
-            m = re.search(rf"\b(?:{pattern})\b(?!\s*(?:no\b|number|date|ref|#|:|\.\s*no))", line, re.I)
+            # ...also run into "INVOICE" by a text layer without spaces:
+            # "CREDITNOTEINVOICE" (Hindustan Capsule) - while "CREDITNOTENO."
+            # is still a label.
+            m = re.search(rf"\b(?:{pattern})(?:\b|(?=invoice\b))(?!\s*(?:no\b|number|date|ref|#|:|\.\s*no))",
+                          line, re.I)
             if m and m.group().isupper():
                 return kind
         m = re.search(r"\b(?:tax\s*invoice|gst\s*invoice|bill\s*of\s*supply)\b"

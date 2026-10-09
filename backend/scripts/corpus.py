@@ -224,9 +224,21 @@ def _read_entry(args) -> tuple:
         from app.services import intake
         data = intake.pdf_pages(data, intake.invoice_groups(data)[int(entry["part"])])
     try:
-        return entry["file"], entry.get("part"), read_free(data, own)
+        free = read_free(data, own)
     except Exception as exc:  # noqa: BLE001 - reported, never silently skipped
-        return entry["file"], entry.get("part"), {"error": str(exc)}
+        return entry["file"], entry.get("part"), {"error": str(exc)}, None
+    # A bill with recorded AI answers is also read on them (no AI call), so
+    # its AI-path pins follow any change to what we do with an answer.
+    from app.services.ocr.recorded import ReplayProvider, answers_dir
+
+    store = answers_dir(pathlib.Path(corpus) / ANSWERS, entry["file"], entry.get("part"))
+    on_answers = None
+    if store.exists():
+        try:
+            on_answers = read_with(data, ReplayProvider(store), own)
+        except Exception as exc:  # noqa: BLE001
+            on_answers = {"error": str(exc)}
+    return entry["file"], entry.get("part"), free, on_answers
 
 
 def pins_for(entry: dict, ours: dict, independent: Optional[dict]) -> dict:
@@ -295,6 +307,15 @@ def _pin_changes(old: dict, new: dict) -> list:
             out.append(f"~ {k}: {oe[k]!r} -> {ne[k]!r}")
     if old.get("lines") != new.get("lines"):
         out.append(f"lines {old.get('lines')} -> {new.get('lines')}")
+    oa, na = old.get("ai_path") or {}, new.get("ai_path") or {}
+    for k in sorted(set(oa.get("expect") or {}) | set(na.get("expect") or {})):
+        a, b = (oa.get("expect") or {}).get(k), (na.get("expect") or {}).get(k)
+        if a != b:
+            out.append(f"ai path {k}: {a!r} -> {b!r}")
+    if oa.get("lines") != na.get("lines"):
+        out.append(f"ai path lines {oa.get('lines')} -> {na.get('lines')}")
+    if set(oa.get("expected_failed") or []) != set(na.get("expected_failed") or []):
+        out.append(f"ai path checks failing {oa.get('expected_failed')} -> {na.get('expected_failed')}")
     of, nf = set(old.get("expected_failed") or []), set(new.get("expected_failed") or [])
     if of - nf:
         out.append(f"checks now passing: {sorted(of - nf)}")
@@ -328,10 +349,12 @@ def repin(corpus: pathlib.Path, workers: int = 4) -> None:
         expanded.append(e)
     manifest["invoices"] = expanded
     entries = [e for e in expanded if e.get("verified") != "checked by hand"]
-    readings = {}
+    readings, replays = {}, {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        for n, (file, part, result) in enumerate(pool.map(_read_entry, [(str(corpus), e, own) for e in entries]), 1):
+        for n, (file, part, result, on_answers) in enumerate(
+                pool.map(_read_entry, [(str(corpus), e, own) for e in entries]), 1):
             readings[(file, part)] = result
+            replays[(file, part)] = on_answers
             print(f"\r{n}/{len(entries)}", end="", flush=True)
     print()
     changed, out = 0, []
@@ -348,6 +371,9 @@ def repin(corpus: pathlib.Path, workers: int = 4) -> None:
         path = corpus / READINGS / (pathlib.Path(entry["file"]).name + ".json")
         independent = json.loads(path.read_text(encoding="utf-8")).get("fields") if path.exists() else None
         new = pins_for(entry, ours, independent)
+        replay = replays.get(key_)
+        if new["reader"] == "ai" and replay and "error" not in replay:
+            new["ai_path"] = ai_path_pins(replay, independent if "part" not in entry else None)
         notes = _pin_changes(entry, new)
         if notes:
             changed += 1

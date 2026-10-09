@@ -325,6 +325,21 @@ _DOCUMENT_NO = re.compile(
     r"\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{1,24})", re.I)
 
 
+_NOTE_NO = re.compile(
+    r"(?<![A-Za-z])(?:credit|debit)\s*note\s*(?:no|number|#)\b\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{1,24})", re.I)
+
+
+def _page_note_numbers(text: str) -> set:
+    """The page's own credit note number - or its debit note's, when it names
+    no credit note. A credit note also cites the debit note it answers."""
+    found = {"credit": set(), "debit": set()}
+    for m in _NOTE_NO.finditer(text or ""):
+        if re.search(r"\d", m.group(1)):
+            kind = "credit" if m.group(0).lower().startswith("credit") else "debit"
+            found[kind].add(re.sub(r"(?<=\d)[A-Z]{3,}$", "", m.group(1).upper()))
+    return found["credit"] or found["debit"]
+
+
 def _positioned_texts(data: bytes, pages: int) -> List[str]:
     try:
         import pdfplumber
@@ -379,6 +394,11 @@ def invoice_groups(data: bytes) -> List[List[int]]:
     numbers: List[str] = []
     for i, text in enumerate(texts):
         found = per_page[i]
+        if not found:
+            # A page naming no invoice but a credit or debit note of its own is
+            # that note, not the invoice's next page: Hindustan Capsule prints
+            # its credit note C000084 after the invoice it is set off against.
+            found = {f"NOTE:{n}" for n in _page_note_numbers(text)}
         if len(found) > 1:
             return every
         number = next(iter(found), None)

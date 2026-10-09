@@ -361,6 +361,25 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                 check_warnings.append(
                     f"{removed} repeated line(s) were removed. Please confirm the item count."
                 )
+        if pipeline not in ("pdf_parser", "tesseract"):
+            # An AI reading's tax heads that break the bill's own arithmetic,
+            # from the lines' rates when those restore it - once repeated
+            # copies' lines are gone. Not the parser's: it reads the heads off
+            # their printed labels, and a bill at odds with itself (K Sales,
+            # Torrent) is the reviewer's to see, not ours to smooth over.
+            from app.services.ocr.invoice_checks import tax_heads_from_rates
+
+            heads_note = tax_heads_from_rates(fields)
+            if heads_note:
+                check_warnings.append(heads_note)
+            # An AI-read line given before its own discount, when correcting
+            # it is what makes the bill add up (invoice_checks).
+            from app.services.ocr.invoice_checks import amounts_net_of_own_discount
+
+            net_note = amounts_net_of_own_discount(
+                fields, hints.get("document_text") or hints.get("party_text"))
+            if net_note:
+                check_warnings.append(net_note)
 
     if resolved_type == "invoice":
         # A line the supplier billed at zero reads as zero, not as a gap.
@@ -493,7 +512,9 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
         return False
     if len(items) >= _SHORT_INVOICE_LINES:
         return True
-    report = reconcile_invoice(parsed)
+    # With the bill's own text: what it prints beside its lines - an invoice
+    # value before a credit note it sets off (Medley) - is part of the proof.
+    report = reconcile_invoice(parsed, page_text=(parsed.get("_hints") or {}).get("document_text"))
     if report.get("total_reconciles") is True:
         return True
     log.info(

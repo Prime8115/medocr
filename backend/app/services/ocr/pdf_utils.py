@@ -150,7 +150,32 @@ def _is_digital_pdf(data: bytes, min_chars_per_page: int, sample_pages: int) -> 
         return False
     total = sum(len(t.strip()) for t in pages)
     # Digital if the average sampled page carries real text.
-    return total >= min_chars_per_page * max(1, len(pages)) // 2
+    if total < min_chars_per_page * max(1, len(pages)) // 2:
+        return False
+    return not _words_drawn_as_shapes(data, sample_pages)
+
+
+def _words_drawn_as_shapes(data: bytes, sample_pages: int) -> bool:
+    """True when most of the page's words are drawings, not text.
+
+    Ferring (INMH21221) prints only its letterhead as text; the buyer, every
+    line and the totals are drawn as outlines - 2,727 curves beside 306
+    characters. Taken as digital, the AI was sent the text alone, the
+    letterhead, and returned a bill of nothing. Such a page is read as a
+    picture. A logo is a few hundred curves; this is thousands, outnumbering
+    the characters several times over.
+    """
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            idx = _sample_indexes(len(pdf.pages), sample_pages)
+            drawn = sum(1 for i in idx
+                        if len(pdf.pages[i].curves) > 1000
+                        and len(pdf.pages[i].curves) > 3 * len(pdf.pages[i].chars))
+            return bool(idx) and drawn * 2 > len(idx)
+    except Exception:  # noqa: BLE001 - unreadable here: the text decides
+        return False
 
 
 def split_pdf(data: bytes, pages_per_chunk: int) -> List[bytes]:

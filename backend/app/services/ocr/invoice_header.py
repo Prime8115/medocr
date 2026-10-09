@@ -119,10 +119,10 @@ _DATES: Dict[str, List[str]] = {
 _TOTALS: Dict[str, List[str]] = {
     "total_gst_amount": ["Total GST Amount", "Total GST Amt", "Total GST", "GST Total",
                          "Total Tax Amount", "Total Tax"],
-    "total_taxable_amount": ["Total Taxable Value", "Total Taxable Amount", "Total Taxable",
+    "total_taxable_amount": ["Total Taxable Value", "Total Taxable Amount", "Total Taxable", "Total Amount Before Tax",
                              "Taxable Value Total", "Basic Amount", "Total Basic"],
     "total_discount_amount": ["Total Discount Amount", "Total Discount Amt", "Total Discount", "Discount Total", "SD Discount",
-                              "Total Disc Amt", "Total Disc", "Less Discount", "Less Special Disc", "Less Disc"],
+                              "Total Disc Amt", "Total Disc", "Less Discount", "Less Special Disc", "Less Scheme Disc", "Less Disc"],
     "total_cgst_amount": ["Total CGST Amt", "Total CGST Amount", "Total CGST", "CGST Total"],
     "total_sgst_amount": ["Total SGST Amt", "Total SGST Amount", "Total SGST", "SGST Total",
                           "Total UTGST Amt"],
@@ -263,7 +263,9 @@ def extract_totals(text: str) -> Dict[str, Optional[str]]:
     out: Dict[str, Optional[str]] = {}
     for field, labels in _TOTALS.items():
         # "Less Disc. :Rs. 0.00" (Abbott): a currency mark may sit between.
-        value = _labelled(text, labels, r"(?:rs\.?|inr|₹)?\s*" + _MONEY)
+        # Never a rate: "Cr. Total:" over "CGST 9.00 % ON 37254.08" (Menarini)
+        # reads as "Total CGST 9.00" across the line break.
+        value = _labelled(text, labels, r"(?:rs\.?|inr|₹)?\s*" + _MONEY + r"(?![\d,.]*\s*%)")
         out[field] = value.replace(",", "") if value else None
     return out
 

@@ -64,6 +64,9 @@ _FOOTER = re.compile(
     re.I,
 )
 _NUMERIC = re.compile(r"^-?[\d,]+\.?\d*$")
+# A currency mark printed on every figure ("₹138.00", Hindustan Capsule) does not
+# stop it being a number.
+_CURRENCY = re.compile(r"^(?:₹|rs\.?|inr)", re.I)
 
 # Vertical tolerance when deciding two words share a line, in points.
 _LINE_TOLERANCE = 3.5
@@ -179,11 +182,26 @@ def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
     return start, end
 
 
+_NAME_HEADING = re.compile(r"description|particulars|details", re.I)
+
+
 def _cluster_columns(band: List[Line]) -> List[dict]:
     """Merge the header band's words into columns by horizontal overlap."""
     words = [w for _, row in band for w in row]
     if not words:
         return []
+    # A name heading set ABOVE other columns is a title over them, not one of
+    # them: Hindustan Capsule prints "DESCRIPTION" over "BATCH | EXPDT", beside
+    # its own "PRODUCTS" column, and the two columns merged into one. Dropped
+    # only when it spans two headings of the main line and that line already
+    # names the product.
+    main = max((row for _, row in band), key=len)
+    if any(_NAME_HEADING.fullmatch(str(w["text"])) or str(w["text"]).lower().startswith("product")
+           for w in main):
+        def spans(w):
+            return sum(1 for m in main if float(m["x0"]) < float(w["x1"]) and float(w["x0"]) < float(m["x1"]))
+        words = [w for w in words
+                 if any(w is m for m in main) or not (_NAME_HEADING.fullmatch(str(w["text"])) and spans(w) >= 2)]
     words.sort(key=lambda w: float(w["x0"]))
 
     columns: List[dict] = []
@@ -266,7 +284,8 @@ def _is_record_start(cells: List[str], numeric_columns: Sequence[int]) -> bool:
     Product names and manufacturer names spill onto their own lines; those carry
     no numbers and belong to the record above them.
     """
-    filled = sum(1 for i in numeric_columns if i < len(cells) and _NUMERIC.match(cells[i].replace(" ", "")))
+    filled = sum(1 for i in numeric_columns
+                 if i < len(cells) and _NUMERIC.match(_CURRENCY.sub("", cells[i].replace(" ", ""))))
     return filled >= 2
 
 
