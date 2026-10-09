@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useLocalSearchParams, router } from 'expo-router';
+import { Stack, useLocalSearchParams, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -27,7 +27,7 @@ import {
 } from '@/src/api/documents';
 import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { addLineItem, buildSections, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
+import { addLineItem, buildSections, documentTitle, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
@@ -458,6 +458,8 @@ export default function ReviewScreen() {
 
   return (
     <Screen>
+      {/* The bill's own name in the header - its supplier and number - not "Review". */}
+      <Stack.Screen options={{ title: documentTitle(doc).title }} />
       {/* Fixed top: title, summary, and (for long lists) search + filter — always visible */}
       <View style={styles.topBar}>
         <View style={styles.headerRow}>

@@ -225,3 +225,44 @@ export function extraColumns(fields: Fields, index: number): ExtraColumn[] {
     .filter((e) => e && e.label && e.value)
     .map((e) => ({ label: String(e.label), value: String(e.value) }));
 }
+/** What a scanned document is called in lists: the bill itself, not its ID.
+ *  An invoice is its supplier and number; a prescription its patient. */
+export function documentTitle(doc: {
+  doc_type: string;
+  status: string;
+  created_at: string;
+  payload?: { fields?: Fields } | null;
+}): { title: string; subtitle: string } {
+  const fields = doc.payload?.fields ?? {};
+  const v = (path: string) => {
+    const value = getLeaf(fields, path)?.value;
+    return value == null ? '' : String(value).trim();
+  };
+  const when = new Date(doc.created_at);
+  const scanned = Number.isNaN(when.getTime())
+    ? ''
+    : when.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  if (doc.doc_type === 'prescription') {
+    const who = v('patient.name') || v('prescriber.name');
+    return {
+      title: who ? `Prescription · ${who}` : 'Prescription',
+      subtitle: scanned ? `scanned ${scanned}` : '',
+    };
+  }
+  const supplier = v('supplier.name');
+  const number = v('invoice.invoice_no');
+  const total = Number(v('invoice.total_amount').replace(/[^\d.-]/g, ''));
+  const money = v('invoice.total_amount') && Number.isFinite(total)
+    ? `₹${total.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '';
+  let title = [supplier, number && `#${number}`].filter(Boolean).join(' · ');
+  if (!title) {
+    title = doc.status === 'queued' || doc.status === 'processing' ? 'Invoice (reading…)' : 'Invoice';
+  }
+  return {
+    title,
+    subtitle: [v('invoice.invoice_date'), money, !v('invoice.invoice_date') && scanned && `scanned ${scanned}`]
+      .filter(Boolean)
+      .join(' · '),
+  };
+}

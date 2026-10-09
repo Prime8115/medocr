@@ -12,7 +12,7 @@ import {
   type DocumentDto,
   type ExtractionPayload,
 } from '../api/documents';
-import { addLineItem, buildSections, confidencePercent, extraColumns, getLeaf, isLowConfidence, removeLineItem, setLeafValue } from '../lib/payload';
+import { addLineItem, buildSections, confidencePercent, documentTitle, extraColumns, getLeaf, isLowConfidence, removeLineItem, setLeafValue } from '../lib/payload';
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import { formatMoney } from '../lib/table';
@@ -236,8 +236,10 @@ export default function DocumentDetail() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
-          <h1 style={{ textTransform: 'capitalize' }}>{doc.doc_type}</h1>
-          <div className="text-muted" style={{ fontFamily: 'monospace' }}>{doc.id} · {confidencePercent(doc.overall_confidence)}</div>
+          <h1>{documentTitle(doc).title}</h1>
+          <div className="text-muted">
+            {[documentTitle(doc).subtitle, confidencePercent(doc.overall_confidence)].filter(Boolean).join(' · ')}
+          </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
           <span className={`badge badge-${doc.status}`}>{doc.status.replace('_', ' ')}</span>

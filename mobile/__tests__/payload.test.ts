@@ -1,4 +1,4 @@
-import { addLineItem, buildSections, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, Fields } from '../src/lib/payload';
+import { addLineItem, buildSections, documentTitle, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, Fields } from '../src/lib/payload';
 
 const prescription: ExtractionPayload = {
   doc_type: 'prescription',
@@ -165,5 +165,36 @@ describe('adding and removing line items by hand', () => {
     const left = removeLineItem(two, 0);
     expect((left.line_items as unknown[]).length).toBe(1);
     expect(getLeaf(left, 'line_items[0].description')?.value).toBe('');
+  });
+});
+
+describe('documentTitle', () => {
+  const leaf = (value: string) => ({ value, confidence: 1 });
+  const invoice = {
+    doc_type: 'invoice',
+    status: 'needs_review',
+    created_at: '2026-10-09T06:00:00Z',
+    payload: {
+      fields: {
+        supplier: { name: leaf('MEDLEY PHARMACEUTICALS LIMITED') },
+        invoice: { invoice_no: leaf('5311504979'), invoice_date: leaf('26.08.2025'), total_amount: leaf('634299.00') },
+      },
+    },
+  };
+
+  it('names an invoice by its supplier and number, not its ID', () => {
+    const { title, subtitle } = documentTitle(invoice);
+    expect(title).toBe('MEDLEY PHARMACEUTICALS LIMITED · #5311504979');
+    expect(subtitle).toBe('26.08.2025 · ₹6,34,299.00');
+  });
+
+  it('says a scan still being read is an invoice being read', () => {
+    expect(documentTitle({ ...invoice, status: 'processing', payload: null }).title).toBe('Invoice (reading…)');
+  });
+
+  it('names a prescription by its patient', () => {
+    const rx = { doc_type: 'prescription', status: 'approved', created_at: '2026-10-09T06:00:00Z',
+      payload: { fields: { patient: { name: leaf('R. Rana') } } } };
+    expect(documentTitle(rx).title).toBe('Prescription · R. Rana');
   });
 });

@@ -3,6 +3,7 @@ import { Search, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { listDocuments, type DocumentDto } from '../api/documents';
+import { documentTitle } from '../lib/payload';
 import { confidencePercent } from '../lib/payload';
 import ExtractionHealth from './ExtractionHealth';
 
@@ -33,7 +34,12 @@ export default function ReviewQueue() {
   }, [load]);
 
   const q = query.trim().toLowerCase();
-  const filtered = docs.filter((d) => !q || d.id.toLowerCase().includes(q) || d.doc_type.includes(q));
+  // Searched by what the bill is called - supplier, invoice number - as well as its ID.
+  const filtered = docs.filter((d) => {
+    if (!q) return true;
+    const { title, subtitle } = documentTitle(d);
+    return [d.id, d.doc_type, title, subtitle].some((s) => s.toLowerCase().includes(q));
+  });
 
   return (
     <div>
@@ -84,7 +90,7 @@ export default function ReviewQueue() {
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-glass)', color: 'var(--text-secondary)' }}>
-                <th style={{ padding: '16px 24px', fontWeight: 500 }}>Document ID</th>
+                <th style={{ padding: '16px 24px', fontWeight: 500 }}>Document</th>
                 <th style={{ padding: '16px 24px', fontWeight: 500 }}>Type</th>
                 <th style={{ padding: '16px 24px', fontWeight: 500 }}>Confidence</th>
                 <th style={{ padding: '16px 24px', fontWeight: 500 }}>Status</th>
@@ -98,7 +104,10 @@ export default function ReviewQueue() {
                   onClick={() => navigate(`/documents/${doc.id}`)}
                   style={{ borderBottom: '1px solid var(--border-glass)' }}
                 >
-                  <td style={{ padding: '16px 24px', fontFamily: 'monospace' }}>{doc.id}</td>
+                  <td style={{ padding: '16px 24px' }}>
+                    <div style={{ fontWeight: 500 }}>{documentTitle(doc).title}</div>
+                    <div className="text-muted" style={{ fontSize: 13 }}>{documentTitle(doc).subtitle}</div>
+                  </td>
                   <td style={{ padding: '16px 24px', textTransform: 'capitalize' }}>{doc.doc_type}</td>
                   <td style={{ padding: '16px 24px' }}>
                     <ConfidenceBar value={doc.overall_confidence ?? null} />

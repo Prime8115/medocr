@@ -7,6 +7,7 @@ import { useQueue } from '@/src/queue/QueueContext';
 import { Badge, CenterState, Screen } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
 import { confidencePercent } from '@/src/lib/confidence';
+import { documentTitle } from '@/src/lib/payload';
 import { t } from '@/src/i18n/strings';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warning' | 'danger' | 'info'> = {
@@ -55,7 +56,12 @@ export default function HistoryScreen() {
   );
 
   const q = query.trim().toLowerCase();
-  const filtered = docs.filter((d) => !q || d.id.toLowerCase().includes(q) || d.doc_type.includes(q));
+  // Searched by what the bill is called - supplier, invoice number - as well as its ID.
+  const filtered = docs.filter((d) => {
+    if (!q) return true;
+    const { title, subtitle } = documentTitle(d);
+    return [d.id, d.doc_type, title, subtitle].some((s) => s.toLowerCase().includes(q));
+  });
 
   const uploading = queueItems.filter((i) => i.status !== 'done');
 
@@ -114,17 +120,20 @@ export default function HistoryScreen() {
         ListEmptyComponent={
           loading ? null : <CenterState title={t('empty')} subtitle="Scanned documents will appear here." />
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.card} onPress={() => router.push(`/review/${item.id}`)}>
-            <View style={styles.cardMain}>
-              <Text style={styles.cardId}>{item.id}</Text>
-              <Text style={styles.cardMeta}>
-                {item.doc_type} · {confidencePercent(item.overall_confidence)}
-              </Text>
-            </View>
-            <Badge label={statusLabel(item.status)} tone={STATUS_TONE[item.status] ?? 'neutral'} />
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const { title, subtitle } = documentTitle(item);
+          return (
+            <TouchableOpacity style={styles.card} onPress={() => router.push(`/review/${item.id}`)}>
+              <View style={styles.cardMain}>
+                <Text style={styles.cardId} numberOfLines={2}>{title}</Text>
+                <Text style={styles.cardMeta}>
+                  {[subtitle, confidencePercent(item.overall_confidence)].filter(Boolean).join(' · ')}
+                </Text>
+              </View>
+              <Badge label={statusLabel(item.status)} tone={STATUS_TONE[item.status] ?? 'neutral'} />
+            </TouchableOpacity>
+          );
+        }}
       />
     </Screen>
   );
@@ -162,5 +171,5 @@ const styles = StyleSheet.create({
   },
   cardMain: { flex: 1 },
   cardId: { ...font.h3, color: colors.text },
-  cardMeta: { ...font.caption, color: colors.textSecondary, marginTop: 2, textTransform: 'capitalize' },
+  cardMeta: { ...font.caption, color: colors.textSecondary, marginTop: 2 },
 });
