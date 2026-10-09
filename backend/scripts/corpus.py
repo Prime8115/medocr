@@ -82,7 +82,7 @@ def same(kind, a, b):
         b2 = re.sub(r"(private|pvt|limited|ltd|the|ms)", "", key(b))
         return bool(a2) and bool(b2) and (a2.startswith(b2[:10]) or b2.startswith(a2[:10]))
     if kind == "ref":
-        return key(a) == key(b) or bool(key(a) and key(b) and (key(a) in key(b) or key(b) in key(a)))
+        return key(a) == key(b)  # exact: a cut-off number must never count as agreeing
     if kind == "exp":
         return key(a)[-2:] == key(b)[-2:] if a and b else a == b
     return key(a) == key(b)

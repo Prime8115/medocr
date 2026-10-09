@@ -317,6 +317,30 @@ def _gross_total(items: List[dict]) -> Optional[float]:
     return round(total, 2) if seen else None
 
 
+def _discounted_gross(items: List[dict]) -> Optional[float]:
+    """Each line less ITS OWN discount %, with its GST added back.
+
+    Aurowin prints the amount before discount (quantity x rate) and a "DISC
+    5.00" on every line, and charges GST on what is left: 27,485.60 less 5% =
+    26,111.32, plus 5% GST = 27,417 - its total. Only lines whose discount
+    leaves money changed count; None when no line carries a discount %.
+    """
+    total, any_discount, seen = 0.0, False, False
+    for item in items:
+        amount = _num(item.get("amount"))
+        if amount is None:
+            continue
+        seen = True
+        pct = _num(item.get("discount_percent"))
+        taxable = _num(item.get("taxable_amount"))
+        if pct and 0 < pct < 100 and (taxable is None or abs(taxable - amount) < 0.01):
+            amount = amount * (1 - pct / 100.0)
+            any_discount = True
+        gst = _num(item.get("gst_percent")) or 0.0
+        total += amount * (1 + gst / 100.0)
+    return round(total, 2) if seen and any_discount else None
+
+
 def _bill_tax(invoice: dict) -> Optional[float]:
     """The tax the bill states at its foot: the combined GST figure, or else the
     sum of whichever heads it prints (CGST, SGST, IGST, UTGST)."""
@@ -449,6 +473,9 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
 
     if line_total is not None and printed_total:
         candidates = _expected_totals(line_total, gross_total, invoice)
+        discounted = _discounted_gross(items)
+        if discounted is not None:
+            candidates.append(("lines less their own discount % + per-line GST", discounted))
         tolerance = total_tolerance(printed_total, len(items))
         # The closest candidate decides, so the one reported is the real build-up.
         best_name, best_value = min(candidates, key=lambda c: abs(c[1] - printed_total))

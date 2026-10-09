@@ -44,7 +44,9 @@ class Printed(NamedTuple):
 
 _PRINTED: List[Printed] = [
     Printed("invoice.invoice_no", "Invoice number",
-            (r"\binvoice[ \t]*no\.?", r"\bbill[ \t]*no\.?", r"\binv\.?[ \t]*no\.?"), "token"),
+            # Never the e-way bill's: Zuventus prints "eWayBillNo.262023995925".
+            (r"\binvoice[ \t]*no\.?", r"(?<!way)(?<!way )(?<!way-)\bbill[ \t]*no\.?",
+             r"\binv\.?[ \t]*no\.?"), "token"),
     Printed("invoice.invoice_date", "Invoice date",
             (r"\binvoice[ \t]*date", r"\binv\.?[ \t]*date", r"\bbill[ \t]*date",
              r"\binvoice[ \t]*no\.?" + _SEP + r"[A-Za-z0-9\-/]{2,40}" + _SAME_LINE + r"(?:date|dt)\.?"),

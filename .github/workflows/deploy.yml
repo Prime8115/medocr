@@ -89,7 +89,14 @@ jobs:
         env:
           INVOICE_CORPUS: ${{ github.workspace }}/invoice-corpus
           INVOICE_CORPUS_REQUIRED: '1'
-        run: python -m pytest -q
+        # Each failing test is also reported as an annotation, readable on the
+        # run's page without downloading logs.
+        run: |
+          set -o pipefail
+          python -m pytest -q -rf 2>&1 | tee pytest-output.txt || {
+            grep -E "^(FAILED|ERROR) " pytest-output.txt | head -40 | sed 's/^/::error::/'
+            exit 1
+          }
 
   deploy:
     name: Deploy to production

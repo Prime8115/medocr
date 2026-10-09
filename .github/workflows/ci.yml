@@ -59,7 +59,14 @@ jobs:
           INVOICE_CORPUS: ${{ github.workspace }}/invoice-corpus
           # On main the corpus must be there: a gate that can be skipped is not one.
           INVOICE_CORPUS_REQUIRED: ${{ github.ref == 'refs/heads/main' && '1' || '0' }}
-        run: python -m pytest -q
+        # Each failing test is also reported as an annotation, readable on the
+        # run's page without downloading logs.
+        run: |
+          set -o pipefail
+          python -m pytest -q -rf 2>&1 | tee pytest-output.txt || {
+            grep -E "^(FAILED|ERROR) " pytest-output.txt | head -40 | sed 's/^/::error::/'
+            exit 1
+          }
 
   mobile:
     runs-on: ubuntu-24.04

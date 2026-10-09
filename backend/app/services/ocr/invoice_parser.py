@@ -127,6 +127,12 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
 }
 
 _COPY_MARKERS = (
+    # East India prints "First Copy" / "Second Copy : Transporter" / ...: all
+    # three copies were read as one bill, every line tripled.
+    ("first", re.compile(r"\bfirst\s+copy\b", re.I)),
+    ("second", re.compile(r"\bsecond\s+copy\b", re.I)),
+    ("third", re.compile(r"\bthird\s+copy\b", re.I)),
+    ("fourth", re.compile(r"\bfourth\s+copy\b", re.I)),
     ("original", re.compile(r"\boriginal\b", re.I)),
     ("duplicate", re.compile(r"\bduplicate\b", re.I)),
     ("triplicate", re.compile(r"\btriplicate\b", re.I)),
@@ -210,7 +216,11 @@ def _map_columns(header_row) -> dict:
             for idx, h in enumerate(norms):
                 if not h or idx in taken:
                     continue
-                if keyword in h and not any(e in h for e in excludes):
+                # "Taxable Amt after Disc." (Zuventus) IS the taxable amount;
+                # the discount it mentions is already taken off.
+                excluded = any(e in h for e in excludes) and not (
+                    field == "amount" and keyword.startswith("taxable"))
+                if keyword in h and not excluded:
                     hit = idx
                     break
             if hit is not None:
@@ -478,6 +488,9 @@ _INVOICE_NO_LABELS = [
     # Never the e-way bill's number: IPCA prints "Eway Bill NO: 271987615581".
     re.compile(r"(?<![A-Za-z])(?<!way )(?<!way-)(?<!way)bill[ \t]*(?:no|num(?:ber)?)\.?" + _NO_VALUE, re.I),
     re.compile(r"(?<![A-Za-z])invoice[ \t]*:" + _NO_VALUE, re.I),
+    # "Doc. No/Date : 5403626760/25.08.2025" (Zuventus): number and date as one.
+    re.compile(r"(?<![A-Za-z])(?:invoice|inv|bill|doc(?:ument)?)\.?[ \t]*no\.?[ \t]*/[ \t]*(?:date|dt)\.?"
+               r"[ \t]*[:\-]?[ \t]*([A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])(?=[ \t]*/)", re.I),
     re.compile(r"(?<![A-Za-z])doc(?:ument)?\.?[ \t]*no\.?" + _NO_VALUE, re.I),
 ]
 _LOOKS_LIKE_DATE = re.compile(r"^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{2,4}$")
@@ -511,6 +524,9 @@ _DATE_VALUE = (
 _INVOICE_DATE = [
     re.compile(r"\binvoice\s*date\s*[:\-]?\s*" + _DATE_VALUE, re.I),
     re.compile(r"\binvoice\s*no.*?\bdt\.?\s*[:\-]?\s*" + _DATE_VALUE, re.I),
+    # "Doc. No/Date : 5403626760/25.08.2025" - the date after the number.
+    re.compile(r"(?<![A-Za-z])(?:invoice|inv|bill|doc(?:ument)?)\.?[ \t]*no\.?[ \t]*/[ \t]*(?:date|dt)\.?"
+               r"[ \t]*[:\-]?[ \t]*[A-Za-z0-9\-]+[ \t]*/[ \t]*" + _DATE_VALUE, re.I),
     re.compile(r"\bdated?\s*[:\-]\s*" + _DATE_VALUE, re.I),
     re.compile(r"\bdate\s*[:\-]\s*" + _DATE_VALUE, re.I),
 ]
@@ -674,6 +690,15 @@ def _extract_header_meta(
     number = inv_no.group(1) if inv_no else None
     if not number or not any(ch.isdigit() for ch in number) or _LOOKS_LIKE_DATE.match(number):
         number = find_invoice_no(text)
+    if number:
+        # The next label run into the number: "KLPL000419Date" (Klingen).
+        number = re.sub(r"(?<=\d)(?:date|dated|dt)$", "", number, flags=re.I)
+    if number and number[-1] in "-/":
+        # A number that ends in "-" or "/" wrapped onto the next line: East
+        # India prints "MUM25-" and, under it, "26TM/00523".
+        rest = re.search(re.escape(number) + r"[^\n]*\n[ \t]*([A-Za-z0-9][A-Za-z0-9\-/]*)", text or "")
+        if rest and any(ch.isdigit() for ch in rest.group(1)):
+            number = number + rest.group(1)
     inv_dt = next((m for m in (p.search(text or "") for p in _INVOICE_DATE) if m), None)
 
     supplier = {
@@ -997,6 +1022,27 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 continue
             item[field] = _f(value)
 
+    # A tax head's heading run into the line's own "AMOUNT" heading (Aurowin:
+    # "SGST | CGST AMOUNT" over "2.50 | 2.50 1403.40"): the cell holds the
+    # head's RATE and the line AMOUNT. Taken as the head's tax it posted 2.50
+    # rupees and left the line with no amount. Only where the bill has no
+    # amount column of its own, and the two figures are a rate and money.
+    if cols.get("amount") is None:
+        for head in ("cgst", "sgst", "igst", "utgst"):
+            idx = cols.get(f"{head}_amount")
+            if idx is None or idx >= len(row):
+                continue
+            # The line's own row only: Aurowin's last line has the bill's TOTAL
+            # row stacked under it in the same cell ("2.50 2828.60\n27485.60").
+            first = str(row[idx] or "").split("\n")[0]
+            figures = [float(n.replace(",", "")) for n in _NUM.findall(first)]
+            if len(figures) == 2 and _is_gst_rate(figures[0]) and figures[1] > 10 * max(figures[0], 1):
+                if not (item.get(f"{head}_percent") or {}).get("value"):
+                    item[f"{head}_percent"] = _f(f"{figures[0]:g}")
+                item["amount"] = _f(f"{figures[1]:.2f}")
+                item.pop(f"{head}_amount", None)
+                break
+
     # A "discount %" over 100 is money, not a rate: the ERP above heads its
     # discount column just "DISC" and prints 870.46 rupees in it.
     disc = _num((item.get("discount_percent") or {}).get("value"))
@@ -1062,6 +1108,23 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             # total for that head read 0.00 - Menarini prints "IGST 0.00" - not
             # blank, which the export reads as "not captured".
             item[f"{which}_amount"] = _f("0.00")
+    # No amount column, and a tax head's "amount" is exactly quantity x rate:
+    # that is the LINE's amount printed in the tax column (Klingen heads its
+    # last column just "C G S T" over "6.00 7521.50" - 50 x 150.43). As tax it
+    # was 75 times too much; as the amount it reconciles.
+    if cols.get("amount") is None and not (item.get("amount") or {}).get("value"):
+        qty = _num(cell("quantity"))
+        rate = _num(cell("rate"))
+        for head in ("cgst", "sgst", "igst", "utgst"):
+            value = _num((item.get(f"{head}_amount") or {}).get("value"))
+            if not (qty and rate and value):
+                continue
+            built = float(qty) * float(rate)
+            if built > 0 and abs(float(value) - built) <= max(1.0, 0.005 * built):
+                item["amount"] = _f(f"{float(value):.2f}")
+                item.pop(f"{head}_amount", None)
+                break
+
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
     elif (item.get("gst_percent") or {}).get("value") in (None, "0.0", "0"):
@@ -1250,6 +1313,20 @@ def _better_reading(word_items: List[dict], ruled_items: List[dict]) -> bool:
     def score(items: List[dict]) -> int:
         return sum(1 for item in items if line_arithmetic_holds(item))
 
+    def solid(items: List[dict]) -> int:
+        return sum(1 for item in items
+                   if (item.get("batch_no") or {}).get("value") and (item.get("amount") or {}).get("value"))
+
+    # Far more real lines - each with a batch and an amount - outweighs a few
+    # whose arithmetic happens to check: East India's ruled grid gave 3 such
+    # lines of its 17, while the rebuild read all 17 but could not test their
+    # arithmetic (its rate sits in a merged heading).
+    word_solid, ruled_solid = solid(word_items), solid(ruled_items)
+    if word_solid >= 2 * ruled_solid and word_solid >= ruled_solid + 3:
+        return True
+    if ruled_solid >= 2 * word_solid and ruled_solid >= word_solid + 3:
+        return False
+
     word_score, ruled_score = score(word_items), score(ruled_items)
     if word_score != ruled_score:
         return word_score > ruled_score
@@ -1330,8 +1407,38 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
                 rows.append(item)
-        out.extend(rows)
+        out.extend(_without_totals_row(rows))
     return out
+
+
+def _without_totals_row(items: List[dict]) -> List[dict]:
+    """Drop the table's own totals row, read as if it were a product.
+
+    Cipla Pharma and K Sales close the item grid with a row carrying the
+    total quantity and the total amount under a remark ("Remark :"), which
+    doubled the bill. Dropped only on proof: no batch, no HSN, no rate and no
+    expiry - nothing a real product line has - AND an amount equal to the sum
+    of every other line. A real product with the same amount as the rest
+    together (two equal lines) still has its batch, so it stays.
+    """
+    if len(items) < 2:
+        return items
+
+    def has(item, key):
+        return bool((item.get(key) or {}).get("value"))
+
+    kept = []
+    for n, item in enumerate(items):
+        if any(has(item, k) for k in ("batch_no", "hsn", "rate", "expiry")):
+            kept.append(item)
+            continue
+        amount = _num((item.get("amount") or {}).get("value"))
+        rest = [_num((o.get("amount") or {}).get("value")) for m, o in enumerate(items) if m != n]
+        rest_total = sum(float(a) for a in rest if a is not None)
+        if amount is not None and rest_total > 0 and abs(float(amount) - rest_total) <= max(1.0, 0.0005 * rest_total):
+            continue
+        kept.append(item)
+    return kept
 
 
 def _total_from_words_if_missing(fields: dict, full_text: str) -> None:
@@ -1640,6 +1747,9 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
 
             for page_no in wanted:
                 line_items.extend(page_items.get(page_no, []))
+            # A totals row printed on its own page (Cipla Pharma) is only
+            # recognisable against the whole bill's lines.
+            line_items = _without_totals_row(line_items)
             full_text = "\n".join(page_texts[i] for i in wanted)
             stated_count = _extract_item_count(full_text)
     except Exception as exc:  # noqa: BLE001 - any parsing failure -> fall back to AI
