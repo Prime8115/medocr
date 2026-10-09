@@ -723,3 +723,82 @@ def test_the_total_the_bills_own_arithmetic_points_to():
     _total_by_cross_foot(medley, "Total Amount After Tax 672,940.80\nCR Notes(-) 38,642.00\n"
                                  "Net Amount Payable 634,299.00\n")
     assert _v(medley, "total_amount") == "634299.00"
+
+
+# --- the flagged bills --------------------------------------------------------------------
+
+def test_the_signed_einvoice_qr_gives_the_exact_irn():
+    import base64
+    import json as _json
+
+    from app.services.ocr import einvoice_qr
+
+    data = {"Irn": "4cf78a8837e69e130563415933b2ea9198a724f41c6c181f86cdd103715cbda3",
+            "DocNo": "SCF/25-26/01246", "SellerGstin": "27AAACM2740G1ZR", "BuyerGstin": EASTERN}
+    body = base64.urlsafe_b64encode(_json.dumps({"data": _json.dumps(data)}).encode()).decode().rstrip("=")
+    assert einvoice_qr._token_data(f"head.{body}.sig")["DocNo"] == "SCF/25-26/01246"
+    assert einvoice_qr._token_data("https://example.com") is None
+    token = einvoice_qr.EINVOICE_QR.set({"irn": data["Irn"], "invoice_no": "SCF/25-26/01246",
+                                         "supplier_gstin": "27AAACM2740G1ZR", "buyer_gstin": EASTERN})
+    try:
+        fields = {"invoice": {"irn": _leaf("4cf7aa837ee9e1306363")}, "supplier": {}, "bill_to": {}}
+        notes = einvoice_qr.apply(fields)
+        assert _v(fields["invoice"], "irn") == data["Irn"] and notes
+        assert _v(fields["supplier"], "gstin") == "27AAACM2740G1ZR"   # a blank filled
+    finally:
+        einvoice_qr.EINVOICE_QR.reset(token)
+
+
+def test_an_irn_whose_start_is_printed_above_its_label():
+    from app.services.ocr.invoice_header import _complete_irn
+
+    text = ("NO : ae41403d7072ff39ff928d5c\nState Code : 10 State Code : 10\n"
+            "IRN NO : 3c90c80bdbea42b1c7f308f Rev.-Charge : No\nd295232417241a7bb\n")
+    assert _complete_irn("3c90c80bdbea42b1c7f308f", text) == (
+        "ae41403d7072ff39ff928d5c3c90c80bdbea42b1c7f308fd295232417241a7bb")
+
+
+def test_a_line_broken_across_pages_is_made_whole():
+    from app.services.ocr.invoice_parser import _continued_from_last_page, _join_page_lines
+
+    header = ["Sr", "PRODUCT NAME (HSN CODE)", "BATCH", "MFG DATE/ EXP DATE", "QTY", "CGST% / CGST Val.", "TOTAL"]
+    cols = _map_columns(header)
+    lead = _continued_from_last_page(["", "30049079)", "", "JUN-27", "", "7.31", ""], cols, header)
+    page1 = [{"description": _leaf("OLMETIME-H 20 TABLETS(HSN-"), "expiry": _leaf("JUL-25")}]
+    lines = _join_page_lines([page1, [{"_continues": lead}, {"description": _leaf("RANIDOM")}]])
+    assert len(lines) == 2
+    assert (_v(lines[0], "description"), _v(lines[0], "mfg_date"), _v(lines[0], "expiry")) == (
+        "OLMETIME-H 20 TABLETS(HSN- 30049079)", "JUL-25", "JUN-27")
+
+
+def test_tds_the_buyer_withholds_is_a_set_off():
+    from app.services.ocr.invoice_checks import tds_deducted
+
+    assert tds_deducted("TDS to be Deducted 0.1- % on 7674.52 8.00") == [7674.52, 8.0]
+    fields = {"line_items": [{"amount": _leaf("7674.52")}], "invoice": {
+        "total_amount": _leaf("8050.00"), "total_cgst_amount": _leaf("191.86"), "total_sgst_amount": _leaf("191.86")}}
+    r = reconcile_invoice(fields, page_text="Net Invoice Amt. 0.00 8058.00\nTDS to be Deducted 0.1- % on 7674.52 8.00\n")
+    assert r["total_reconciles"] is True
+
+
+def test_the_bills_own_gst_summary_proves_lines_its_slabs_treat_unevenly():
+    fields = {"line_items": [{"amount": _leaf("474.09")}, {"amount": _leaf("81.00")}],
+              "invoice": {"total_amount": _leaf("575.00")}}
+    summary = {"lines_amount": 555.09, "total_taxable_amount": 491.03, "tax": 83.96}
+    assert reconcile_invoice(fields)["total_reconciles"] is False
+    assert reconcile_invoice(fields, slab_summary=summary)["total_reconciles"] is True
+
+
+def test_a_supplier_name_run_into_the_buyers_is_cut():
+    from app.services.ocr.parties import _cut_at_buyer
+
+    fields = {"bill_to": {"name": _leaf("EASTERN AGENCIES HEALTHCARE PVT LTD")}}
+    assert _cut_at_buyer("HINDUSTANCAPSULELLP EASTERNAGENCIESHEALTHCARE PVTLTD", fields) == "HINDUSTANCAPSULELLP"
+    assert _cut_at_buyer("EASTERN AGENCIES HEALTHCARE PVT LTD", fields) == "EASTERN AGENCIES HEALTHCARE PVT LTD"
+
+
+def test_the_marg_cr_dr_note_label_is_not_a_title():
+    from app.services.ocr.document_kind import kind_from_page
+
+    assert kind_from_page("GST 18 % 3679.72 0.00 0.00 331.17 331.17 662.34 CR/DR NOTE 0.00") is None
+    assert kind_from_page("DEBIT NOTE") == "debit_note"

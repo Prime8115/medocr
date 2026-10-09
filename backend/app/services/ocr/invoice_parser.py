@@ -1884,8 +1884,69 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
                 rows.append(item)
-        out.extend(_without_totals_row(rows))
+        # The rest of the previous page's last line, at the top of this one.
+        lead = _continued_from_last_page(table[data_from] if data_from < len(table) else None,
+                                         cols, header_row)
+        out.extend(([{"_continues": lead}] if lead else []) + _without_totals_row(rows))
     return out
+
+
+def _continued_from_last_page(row, cols: dict, header_row) -> Optional[dict]:
+    """A page's first row that is the end of the previous page's last line.
+
+    Mankind's line 7 breaks across the page: "OLMETIME-H 20 TABLETS(HSN-" with
+    its MFG date on page 1, and "30049079)", its EXP date JUN-27 and its CGST
+    and SGST values at the top of page 2. With no quantity, batch or amount it
+    is no line of its own; its figures finish the line before it.
+    """
+    if not row:
+        return None
+
+    def cell(idx):
+        return str(row[idx] or "").strip() if idx is not None and idx < len(row) else ""
+
+    if any(cell(cols.get(k)) for k in ("quantity", "batch_no", "amount")):
+        return None
+    out: dict = {}
+    if cell(cols.get("description")):
+        out["description"] = _clean(cell(cols.get("description")))
+    for idx, heading in enumerate(header_row):
+        order = _stacked_fields(heading)
+        value = cell(idx)
+        if len(order) == 2 and value and "\n" not in value:
+            out[order[1]] = value   # a stacked column's second value
+        head = _norm(heading)
+        for tax in ("cgst", "sgst", "igst", "utgst"):
+            figures = _NUM.findall(value)
+            if tax in head and figures and float(figures[-1].replace(",", "") or 0) > 0:
+                out[f"{tax}_amount"] = figures[-1].replace(",", "")
+    return out if any(k != "description" for k in out) else None
+
+
+def _join_page_lines(pages: List[List[dict]]) -> List[dict]:
+    """The pages' lines in order, a line broken across a page made whole."""
+    lines: List[dict] = []
+    for items in pages:
+        for item in items:
+            rest = item.get("_continues")
+            if rest is None:
+                lines.append(item)
+                continue
+            if not lines:
+                continue
+            last = lines[-1]
+            if rest.get("description"):
+                desc = f"{(last.get('description') or {}).get('value') or ''} {rest['description']}".strip()
+                last["description"] = _f(desc)
+            if rest.get("expiry"):
+                # The first page carried only the stacked column's first value.
+                if (last.get("expiry") or {}).get("value") and not (last.get("mfg_date") or {}).get("value"):
+                    last["mfg_date"] = last["expiry"]
+                last["expiry"] = _f(rest["expiry"])
+            for key, value in rest.items():
+                if key.endswith("_amount") and not (last.get(key) or {}).get("value"):
+                    last[key] = _f(value)
+    return lines
 
 
 def _without_totals_row(items: List[dict]) -> List[dict]:
@@ -2085,7 +2146,7 @@ def _labelled_totals(invoice_meta: dict, text: str) -> None:
 _SUMMARY_FIGURE = re.compile(r"^₹?-?[\d,]*\d\.\d{2}%?$")
 
 
-def _slab_summary_table(invoice_meta: dict, text: str) -> None:
+def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
     """The bill's totals from its GST slab summary: a heading line naming the
     taxable value and the tax heads, then one row of figures per slab.
 
@@ -2122,7 +2183,9 @@ def _slab_summary_table(invoice_meta: dict, text: str) -> None:
             key = ("total_discount_amount" if "disc" in h or h.startswith("sch") else
                    "total_taxable_amount" if "taxable" in h else
                    next((f"total_{t}_amount" for t in ("cgst", "sgst", "igst", "utgst") if t in h), None) or
-                   ("bill_total" if "total" in h else None))
+                   ("bill_total" if "total" in h else
+                    # The plain "Amount" column: the lines' own value, by slab.
+                    "lines_amount" if h in ("amount", "amt", "value") else None))
             if key:
                 sums[key] = sums.get(key, 0.0) + sum(
                     float(r[i].lstrip("₹").replace(",", "").rstrip("%")) for r in rows)
@@ -2131,12 +2194,15 @@ def _slab_summary_table(invoice_meta: dict, text: str) -> None:
         if not taxable or not total or abs(taxable + tax - total) > 1.0:
             continue
         for key, value in sums.items():
-            if key == "bill_total":
+            if key in ("bill_total", "lines_amount"):
                 continue
             leaf = invoice_meta.get(key) or {}
             if not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE:
                 invoice_meta[key] = _f(f"{value:.2f}")
-        return
+        # What the table itself says, for the reconciliation: its Amount column
+        # is the bill's own sum of its lines (invoice_checks.reconcile_invoice).
+        return {k: round(v, 2) for k, v in {**sums, "tax": tax}.items()}
+    return None
 
 
 def _scale_worked_out_tax(items: List[dict], invoice_meta: dict) -> None:
@@ -2166,6 +2232,14 @@ def _scale_worked_out_tax(items: List[dict], invoice_meta: dict) -> None:
     discount = printed("total_discount_amount")
     pct = gap / line_total * 100
     if not ((discount and abs(float(discount) - gap) <= 1.0) or abs(pct - round(pct * 2) / 2) <= 0.02):
+        # No one share takes the lines to the taxable value (Hindustan
+        # Capsule's credit note deducts its scheme from one slab only): a tax
+        # worked out per line would be a figure the bill never states. Left
+        # blank - the bill's own head totals stand.
+        for item in items:
+            for head in ("cgst", "sgst", "igst", "utgst"):
+                if (item.get(f"{head}_amount") or {}).get("confidence") == _DERIVED_CONFIDENCE:
+                    item.pop(f"{head}_amount", None)
         return
     scale = float(taxable) / line_total
     for item in items:
@@ -2286,11 +2360,9 @@ def parse_scanned_invoice(data: bytes, content_type: str,
                 (meta.get("supplier", {}).get("gstin") or {}).get("value"),
                 (meta.get("bill_to", {}).get("gstin") or {}).get("value"),
             )
-        line_items.extend(
-            _rows_from_tables(
-                tesseract_table.tables_from_words(words), labels, interstate, local_head
-            )
-        )
+        line_items = _join_page_lines([line_items, _rows_from_tables(
+            tesseract_table.tables_from_words(words), labels, interstate, local_head
+        )])
 
     if not line_items and not (header_only_ok and meta):
         return None
@@ -2306,7 +2378,7 @@ def parse_scanned_invoice(data: bytes, content_type: str,
     _slab_tax_totals(invoice_meta, full_text)
     _summary_tax_totals(invoice_meta, full_text)
     _taxable_from_sub_total(invoice_meta, full_text)
-    _slab_summary_table(invoice_meta, full_text)
+    slab_summary = _slab_summary_table(invoice_meta, full_text)
     _gst_total_from_heads(invoice_meta)
     _total_by_cross_foot(invoice_meta, full_text, line_items)
     _drop_impossible_tax_total(invoice_meta)
@@ -2327,6 +2399,7 @@ def parse_scanned_invoice(data: bytes, content_type: str,
         # figure. An Indian tax invoice states it twice and they do not always
         # agree - see reconcile_invoice.
         "total_in_words": total_from_words(full_text),
+        "slab_summary": slab_summary,
     }
     return fields
 
@@ -2552,8 +2625,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                     wanted = groups[0]
                     log.info("invoice_parser: %d printed copies found by marker", copies)
 
-            for page_no in wanted:
-                line_items.extend(page_items.get(page_no, []))
+            line_items.extend(_join_page_lines([page_items.get(page_no, []) for page_no in wanted]))
             # A totals row printed on its own page (Cipla Pharma) is only
             # recognisable against the whole bill's lines.
             line_items = _without_totals_row(line_items)
@@ -2592,7 +2664,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     _slab_tax_totals(invoice_meta, full_text)
     _summary_tax_totals(invoice_meta, full_text)
     _taxable_from_sub_total(invoice_meta, full_text)
-    _slab_summary_table(invoice_meta, full_text)
+    slab_summary = _slab_summary_table(invoice_meta, full_text)
     _gst_total_from_heads(invoice_meta)
     _total_by_cross_foot(invoice_meta, full_text, line_items)
     _drop_impossible_tax_total(invoice_meta)
@@ -2610,6 +2682,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
         "stated_item_count": stated_count,
         "price_labels": labels,
         "total_in_words": total_from_words(full_text),
+        "slab_summary": slab_summary,
         "document_text": full_text,
     }
     return fields

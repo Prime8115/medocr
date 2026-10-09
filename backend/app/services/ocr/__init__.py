@@ -333,6 +333,9 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         # Facts the bill fixes without printing them - a zero head the sale
         # cannot carry - for either reader. A PAN is never one of them: what
         # the bill does not print stays blank.
+        from app.services.ocr import einvoice_qr
+
+        check_warnings.extend(einvoice_qr.apply(fields))
         complete_from_the_bill(fields)
         drop_copied_pans(fields, hints.get("document_text") or hints.get("party_text") or "")
         items = fields.get("line_items") or []
@@ -372,6 +375,11 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             heads_note = tax_heads_from_rates(fields)
             if heads_note:
                 check_warnings.append(heads_note)
+            from app.services.ocr.invoice_checks import taxable_from_lines
+
+            taxable_note = taxable_from_lines(fields)
+            if taxable_note:
+                check_warnings.append(taxable_note)
             # An AI-read line given before its own discount, when correcting
             # it is what makes the bill add up (invoice_checks).
             from app.services.ocr.invoice_checks import amounts_net_of_own_discount
@@ -404,6 +412,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         report = reconcile_invoice(
             fields, hints.get("stated_item_count"), hints.get("total_in_words"),
             page_text=hints.get("document_text") or hints.get("party_text"),
+            slab_summary=hints.get("slab_summary"),
         )
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)
@@ -514,7 +523,9 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
         return True
     # With the bill's own text: what it prints beside its lines - an invoice
     # value before a credit note it sets off (Medley) - is part of the proof.
-    report = reconcile_invoice(parsed, page_text=(parsed.get("_hints") or {}).get("document_text"))
+    hints = parsed.get("_hints") or {}
+    report = reconcile_invoice(parsed, page_text=hints.get("document_text"),
+                               slab_summary=hints.get("slab_summary"))
     if report.get("total_reconciles") is True:
         return True
     log.info(
@@ -534,9 +545,16 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     # finished; a plain list of GSTINs only settles who is who.
     own = dict(own_gstins) if isinstance(own_gstins, dict) else tuple(own_gstins or ())
     token = OWN_GSTINS.set(own)
+    # The e-invoice's signed QR code, read once: the GST portal's own IRN,
+    # number and GSTINs for this bill (einvoice_qr.py).
+    from app.services.ocr import einvoice_qr
+
+    qr_token = einvoice_qr.EINVOICE_QR.set(
+        einvoice_qr.read(file_bytes, content_type) if doc_type != "prescription" else None)
     try:
         return _process_document(document_id, file_bytes, content_type, doc_type, on_progress)
     finally:
+        einvoice_qr.EINVOICE_QR.reset(qr_token)
         OWN_GSTINS.reset(token)
 
 

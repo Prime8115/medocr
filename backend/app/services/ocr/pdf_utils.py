@@ -73,6 +73,8 @@ def extract_text_sample(data: bytes, pages: int = 3) -> List[str]:
 
 # A page is a scan when one picture covers most of it.
 _SCAN_COVERAGE = 0.7
+# A picture this large holding all the page's text is a scan too (is_scanned_pdf).
+_PART_SCAN_COVERAGE = 0.3
 
 
 def _sample_indexes(total: int, pages: int) -> List[int]:
@@ -109,12 +111,25 @@ def _is_scanned_pdf(data: bytes, sample_pages: int) -> bool:
             for i in idx:
                 page = pdf.pages[i]
                 area = float(page.width * page.height) or 1.0
+                chars = page.chars
                 for im in page.images:
-                    w = max(0.0, min(im["x1"], page.width) - max(im["x0"], 0))
-                    h = max(0.0, min(im["bottom"], page.height) - max(im["top"], 0))
+                    x0, x1 = max(im["x0"], 0), min(im["x1"], page.width)
+                    top, bottom = max(im["top"], 0), min(im["bottom"], page.height)
+                    w, h = max(0.0, x1 - x0), max(0.0, bottom - top)
                     if w * h >= _SCAN_COVERAGE * area:
                         scanned += 1
                         break
+                    # A smaller scan whose page text all lies on the picture is
+                    # the scanner's reading of it: Mednosis's bill is a photo of
+                    # half the page, its text layer misreading the GSTIN's "O" as
+                    # "D". Text printed beside a logo lies off the picture.
+                    if chars and w * h >= _PART_SCAN_COVERAGE * area:
+                        inside = sum(1 for c in chars
+                                     if c["x0"] >= x0 - 2 and c["x1"] <= x1 + 2
+                                     and c["top"] >= top - 2 and c["bottom"] <= bottom + 2)
+                        if inside >= 0.9 * len(chars):
+                            scanned += 1
+                            break
             return bool(idx) and scanned * 2 > len(idx)
     except Exception:  # noqa: BLE001 - unreadable here: the other checks decide
         return False

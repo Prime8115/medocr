@@ -267,6 +267,12 @@ def resolve(fields: dict, text: str, stream_text: str = "") -> List[str]:
         notes = notes + _resolve_names(fields, stream_text or text, text)
         _tidy_names(fields)
         _complete_own_name(fields)
+        # Once the buyer's name is known in full (from the shop's own name).
+        supplier = _value(fields, "supplier", "name")
+        cut = _cut_at_buyer(supplier, fields) if supplier else supplier
+        if cut and cut != supplier:
+            leaf = (fields.get("supplier") or {}).get("name") or {}
+            _set(fields, "supplier", "name", cut, confidence=leaf.get("confidence") or RESOLVED_CONFIDENCE)
         return notes
     except Exception:  # noqa: BLE001 - a second opinion never breaks a reading
         return []
@@ -342,9 +348,28 @@ def _tidy_names(fields: dict) -> None:
         if not name:
             continue
         cut = _NAME_RUN_ON.split(name)[0].strip(" ,.:-")
+        if party == "supplier":
+            cut = _cut_at_buyer(cut, fields)
         if cut and cut != name and len(_key(cut)) >= 4:
             leaf = (fields.get(party) or {}).get("name") or {}
             _set(fields, party, "name", cut, confidence=leaf.get("confidence") or RESOLVED_CONFIDENCE)
+
+
+def _cut_at_buyer(name: str, fields: dict) -> str:
+    """A supplier name that runs on into the buyer's, cut where the buyer's
+    begins: "HINDUSTANCAPSULELLP EASTERNAGENCIESHEALTHCARE PVTLTD" - two
+    columns set without spaces - is Hindustan Capsule LLP. Compared letters
+    only, so the missing spaces do not matter; the buyer's name must follow
+    something of the supplier's own."""
+    buyer = _key(_value(fields, "bill_to", "name"))
+    if len(buyer) < 6:
+        return name
+    letters = [(i, ch) for i, ch in enumerate(name) if ch.isalnum()]
+    flat = "".join(ch.upper() for _, ch in letters)
+    at = flat.find(buyer[:12])
+    if at < 4:
+        return name
+    return name[:letters[at][0]].strip(" ,.:-")
 
 
 def _resolve_gstins(fields: dict, text: str, stream_text: str = "") -> List[str]:

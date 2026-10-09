@@ -200,6 +200,24 @@ def _complete_irn(found: str, text: str) -> str:
             # The same case as the first piece - an IRN is printed one way.
             if piece.islower() == found.islower() or piece.isdigit():
                 return found + piece
+    # Its start may sit on the line ABOVE the label: Mankind prints "IRN NO :"
+    # beside the middle of three pieces, its first 24 characters on the line
+    # above (next to an empty "EWAY BILL NO :"). Taken only when the pieces
+    # make exactly 64 hex characters, all in one case.
+    # Up to three lines up: a neighbouring column's line ("State Code : 10")
+    # may come between them in the text.
+    above = "\n".join(text[:at].split("\n")[-4:-1])
+    runs = r"(?<![0-9A-Za-z])([0-9A-Fa-f]{8,})(?![0-9A-Za-z])"
+    same_case = (lambda p: p.islower() == found.islower() or p.isdigit())
+    for head in re.findall(runs, above):
+        if not same_case(head) or not re.search(r"[A-Fa-f]", head):
+            continue
+        if len(head) + len(found) == _IRN_LENGTH:
+            return head + found
+        for line in following:
+            for tail in re.findall(runs, line):
+                if same_case(tail) and len(head) + len(found) + len(tail) == _IRN_LENGTH:
+                    return head + found + tail
     return found
 
 

@@ -317,6 +317,15 @@ def _check_rates_give_the_tax(c: _Checks, fields: dict, items: List[dict], combi
         c.add("rates_give_tax", label, "skipped")
         return
     expected = sum(a * r / 100.0 for a, r in zip(amounts, rates)) * scale
+    if own_discount and not _close(expected, tax, 1.0 + 0.02 * len(items), 0.015):
+        # A "rate" may already be net of the discount printed beside it -
+        # Mankind's 85.18 x 11 is its taxable 936.98, its 16.66% shown for
+        # information - so the lines as they stand are the other reading.
+        as_printed = sum(_n(it.get("amount")) * r / 100.0 for it, r in zip(items, rates))
+        if 0.5 <= taxable / sum(_n(it.get("amount")) for it in items) <= 1.05:
+            as_printed *= taxable / sum(_n(it.get("amount")) for it in items)
+            if _close(as_printed, tax, 1.0 + 0.02 * len(items), 0.015):
+                expected = as_printed
     if _close(expected, tax, 1.0 + 0.02 * len(items), 0.015):
         c.add("rates_give_tax", label, "pass", f"The rates give {expected:.2f}; the bill states {tax:.2f}.")
     else:
@@ -594,7 +603,7 @@ def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     if doc_type != "invoice":
         return meta
     report = reconcile_invoice(fields, meta.get("stated_item_count"), meta.get("total_in_words"),
-                               page_text=meta.get("page_text"))
+                               page_text=meta.get("page_text"), slab_summary=meta.get("slab_summary"))
     report.pop("warnings", None)
     meta.update({k: v for k, v in report.items() if k != "total_in_words" or v is not None})
 

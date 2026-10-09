@@ -462,6 +462,16 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 # it became part of the next product's name.
                 if rows and (abs(otop - row_tops[-1]) <= abs(otop - top) or _DETAIL_LINE.match(otext)):
                     give(rows[-1], otext, ovals, before=False)
+                elif not rows and ovals and not carried:
+                    # Figures above a page's first line are the end of the
+                    # previous page's last line (Mankind's line 7): a row of
+                    # their own, for the parser to join back - never a prefix.
+                    lead = [""] * n
+                    lead[description_col] = otext
+                    for col, val in ovals.items():
+                        lead[col] = val
+                    rows.append(lead)
+                    row_tops.append(otop)
                 else:
                     give(cells, otext, {}, before=True)
             orphans = []

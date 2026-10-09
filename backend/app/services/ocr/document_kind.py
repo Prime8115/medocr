@@ -88,7 +88,9 @@ def kind_from_page(text: Optional[str]) -> Optional[str]:
             # ...also run into "INVOICE" by a text layer without spaces:
             # "CREDITNOTEINVOICE" (Hindustan Capsule) - while "CREDITNOTENO."
             # is still a label.
-            m = re.search(rf"\b(?:{pattern})(?:\b|(?=invoice\b))(?!\s*(?:no\b|number|date|ref|#|:|\.\s*no))",
+            # ...never the Marg summary label "CR/DR NOTE 0.00" (Kreit, Aurowin):
+            # "DR NOTE" after a slash is half of a label, not a title.
+            m = re.search(rf"(?<!/)\b(?:{pattern})(?:\b|(?=invoice\b))(?!\s*(?:no\b|number|date|ref|#|:|\.\s*no))",
                           line, re.I)
             if m and m.group().isupper():
                 return kind

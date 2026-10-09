@@ -290,6 +290,12 @@ def pins_for(entry: dict, ours: dict, independent: Optional[dict]) -> dict:
     new["expected_failed"] = sorted(c["id"] for c in ver.get("checks") or [] if c["status"] == "fail")
     if new["expected_failed"]:
         new["todo"].append("checks failing - confirm each is the bill's own: " + ", ".join(new["expected_failed"]))
+    # Values a person checked against the paper: pinned whatever the
+    # independent reading says (it swapped Hindustan Capsule's parties).
+    if entry.get("confirmed"):
+        new["confirmed"] = dict(entry["confirmed"])
+        new["expect"].update(entry["confirmed"])
+        new["todo"] = [t for t in new["todo"] if t.split(":")[0] not in entry["confirmed"]]
     return new
 
 
@@ -373,7 +379,10 @@ def repin(corpus: pathlib.Path, workers: int = 4) -> None:
         new = pins_for(entry, ours, independent)
         replay = replays.get(key_)
         if new["reader"] == "ai" and replay and "error" not in replay:
-            new["ai_path"] = ai_path_pins(replay, independent if "part" not in entry else None)
+            new["ai_path"] = ai_path_pins(replay, independent if "part" not in entry else None,
+                                          entry.get("confirmed"))
+            if entry.get("confirmed"):
+                new["confirmed"] = dict(entry["confirmed"])
         notes = _pin_changes(entry, new)
         if notes:
             changed += 1
@@ -413,7 +422,7 @@ def read_with(data: bytes, provider, own_gstins=()) -> dict:
          settings.ocr_chunk_concurrency) = saved
 
 
-def ai_path_pins(result: dict, independent: Optional[dict]) -> dict:
+def ai_path_pins(result: dict, independent: Optional[dict], confirmed: Optional[dict] = None) -> dict:
     """What the AI path's reading pins: each value an independent AI reading of
     the same bill agrees with, and the lines when they build up to the bill's
     own total. The bill's own failing checks are recorded as expected."""
@@ -434,6 +443,9 @@ def ai_path_pins(result: dict, independent: Optional[dict]) -> dict:
     ver = meta.get("verification") or {}
     pins["expected_failed"] = sorted(c["id"] for c in ver.get("checks") or [] if c["status"] == "fail")
     pins["reader"] = meta.get("pipeline")
+    if confirmed:   # checked against the paper by a person (see pins_for)
+        pins["expect"].update(confirmed)
+        pins["todo"] = [t for t in pins["todo"] if t.split(":")[0] not in confirmed]
     return pins
 
 
@@ -472,7 +484,7 @@ def record(corpus: pathlib.Path, names: list, independent_dir: Optional[pathlib.
             path = independent_dir / (pathlib.Path(entry["file"]).name + ".json")
             if path.exists() and "part" not in entry:
                 independent = json.loads(path.read_text(encoding="utf-8")).get("fields")
-        entry["ai_path"] = ai_path_pins(result, independent)
+        entry["ai_path"] = ai_path_pins(result, independent, entry.get("confirmed"))
         manifest_path.write_text(json.dumps(manifest, indent=1, ensure_ascii=False), encoding="utf-8")
         meta = result.get("meta") or {}
         print(f"{entry['file'][:50]:50} {meta.get('pipeline')} lines={meta.get('item_count')} "

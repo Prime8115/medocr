@@ -469,19 +469,22 @@ _CREDIT_NOTE_SET_OFF = re.compile(
 )
 
 
-_TDS = re.compile(r"\btds\b[^\n]{0,60}?(?<![\d.,])([\d,]+\.\d{2})(?!\d)", re.I)
+_MONEY_FIGURE = re.compile(r"(?<![\d.,])([\d,]+\.\d{2})(?![\d%])")
 
 
 def tds_deducted(text: str) -> List[float]:
-    """TDS amounts the bill prints (income tax the buyer withholds)."""
+    """TDS amounts the bill prints (income tax the buyer withholds): every
+    figure on a line after "TDS" - Mankind's "TDS to be Deducted 0.1- % on
+    7674.52 8.00" names its base first and the TDS last."""
     out = []
-    for m in _TDS.finditer(text or ""):
-        try:
-            value = float(m.group(1).replace(",", ""))
-        except ValueError:
+    for line in (text or "").splitlines():
+        at = re.search(r"\btds\b", line, re.I)
+        if not at:
             continue
-        if 0 < value and value not in out:
-            out.append(value)
+        for m in _MONEY_FIGURE.finditer(line[at.end():]):
+            value = float(m.group(1).replace(",", ""))
+            if 0 < value and value not in out:
+                out.append(value)
     return out
 
 
@@ -500,7 +503,8 @@ def credit_notes_set_off(text: str) -> List[float]:
 
 def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                       total_in_words: Optional[str] = None,
-                      page_text: Optional[str] = None) -> dict:
+                      page_text: Optional[str] = None,
+                      slab_summary: Optional[dict] = None) -> dict:
     """Cross-check the extracted lines against the invoice's own totals.
 
     Returns a dict of meta keys plus a `warnings` list. Never mutates values.
@@ -562,9 +566,13 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
             # that build up exactly to a printed invoice-level total are proven;
             # the step down to the payable is the bill's own, and is said.
             invoice_values = printed_invoice_totals(page_text) + [
-                round(printed_total + cn, 2) for cn in credit_notes_set_off(page_text)]
+                round(printed_total + cn, 2)
+                # ...and the TDS the buyer withholds (Mankind: 8,058 less 8.00 TDS).
+                for cn in credit_notes_set_off(page_text) + tds_deducted(page_text)]
             for figure in invoice_values:
-                if abs(figure - printed_total) <= tolerance:
+                # The payable itself again - not a within-tolerance figure:
+                # Mankind's TDS is 0.1%, as small as the round-off allowance.
+                if abs(figure - printed_total) < 0.01:
                     continue
                 # Only a build-up WITH tax is an invoice value: Sun prints its
                 # taxable "Total Value" too, and the lines alone matched it -
@@ -586,6 +594,20 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                         "or other adjustment). Please confirm it."
                     )
                     break
+
+        if not reconciles and slab_summary and slab_summary.get("lines_amount"):
+            # The bill's own GST summary: its Amount column is exactly these
+            # lines, and its taxable value and tax make its total. Hindustan
+            # Capsule's credit note takes its scheme amount off one slab and
+            # not the other, so no single rule leads from the lines to its
+            # taxable value - but every figure is the bill's own, and the lines
+            # are exactly the ones it summarises.
+            summary_total = slab_summary.get("total_taxable_amount", 0) + slab_summary.get("tax", 0)
+            if abs(slab_summary["lines_amount"] - line_total) <= total_tolerance(line_total, len(items)) \
+                    and abs(summary_total - printed_total) <= tolerance:
+                reconciles = True
+                reconciled_by = "the bill's GST summary (its Amount column is the lines; its taxable value and tax give the total)"
+                built_from_lines = round(summary_total, 2)
 
         if not reconciles:
             # Name the gap. "Short by 12,344.00" is what sends a reviewer to the
@@ -663,6 +685,8 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         "total_reconciles": reconciles,
         "total_reconciled_by": reconciled_by,
         "stated_item_count": stated_item_count,
+        # Kept with the reading, so a re-check after an edit still has it.
+        "slab_summary": slab_summary,
         "warnings": warnings,
     }
 
@@ -891,6 +915,29 @@ def amounts_net_of_own_discount(fields: dict, page_text: Optional[str] = None) -
     lines = ", ".join(str(n + 1) for n in found)
     return (f"Line {lines}: the amount read was the value before the line's own discount; taken "
             "after it, the lines add up to the bill's total. Please check.")
+
+
+def taxable_from_lines(fields: dict) -> Optional[str]:
+    """An AI-read taxable value that is really the bill's GROSS value.
+
+    Mednosis prints "Gross Amount 17228.00", a discount of 516.84, then the
+    GST; the AI took 17,228 as the taxable value, and taxable + tax missed the
+    total by the discount. The lines' own sum, 16,711.16, plus that same tax
+    IS the total - so the lines' sum is the taxable value.
+    """
+    invoice = fields.get("invoice") or {}
+    items = fields.get("line_items") or []
+    taxable, total = _num(invoice.get("total_taxable_amount")), _num(invoice.get("total_amount"))
+    tax = _bill_tax(invoice)
+    amounts = [_num(i.get("amount")) for i in items]
+    if not (taxable and total and tax) or not items or any(a is None for a in amounts):
+        return None
+    line_sum = round(sum(amounts), 2)
+    if abs(taxable + tax - total) <= 1.0 or abs(line_sum + tax - total) > 1.0 or abs(line_sum - taxable) <= 1.0:
+        return None
+    invoice["total_taxable_amount"] = _leaf(f"{line_sum:.2f}", _DERIVED_CONFIDENCE)
+    return (f"The taxable value read, {_fmt(taxable)}, with the tax does not make the bill's total; "
+            f"the lines' own {_fmt(line_sum)} does - taken as the taxable value. Please check.")
 
 
 def tax_heads_from_rates(fields: dict) -> Optional[str]:
