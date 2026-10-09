@@ -42,3 +42,25 @@ def test_a_gstin_is_learned_from_bills_the_shop_approved(client, db_session):
         assert own_gstins(s, "another-shop") == []
     finally:
         s.close()
+
+
+def test_each_gstin_goes_by_the_name_its_approved_bills_confirm(client, db_session):
+    from app.models.document import Document
+    from app.services.shop_identity import own_identity
+
+    headers = register_and_login(client)
+    shop_id = _shop_id(client, headers)
+    client.put("/v1/auth/shop/gstins", json={"gstins": [EASTERN, ASCENT]}, headers=headers)
+    s = db_session()
+    try:
+        for name in ("EASTERN AGENCIES HEALTHCARE PVT LTD", "EASTERN AGENCIES HEALTHCARE PVT LTD", "EASTERN"):
+            bill = {"fields": {"bill_to": {"gstin": {"value": EASTERN, "confidence": 1.0},
+                                           "name": {"value": name, "confidence": 1.0}}}}
+            s.add(Document(shop_id=shop_id, doc_type="invoice", status="approved", payload=bill))
+        s.commit()
+        identity = own_identity(s, shop_id)
+        assert identity[EASTERN] == "EASTERN AGENCIES HEALTHCARE PVT LTD"
+        # No approved bill names it yet: the shop's registered name stands in.
+        assert identity[ASCENT]
+    finally:
+        s.close()

@@ -36,6 +36,8 @@ _MIN_HEADER_HITS = 4
 _CARRIED_TOTAL = re.compile(
     r"\b(balance\s*b\s*/?\s*f|balance\s*c\s*/?\s*f|brought\s*forward|carried\s*forward|"
     r"carried\s*over|b\s*/\s*f\b|c\s*/\s*f\b)", re.I)
+# A wrapped line that labels the product above it: its maker or marketer.
+_DETAIL_LINE = re.compile(r"\s*(?:mfg|mfr|mkt|mfd|marketed\s+by|manufactured\s+by)\s*[.:]", re.I)
 _FOOTER = re.compile(
     # "GST Summary (15621.50 @ 6.00% SGST=937.29,CGST=937.29)" - Overseas sets
     # its summary block in the table's own columns, so every figure on that line
@@ -49,7 +51,16 @@ _FOOTER = re.compile(
     # harvested the invoice's own total, nearly doubling the line sum.
     r"hereby|warranty|contravene|properly\s*packed|responsible\s*for|certified|"
     r"once\s*sold|signator|authorised)\b"
-    r"|\bIRN\s*[:#]",
+    r"|\bIRN\s*[:#]"
+    # "Total of CARDIMAXX 0.00 0.00 211488.25 ..." (IPCA): a division's total
+    # row, with the tax summary under it.
+    r"|^\s*total\s+of\s"
+    # Sumbiotic lists the sale returns it adjusts under its items, in the same
+    # columns: "ADJUSTMENT DETAIL =====>", "SALE RETURN NO. : CN00007". Goods
+    # coming back are not goods bought.
+    r"|\badjustment\s*detail|\bsale\s*return\s*no"
+    # "Gross Inv. Val. :87,535.62" (Blue Cross), then its credit notes listed.
+    r"|\bgross\s*inv",
     re.I,
 )
 _NUMERIC = re.compile(r"^-?[\d,]+\.?\d*$")
@@ -259,6 +270,27 @@ def _is_record_start(cells: List[str], numeric_columns: Sequence[int]) -> bool:
     return filled >= 2
 
 
+def _oblique(obj) -> bool:
+    """A character drawn at a slant - neither level nor a right angle."""
+    if obj.get("object_type") != "char":
+        return False
+    a, b = (obj.get("matrix") or (1, 0))[:2]
+    return abs(a) > 0.05 and abs(b) > 0.05
+
+
+def without_watermark(page):
+    """The page without its diagonal watermark. Klingen stamps "KLINGEN LIFE
+    SCIENCES PVT. LTD." across its grid at 35 degrees, and its letters landed
+    in the cells - "0.0D0", "274.5 L 7", "21069099S" - losing a line and a
+    batch. Nothing an invoice states is printed at a slant."""
+    try:
+        if not any(_oblique(c) for c in page.chars):
+            return page
+        return page.filter(lambda o: not _oblique(o))
+    except Exception:  # noqa: BLE001 - never fatal; read the page as it is
+        return page
+
+
 def _page_words(page) -> List[Word]:
     try:
         return page.extract_words(keep_blank_chars=False, use_text_flow=False, x_tolerance=WORD_TOLERANCE)
@@ -406,7 +438,10 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             top = line[0]
             # Decide where the orphans between the last record and this one go.
             for otop, otext, ovals in orphans:
-                if rows and abs(otop - row_tops[-1]) <= abs(otop - top):
+                # "Mfg : JAIN LIFECARE" (Cosmin) is a detail printed UNDER its
+                # product, however close it sits to the next one - as a prefix
+                # it became part of the next product's name.
+                if rows and (abs(otop - row_tops[-1]) <= abs(otop - top) or _DETAIL_LINE.match(otext)):
                     give(rows[-1], otext, ovals, before=False)
                 else:
                     give(cells, otext, {}, before=True)

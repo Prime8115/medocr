@@ -313,7 +313,30 @@ _INVOICE_NO = re.compile(
 
 
 def _page_invoice_numbers(text: str) -> set:
-    return {m.group(1).upper() for m in _INVOICE_NO.finditer(text or "") if re.search(r"\d", m.group(1))}
+    # A word run into the number by the text layer is not part of it: Alkem's
+    # continuation pages read "7613021411ALKEM", which split its one invoice
+    # into two documents.
+    return {re.sub(r"(?<=\d)[A-Z]{3,}$", "", m.group(1).upper())
+            for m in _INVOICE_NO.finditer(text or "") if re.search(r"\d", m.group(1))}
+
+
+_DOCUMENT_NO = re.compile(
+    r"(?<![A-Za-z])(?:credit\s*note|debit\s*note|cn|dn|sap\s*doc|doc(?:ument)?)\.?\s*(?:no|number|#)\b\.?"
+    r"\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{1,24})", re.I)
+
+
+def _positioned_texts(data: bytes, pages: int) -> List[str]:
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            return [(page.extract_text() or "") for page in pdf.pages[:pages]]
+    except Exception:  # noqa: BLE001
+        return [""] * pages
+
+
+def _page_document_numbers(text: str) -> set:
+    return {m.group(1).upper() for m in _DOCUMENT_NO.finditer(text or "") if re.search(r"\d", m.group(1))}
 
 
 def invoice_groups(data: bytes) -> List[List[int]]:
@@ -343,10 +366,19 @@ def invoice_groups(data: bytes) -> List[List[int]]:
     if len(texts) < 2 or is_scanned_pdf(data) or sum(1 for t in texts if len(t.strip()) > 50) < len(texts) / 2:
         return every
 
+    per_page = [_page_invoice_numbers(t) for t in texts]
+    if not any(per_page):
+        # No invoice number anywhere: a credit note names itself by its own
+        # number. Ajanta sends two in one PDF, "SAP Doc. No.: 8510945928" on
+        # the first page and "8510946051" on the rest.
+        # Read with positions: pypdf prints Ajanta's labels and their values
+        # in separate runs, and the number lost its label.
+        per_page = [_page_document_numbers(t) for t in _positioned_texts(data, len(texts))]
+
     groups: List[List[int]] = []
     numbers: List[str] = []
     for i, text in enumerate(texts):
-        found = _page_invoice_numbers(text)
+        found = per_page[i]
         if len(found) > 1:
             return every
         number = next(iter(found), None)

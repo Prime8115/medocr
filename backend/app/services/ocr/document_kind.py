@@ -57,7 +57,9 @@ def kind_of_title(title: Optional[str]) -> Optional[str]:
     if _is_combined_invoice(text):
         return INVOICE
     for kind, pattern, _words in _KINDS:
-        if re.fullmatch(rf"(?:gst\s*|tax\s*)?(?:{pattern})", text, re.I):
+        # ...and what it is for: "Credit Note for Non-Saleable" (Ajanta).
+        if re.fullmatch(rf"(?:gst\s*|tax\s*)?(?:{pattern})(?:\s+(?:for|against)\s+[a-z\s-]{{1,25}})?",
+                        text, re.I):
             return kind
     if re.fullmatch(r"(?:gst\s*)?(?:tax\s*|retail\s*|sales\s*)?(?:invoice|bill)|bill\s*of\s*supply",
                     text, re.I):

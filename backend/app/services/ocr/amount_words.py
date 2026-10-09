@@ -73,7 +73,9 @@ _LABEL = re.compile(
 
 # "... Fifteen and Ninety Two paise Only": the paise are not rupees. Counting
 # them in turned 715.92 into 807.
-_PAISE = re.compile(r"\b(?:and|rupees?)\s+(?:[a-z]+[\s\-]+){0,4}pais[ae]\b.*$", re.I)
+# Never across another "and": Kreit's "Three Hundred and Forty Two and Paisa
+# Six" lost its "Forty Two" to the first "and", and read 4,300 for 4,342.06.
+_PAISE = re.compile(r"\b(?:and|rupees?)\s+(?:(?!and\b)[a-z]+[\s\-]+){0,4}pais[ae]\b.*$", re.I)
 # The page often spells out its tax too ("Tax Amount (in words)"). That is not
 # the invoice total, however large.
 _TAX_LABEL = re.compile(r"tax\s*(?:amount|amt)?\s*$", re.I)

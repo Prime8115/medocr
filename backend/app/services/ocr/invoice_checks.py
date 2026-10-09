@@ -345,11 +345,18 @@ def _bill_tax(invoice: dict) -> Optional[float]:
     """The tax the bill states at its foot: the combined GST figure, or else the
     sum of whichever heads it prints (CGST, SGST, IGST, UTGST)."""
     total = _num(invoice.get("total_gst_amount"))
+    if total is not None and not _derived(invoice.get("total_gst_amount")):
+        return total
+    keys = ("total_cgst_amount", "total_sgst_amount", "total_igst_amount", "total_utgst_amount")
+    # Heads the bill prints beat a GST total summed from the lines (Cosmin:
+    # 18% of its undiscounted lines, where the bill charged it after 5% off).
+    printed = [_num(invoice.get(k)) for k in keys if not _derived(invoice.get(k))]
+    printed = [h for h in printed if h is not None]
+    if printed:
+        return round(sum(printed), 2)
     if total is not None:
         return total
-    heads = [_num(invoice.get(k)) for k in (
-        "total_cgst_amount", "total_sgst_amount", "total_igst_amount", "total_utgst_amount",
-    )]
+    heads = [_num(invoice.get(k)) for k in keys]
     heads = [h for h in heads if h is not None]
     return round(sum(heads), 2) if heads else None
 
@@ -450,6 +457,45 @@ def printed_invoice_totals(text: str) -> List[float]:
     return out
 
 
+# A credit note the bill sets off against itself: "Less:CreditNotes 3,509.00-"
+# (Raptakos), "Less C/N Amount: 6667.00" (Aristo). The payable plus it is the
+# invoice's own value - what its lines and tax must build up to.
+_CREDIT_NOTE_SET_OFF = re.compile(
+    r"\bless\s*:?\s*(?:c\s*/\s*n|credit\s*notes?)\s*(?:amount|amt|value)?\s*[:\-]?\s*"
+    r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2})",
+    re.I,
+)
+
+
+_TDS = re.compile(r"\btds\b[^\n]{0,60}?(?<![\d.,])([\d,]+\.\d{2})(?!\d)", re.I)
+
+
+def tds_deducted(text: str) -> List[float]:
+    """TDS amounts the bill prints (income tax the buyer withholds)."""
+    out = []
+    for m in _TDS.finditer(text or ""):
+        try:
+            value = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if 0 < value and value not in out:
+            out.append(value)
+    return out
+
+
+def credit_notes_set_off(text: str) -> List[float]:
+    """Each credit-note amount the bill deducts from its own value."""
+    out = []
+    for m in _CREDIT_NOTE_SET_OFF.finditer(text or ""):
+        try:
+            value = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if value > 0:
+            out.append(value)
+    return out
+
+
 def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                       total_in_words: Optional[str] = None,
                       page_text: Optional[str] = None) -> dict:
@@ -513,7 +559,9 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
             # after a credit note or advance it settles on the same bill. Lines
             # that build up exactly to a printed invoice-level total are proven;
             # the step down to the payable is the bill's own, and is said.
-            for figure in printed_invoice_totals(page_text):
+            invoice_values = printed_invoice_totals(page_text) + [
+                round(printed_total + cn, 2) for cn in credit_notes_set_off(page_text)]
+            for figure in invoice_values:
                 if abs(figure - printed_total) <= tolerance:
                     continue
                 # Only a build-up WITH tax is an invoice value: Sun prints its
@@ -580,6 +628,18 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         spelled and built_from_lines
         and abs(spelled - built_from_lines) > _WORDS_TOLERANCE
     )
+    if words_disagrees and page_text:
+        # The bill may spell out what is left after the TDS the BUYER deducts:
+        # Eris's lines and tax come to 21,607.58, it prints "TDS 20.58-", and
+        # its words say Twenty One Thousand Five Hundred Eighty Seven. That is
+        # the bill agreeing with itself, and is said rather than flagged.
+        for tds in tds_deducted(page_text):
+            if abs(spelled - (built_from_lines - tds)) <= _WORDS_TOLERANCE:
+                words_disagrees = False
+                warnings.append(
+                    f"The bill spells out {_fmt(spelled)}: its value {_fmt(built_from_lines)} less "
+                    f"{_fmt(tds)} TDS, which the buyer deducts and pays to the government.")
+                break
 
     if stated_item_count and items and stated_item_count != len(items):
         warnings.append(

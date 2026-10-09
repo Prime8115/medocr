@@ -189,7 +189,11 @@ def _check_line_tax(c: _Checks, items: List[dict]) -> None:
             if rate is None or tax is None or rate == 0:
                 continue
             tested += 1
-            if not _close(taxable * rate / 100.0, tax, 0.10, 0.01):
+            # ...or its value after the line's own discount % (Aurowin's 5%,
+            # Sumbiotic's 10%: the tax is charged on what is left).
+            disc = _n(it.get("discount_percent"))
+            bases = [taxable] + ([taxable * (1 - disc / 100.0)] if disc and 0 < disc < 100 else [])
+            if not any(_close(b * rate / 100.0, tax, 0.10, 0.01) for b in bases):
                 bad.append((i, head))
     _verdict(c, "line_tax", "Each line's tax is its taxable value at the rate", tested,
              bad, "the tax is not the taxable value at the printed rate",
@@ -278,7 +282,24 @@ def _check_rates_give_the_tax(c: _Checks, fields: dict, items: List[dict], combi
             or any(a is None for a in amounts) or any(r is None for r in rates)):
         c.add("rates_give_tax", label, "skipped")
         return
+    # A line's own discount % comes off before its tax (Sumbiotic: 10% off
+    # ITSUM-200, whose 1,272.90 is taxed on 1,145.61).
+    # Only when the amount is plainly BEFORE that discount - quantity times a
+    # price the line prints; Kanchan's amounts are already after theirs.
+    own_discount = False
+    for i, it in enumerate(items):
+        pct, qty = _n(it.get("discount_percent")), _n(it.get("quantity"))
+        prices = [_n(it.get(k)) for k in ("rate", "pts", "ptr")]
+        before = qty and any(p and abs(qty * p - amounts[i]) <= max(0.05, 0.001 * amounts[i]) for p in prices)
+        if pct and 0 < pct < 100 and before:
+            amounts[i] = amounts[i] * (1 - pct / 100.0)
+            own_discount = True
+    line_sum = sum(amounts)
     scale = taxable / line_sum
+    if own_discount:
+        # A taxable total printed before those discounts (Sumbiotic's 2,719.30)
+        # would scale them back up.
+        scale = min(scale, 1.0)
     if not 0.5 <= scale <= 1.05:
         # The taxable total is not the lines' value less a discount: freight,
         # or a figure on another basis. Nothing to scale by with confidence.
@@ -375,7 +396,8 @@ def _check_gst_rates(c: _Checks, items: List[dict]) -> None:
              describe=lambda b: f"line {b[0] + 1} {b[1].replace('_percent', '').upper()}%")
 
 
-def _check_dates(c: _Checks, fields: dict, items: List[dict], today: _dt.date) -> None:
+def _check_dates(c: _Checks, fields: dict, items: List[dict], today: _dt.date,
+                 goods_coming_back: bool = False) -> None:
     invoice = fields.get("invoice") or {}
     inv = parse_month(_v(invoice.get("invoice_date")))
     problems: List[str] = []
@@ -389,7 +411,9 @@ def _check_dates(c: _Checks, fields: dict, items: List[dict], today: _dt.date) -
     for i, it in enumerate(items):
         exp = parse_month(_v(it.get("expiry")))
         mfg = parse_month(_v(it.get("mfg_date")))
-        if exp and inv:
+        # Expired stock is what a credit note for non-saleable goods takes
+        # back (Ajanta): expired before the note's date is its point.
+        if exp and inv and not goods_coming_back:
             tested = True
             if exp < inv:
                 problems.append(f"line {i + 1} expired before the invoice date")
@@ -471,7 +495,8 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     _check_price_ladder(c, items)
     _check_gst_rates(c, items)
     _check_rates_give_the_tax(c, fields, items, combined=bool(report.get("sgst_utgst_combined")))
-    _check_dates(c, fields, items, today)
+    _check_dates(c, fields, items, today,
+                 goods_coming_back=report.get("document_kind") in ("credit_note", "return"))
     _check_hsn(c, items)
     _check_irn(c, fields)
     _check_gstins(c, fields)

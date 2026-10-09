@@ -18,7 +18,7 @@ With them, the reader simply asks which business on the page is the shop
 the page, exactly as before.
 """
 from collections import Counter
-from typing import List
+from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -54,6 +54,33 @@ def own_gstins(db: Session, shop_id: str) -> List[str]:
         return out
     except Exception:  # noqa: BLE001 - knowing ourselves is a help, never a failure
         return []
+
+
+def own_identity(db: Session, shop_id: str) -> Dict[str, Optional[str]]:
+    """The shop's GSTINs, each with the name it goes by on its bills - the
+    buyer name most often confirmed on its approved bills for that GSTIN, else
+    the shop's registered name. Used to finish a buyer name a bill prints cut
+    short ("EASTERN"). Never raises."""
+    try:
+        gstins = own_gstins(db, shop_id)
+        if not gstins:
+            return {}
+        shop = db.get(Shop, shop_id)
+        names: Dict[str, Counter] = {g: Counter() for g in gstins}
+        docs = (db.query(Document)
+                .filter(Document.shop_id == shop_id, Document.doc_type == "invoice",
+                        Document.status.in_([lifecycle.APPROVED, lifecycle.PUSHED]))
+                .order_by(Document.created_at.desc()).limit(_LEARN_FROM).all())
+        for doc in docs:
+            bill_to = ((doc.payload or {}).get("fields") or {}).get("bill_to") or {}
+            g = str((bill_to.get("gstin") or {}).get("value") or "").strip().upper()
+            name = str((bill_to.get("name") or {}).get("value") or "").strip()
+            if g in names and name:
+                names[g][name] += 1
+        fallback = shop.name if shop else None
+        return {g: (c.most_common(1)[0][0] if c else fallback) for g, c in names.items()}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def set_own_gstins(db: Session, shop_id: str, gstins: List[str]) -> List[str]:

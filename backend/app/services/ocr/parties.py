@@ -266,6 +266,7 @@ def resolve(fields: dict, text: str, stream_text: str = "") -> List[str]:
         notes = _resolve_gstins(fields, text or stream_text, stream_text)
         notes = notes + _resolve_names(fields, stream_text or text, text)
         _tidy_names(fields)
+        _complete_own_name(fields)
         return notes
     except Exception:  # noqa: BLE001 - a second opinion never breaks a reading
         return []
@@ -311,6 +312,25 @@ def _lines_below_name(text: str, gstin: str, name: str) -> Optional[int]:
 _NAME_RUN_ON = re.compile(
     r"\s+(?:invoiced\s+at\b|customer\s+ord|ord(?:er)?\.?\s*no\b|gstin\b|gst\s*no\b|pan\s*(?:no)?\s*[:.]|"
     r"d\.?l\.?\s*no\b|[0-9a-f]{32,})", re.I)
+
+
+def _complete_own_name(fields: dict) -> None:
+    """The shop's own name for a buyer the bill names cut short, or not at
+    all. "EASTERN" is the start of "EASTERN AGENCIES HEALTHCARE PVT. LTD.", the
+    shop this bill was sent to; a name that is not a start of it - a trade
+    name like "SHREE SIMBA CHEMIST" - is the bill's own and is kept."""
+    own = OWN_GSTINS.get()
+    if not isinstance(own, dict):
+        return
+    for party in ("bill_to", "ship_to"):
+        gstin = _value(fields, party, "gstin").upper()
+        known = own.get(gstin)
+        if not known:
+            continue
+        current = _value(fields, party, "name")
+        ck, kk = _key(current), _key(known)
+        if not ck or (len(ck) < len(kk) and kk.startswith(ck)):
+            _set(fields, party, "name", known, confidence=0.9)
 
 
 def _tidy_names(fields: dict) -> None:

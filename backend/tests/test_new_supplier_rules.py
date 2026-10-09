@@ -252,3 +252,340 @@ def test_a_footer_on_the_last_product_is_cut_not_the_product():
     assert _v(item, "description") == "RIFABLOG-400 TAB"
     junk = ["(W) BRANCH A/C-810000000011373", "0 0.0", "", "", "0.00"]
     assert _build_item(junk, _map_columns(header), header, []) is None
+
+
+# --- tax printed only at the foot, and what a bill leaves unsaid ------------------------
+
+def test_tax_printed_only_in_the_summary_is_the_bills_tax():
+    from app.services.ocr.invoice_parser import _summary_tax_totals
+
+    # Alchem: beside its terms; Mahavir: "SGST VALUE" on every page.
+    invoice: dict = {}
+    _summary_tax_totals(invoice, "2. Goods once sold will not be taken back. SGST 6% 169.32\n"
+                                 "3. Shortage within 24hrs. CGST 6% 169.32\nIGST 0\n")
+    assert _v(invoice, "total_sgst_amount") == "169.32" and _v(invoice, "total_cgst_amount") == "169.32"
+    invoice = {}
+    _summary_tax_totals(invoice, "Taxable Value: 10,517.30 SGST% : 6.00 631.05 CGST% : 6.00 631.05\n"
+                                 "SGST VALUE 1,048.41\nCGST VALUE 1,048.41\n" * 2)
+    # The group heading is no total, and a page repeating the foot counts once.
+    assert _v(invoice, "total_sgst_amount") == "1048.41"
+
+
+def test_lines_matching_the_taxable_value_build_up_with_the_summary_tax():
+    items = [{"amount": _leaf("2822.20")}]
+    fields = {"line_items": items, "invoice": {
+        "total_amount": _leaf("3161.00"), "total_taxable_amount": _leaf("2822.20", SUMMED_CONFIDENCE),
+        "total_cgst_amount": _leaf("169.32"), "total_sgst_amount": _leaf("169.32"),
+        # Summed from lines that carry no GST: never the bill's tax.
+        "total_gst_amount": _leaf("0.00", SUMMED_CONFIDENCE)}}
+    r = reconcile_invoice(fields)
+    assert r["total_reconciles"] is True and r["total_reconciled_by"] == "lines + bill tax"
+
+
+def test_a_tax_column_printing_both_halves_reads_as_the_whole_rate():
+    # Troikaa: "Tax% 6.00/6.00", and "Page" caught under the last one.
+    header = ["DESCRIPTION", "BATCH", "QTY", "RATE", "TAXABLE VALUE", "Tax%"]
+    cols = _map_columns(header)
+    from app.services.ocr.invoice_parser import _gst_columns
+
+    item = _build_item(["TELMIKAA MT 50MG Printed Date: 28-08-2025", "BA125001", "1", "990.00", "990.00",
+                        "6.00/6.00\nPage"], cols, header, _gst_columns(header), interstate=False)
+    assert _v(item, "gst_percent") == "12.0" and _v(item, "cgst_percent") == "6"
+    assert _v(item, "description") == "TELMIKAA MT 50MG"
+
+
+def test_an_unprinted_discount_is_proven_by_the_sub_total():
+    from app.services.ocr.invoice_parser import _taxable_from_sub_total
+
+    # Cosmin: 31,640.32 in lines, 5% off it never prints, then the tax.
+    invoice = {"total_amount": _leaf("35469.00"), "total_cgst_amount": _leaf("2705.24"),
+               "total_sgst_amount": _leaf("2705.24")}
+    _taxable_from_sub_total(invoice, "TOTAL : QTY+FREE 69 SUB TOTAL 30058.29\nROUND OFF 0.23\n")
+    assert _v(invoice, "total_taxable_amount") == "30058.29"
+    fields = {"line_items": [{"amount": _leaf("31640.32")}], "invoice": invoice}
+    assert reconcile_invoice(fields)["total_reconciled_by"] == "lines - 5% bill discount + bill tax"
+    # A sub total the tax does not build up to the grand total is not the taxable value.
+    other = {"total_amount": _leaf("35469.00"), "total_cgst_amount": _leaf("2705.24")}
+    _taxable_from_sub_total(other, "SUB TOTAL 30058.29\n")
+    assert "total_taxable_amount" not in other
+
+
+def test_the_maker_printed_under_a_product_is_its_manufacturer():
+    from app.services.ocr.pdf_table import tables_from_words
+
+    def w(text, x0, top):
+        return {"text": text, "x0": x0, "x1": x0 + 6 * len(text), "top": top, "bottom": top + 8}
+
+    words = [w("Product", 20, 10), w("Batch", 200, 10), w("Qty", 260, 10), w("Rate", 300, 10),
+             w("Amount", 360, 10)]
+    rows = [("DAYTINT", "25901", "10", "607.12", "6071.20"), ("KIWIFIX", "N25D01", "9", "112.88", "1015.92")]
+    top = 30
+    for name, batch, qty, rate, amount in rows:
+        words += [w(name, 20, top), w(batch, 200, top), w(qty, 260, top), w(rate, 300, top),
+                  w(amount, 360, top)]
+        # Printed nearer the NEXT product than its own.
+        words += [w("Mfg", 20, top + 14), w(":", 40, top + 14), w("DERMA", 50, top + 14)]
+        top += 20
+    table = tables_from_words(words)[0]
+    header = table[0]
+    first, second = (_build_item(r, _map_columns(header), header, []) for r in table[1:3])
+    assert _v(first, "description") == "DAYTINT" and _v(first, "manufacturer") == "DERMA"
+    assert _v(second, "description") == "KIWIFIX"
+
+
+def test_a_diagonal_watermark_is_not_read_into_the_grid():
+    from app.services.ocr.pdf_table import _oblique
+
+    assert _oblique({"object_type": "char", "matrix": (0.82, 0.57, -0.57, 0.82, 0, 0)})
+    assert not _oblique({"object_type": "char", "matrix": (1, 0, 0, 1, 0, 0)})
+    assert not _oblique({"object_type": "char", "matrix": (0, 1, -1, 0, 0, 0)})   # sideways, not slanted
+
+
+def test_a_name_spilled_into_the_batch_column_goes_back():
+    header = ["PRODUCT", "BATCH", "QTY", "RATE", "AMOUNT"]
+    item = _build_item(["KLINPRO PROTEIN", "POWDER NHPR25109", "20", "274.57", "5491.40"],
+                       _map_columns(header), header, [])
+    assert _v(item, "description") == "KLINPRO PROTEIN POWDER" and _v(item, "batch_no") == "NHPR25109"
+    tax_working = ["VITALIS TAB 14580*6+6%=874.8SGST+874.8CGST,", "FB517", "20", "329.50", "6590.00"]
+    assert _v(_build_item(tax_working, _map_columns(header), header, []), "description") == "VITALIS TAB"
+
+
+# --- the shop, and how its bills arrive -------------------------------------------------
+
+def test_a_buyer_name_cut_short_is_finished_from_the_shops_own_name():
+    from app.services.ocr.parties import OWN_GSTINS
+
+    token = OWN_GSTINS.set({EASTERN: "EASTERN AGENCIES HEALTHCARE PVT LTD"})
+    try:
+        fields = {"supplier": {"gstin": _leaf(SUPPLIER), "name": _leaf("ADROIT BIOMED LIMITED")},
+                  "bill_to": {"gstin": _leaf(EASTERN), "name": _leaf("EASTERN AGENCIES")}}
+        parties.resolve(fields, f"ADROIT BIOMED LIMITED {SUPPLIER}\nEASTERN AGENCIES\nGSTIN {EASTERN}\n")
+        assert _v(fields["bill_to"], "name") == "EASTERN AGENCIES HEALTHCARE PVT LTD"
+        # A different name the bill prints in full is the bill's own: kept.
+        fields["bill_to"]["name"] = _leaf("EASTERN AGENCY (ANDHERI)")
+        parties.resolve(fields, "")
+        assert _v(fields["bill_to"], "name") == "EASTERN AGENCY (ANDHERI)"
+    finally:
+        OWN_GSTINS.reset(token)
+
+
+def test_a_word_run_into_the_invoice_number_does_not_split_the_bill():
+    from app.services.intake import _page_invoice_numbers
+
+    assert _page_invoice_numbers("Invoice No : 7613021411ALKEM") == _page_invoice_numbers("Invoice No : 7613021411")
+
+
+# --- columns that hold more than one thing, and totals that need choosing --------------
+
+def test_the_amount_in_an_unheaded_last_column_is_found_by_its_arithmetic():
+    # Kreit: "... CGST | Value" over "9.00 | 270.11 3001.25" - tax, then 25 x 120.05.
+    header = ["PRODUCT", "BATCH", "QTY", "RATE", "SGST", "VALUE", "CGST", "VALUE"]
+    row = ["ROOTCARE TABS", "DMF0689A", "25", "120.05", "9.00", "270.11", "9.00", "270.11 3001.25"]
+    assert _v(_build_item(row, _map_columns(header), header, []), "amount") == "3001.25"
+
+
+def test_paise_are_cut_without_swallowing_the_rupees():
+    assert total_from_words("Rs. Four Thousand Three Hundred and Forty Two and Paisa Six only") == "4342.00"
+    assert total_from_words("Rupees Seven Hundred Fifteen and Ninety Two paise Only") == "715.00"
+
+
+def test_a_bare_gst_column_is_the_whole_rate_and_a_deal_qty_is_free_goods():
+    # IPCA: "Sale | ... | D.Qty | ... | GST | IGST | CGST | SGST" over "10 | 0 | 12 | 0.00 | 146.32 | 146.32".
+    from app.services.ocr.invoice_parser import _gst_columns
+
+    header = ["Prod Code", "Product Name", "Batch No.", "Sale", "PTS", "Amount", "D.Qty",
+              "GST", "IGST", "CGST", "SGST"]
+    cols = _map_columns(header)
+    assert header[cols["quantity"]] == "Sale" and header[cols["free_quantity"]] == "D.Qty"
+    row = ["DFT05 Ace", "Revelol 50/5 10s", "DFT0525002R", "10", "243.87", "2438.70", "0",
+           "12", "0.00", "146.32", "146.32"]
+    item = _build_item(row, cols, header, _gst_columns(header), interstate=False)
+    assert _v(item, "gst_percent") == "12.0" and _v(item, "quantity") == "10"
+    assert _v(item, "description") == "Ace Revelol 50/5 10s" and _v(item, "product_code") == "DFT05"
+    # "Billed Qty" ends in "dqty" too - and is the quantity.
+    assert "quantity" in _map_columns(["Description", "Batch", "Billed Qty", "Taxable Value"])
+
+
+def test_serial_hsn_batch_and_price_quantity_cells_are_split():
+    # Blue Cross: "SR. BATCH NO. HSN CODE NO." and "PTR * QUANTITY" headings.
+    header = ["SR. BATCH NO. HSN CODE NO.", "DESCRIPTION", "PTR * QUANTITY", "PTS / rate per Unit",
+              "VALUE", "DISC AMOUNT", "ASSESSABLE VALUE"]
+    row = ["1 30049079 AGB2513 ANGICAM", "BETA TABLETS", "28.57 800", "25.71", "20,568.00", "0.00", "20,568.00"]
+    item = _build_item(row, _map_columns(header), header, [])
+    assert _v(item, "description") == "ANGICAM BETA TABLETS"
+    assert (_v(item, "batch_no"), _v(item, "hsn"), _v(item, "quantity")) == ("AGB2513", "30049079", "800")
+    assert _v(item, "ptr") == "28.57"
+
+
+def test_both_rates_and_the_amount_in_one_cell():
+    # Agresco: "SGST CGST Amount" over "6.00 6.00 1240.20", and "20+2" under Qty.
+    header = ["Qty.", "Product", "Batch", "PTS", "SGST CGST Amount"]
+    item = _build_item(["20+2", "AGRIKOF-LS SYRUP", "SPL21052", "62.01", "6.00 6.00 1240.20"],
+                       _map_columns(header), header, [], interstate=False)
+    assert _v(item, "amount") == "1240.20" and _v(item, "cgst_percent") == "6"
+    assert (_v(item, "quantity"), _v(item, "free_quantity")) == ("20", "2")
+
+
+def test_the_total_is_never_zero_and_the_words_choose_between_figures():
+    from app.services.ocr.invoice_parser import _extract_total
+
+    # Bayer: a heading row ending "INVOICE AMOUNT" over its 0.00 cash discount.
+    assert _extract_total("CGST SGST TOTAL TAX INVOICE AMOUNT\n0.00 1,080,329.70\n"
+                          "NET AMOUNT PAYABLE\n1,209,969.00\n") == "1209969.00"
+    # IPCA: the invoice value, then the payable after the buyer's TDS.
+    assert _extract_total("Net Amount : 236867.00\nRupees: Two Lakh Thirty Six Thousand Eight Hundred "
+                          "Sixty Seven only\nNet Amount Payable 236655.00\n") == "236867.00"
+
+
+def test_a_credit_note_the_bill_sets_off_is_reconciled_and_said():
+    # Raptakos: lines and tax 140,984.00, less credit notes 3,509.00 = 137,475.00.
+    fields = {"line_items": [{"amount": _leaf("119477.86")}], "invoice": {
+        "total_amount": _leaf("137475.00"), "total_cgst_amount": _leaf("10753.07"),
+        "total_sgst_amount": _leaf("10753.07")}}
+    r = reconcile_invoice(fields, page_text="Add:DebitNotes 0.00\nLess:CreditNotes 3,509.00-\n")
+    assert r["total_reconciles"] is True and "140984.00" in r["total_reconciled_by"]
+    assert any("credit note" in w for w in r["warnings"])
+
+
+def test_the_gst_total_is_its_printed_heads_only_when_all_are_printed():
+    from app.services.ocr.invoice_parser import _gst_total_from_heads
+
+    invoice = {"total_gst_amount": _leaf("90.00"), "total_cgst_amount": _leaf("329.82"),
+               "total_sgst_amount": _leaf("329.82")}
+    _gst_total_from_heads(invoice)
+    assert _v(invoice, "total_gst_amount") == "659.64"
+    # Only the CGST half printed legibly (Abbott): the stated total stands.
+    half = {"total_gst_amount": _leaf("15444.00"), "total_cgst_amount": _leaf("7722.00"),
+            "total_sgst_amount": _leaf("7722.00", SUMMED_CONFIDENCE)}
+    _gst_total_from_heads(half)
+    assert _v(half, "total_gst_amount") == "15444.00"
+
+
+def test_sale_returns_listed_under_the_items_are_not_bought():
+    from app.services.ocr.pdf_table import _FOOTER
+
+    assert _FOOTER.search("ADJUSTMENT DETAIL =========> I")
+    assert _FOOTER.search("SALE RETURN NO. : CN00007 DATE : 31-07-2025 VALUE : 739.00")
+    assert _FOOTER.search("Total of CARDIMAXX 0.00 0.00 211488.25")
+    assert not _FOOTER.search("TOTAL VALUE (Rs.)")
+
+
+# --- credit notes ---------------------------------------------------------------------
+
+def test_a_credit_note_says_what_it_is_for_and_is_still_a_credit_note():
+    from app.services.ocr.document_kind import kind_of_title
+
+    assert kind_of_title("Credit Note for Non-Saleable") == "credit_note"
+    assert kind_of_title("Credit note for expired goods will not be issued") is None
+
+
+def test_credit_notes_in_one_pdf_are_told_apart_by_their_own_numbers():
+    from app.services.intake import _page_document_numbers, _page_invoice_numbers
+
+    page = "Original Invoice & Date : 8062547691 dtd. 05/12/2023\nSAP Doc. No.: 8510945928 DATE : 19/09/2025"
+    assert _page_invoice_numbers(page) == set()
+    assert _page_document_numbers(page) == {"8510945928"}
+
+
+def test_the_bills_own_date_not_another_references():
+    from app.services.ocr.invoice_parser import _invoice_date_match
+
+    text = ("Cust Reference Date :08/08/2025 Customer\nORDER DATE : 15/09/2025\n"
+            "PAN No -AASCA3306L DATE : 19/09/2025\n")
+    assert _invoice_date_match(text).group(1) == "19/09/2025"
+
+
+def test_the_figure_the_words_spell_is_the_total_whatever_its_label():
+    from app.services.ocr.invoice_parser import _extract_total
+
+    text = ("Amount in Rupees:- Fifty Seven Thousand Six Hundred Thirty Seven Only\n"
+            "Grand Total 59,443.21\nLess Special Disc. 1,806.12\nTotal Amount 57,637.09\n"
+            "Rounding Off -0.09\nInvoice Amount 57,637.00\n")
+    assert _extract_total(text) == "57637.00"
+
+
+def test_expired_goods_on_a_credit_note_are_its_point_not_a_fault():
+    import datetime as dt
+
+    from app.services.ocr.verify import verify_invoice
+
+    fields = {"invoice": {"invoice_date": _leaf("19/09/2025")},
+              "line_items": [{"description": _leaf("ZORBAX TAB"), "expiry": _leaf("Aug-2025")}]}
+
+    def dates(kind):
+        report = verify_invoice(fields, {"document_kind": kind}, today=dt.date(2025, 10, 1))
+        return next(c["status"] for c in report["checks"] if c["id"] == "dates")
+
+    assert dates("invoice") == "fail"
+    assert dates("credit_note") != "fail"
+
+
+# --- found in review of the whole corpus ------------------------------------------------
+
+def test_a_bill_date_is_the_bills_date_and_another_date_is_a_last_resort():
+    from app.services.ocr.invoice_parser import _invoice_date_match
+
+    assert _invoice_date_match("PO No / Ref no: WA\nBill Date : 26-06-2025").group(1) == "26-06-2025"
+    # Only an acknowledgement's date printed: better than nothing, as before.
+    assert _invoice_date_match("ACK No : 122528421462142 ACK Date : 2025-09-03").group(1) == "2025-09-03"
+
+
+def test_a_gross_amount_is_the_total_only_when_the_bill_names_no_other():
+    from app.services.ocr.invoice_parser import _whole_bill_total
+
+    two_pages = "REMARKS: Gross Amount : 12933.90\n...\nOverdue Net Payable 14250.00\n"
+    assert _whole_bill_total(two_pages) == "14250.00"
+    assert _whole_bill_total("Gross Amount 6,577.10\nLess C/N Amount: 6667.00\nAmount Payable: -90.00\n") == "6577.10"
+
+
+def test_a_slabs_taxable_value_printed_beside_its_head_is_not_its_tax():
+    from app.services.ocr.invoice_parser import _summary_tax_totals
+
+    invoice = {"total_amount": _leaf("22527.00")}
+    _summary_tax_totals(invoice, "CGST 2.5000 % 740.64\nCGST 9.0000 % 2831.80\nCGST 6.0000 % 16435.47\n")
+    assert "total_cgst_amount" not in invoice
+
+
+def test_line_tax_is_on_the_value_after_the_lines_own_discount():
+    from app.services.ocr.invoice_parser import _tax_base
+
+    # 10 x 127.29 = 1,272.90, less 10%: taxed on 1,145.61.
+    before = {"amount": _leaf("1272.90"), "quantity": _leaf("10"), "pts": _leaf("127.29"),
+              "discount_percent": _leaf("10.00")}
+    assert _tax_base(before) == "1145.61"
+    # An amount already after its discount (no price gives it) is the base.
+    after = {"amount": _leaf("1145.61"), "quantity": _leaf("10"), "pts": _leaf("127.29"),
+             "discount_percent": _leaf("10.00")}
+    assert _tax_base(after) == "1145.61"
+
+
+def test_a_reading_without_quantities_or_names_goes_to_the_ai():
+    from app.services.ocr import _parse_is_trustworthy_enough
+
+    def line(desc, batch, qty, amount):
+        return {"description": _leaf(desc), "batch_no": _leaf(batch), "quantity": _leaf(qty), "amount": _leaf(amount)}
+
+    no_qty = {"line_items": [line(f"P{i}", f"B{i}", None, "100.00") for i in range(4)], "invoice": {}}
+    assert not _parse_is_trustworthy_enough(no_qty, "t")
+    one_name = {"line_items": [line("SRN", "FC-2501", "25", "1197.25"), line("SRN", "AC2414", "30", "5419.20")],
+                "invoice": {"total_amount": _leaf("6616.45")}}
+    assert not _parse_is_trustworthy_enough(one_name, "t")
+    good = {"line_items": [line(f"PRODUCT {i}", f"B{i}", "2", "100.00") for i in range(4)], "invoice": {}}
+    assert _parse_is_trustworthy_enough(good, "t")
+
+
+def test_one_column_for_billed_and_free_is_the_quantity_column():
+    # East India: "Qty Sale+Free" over "500+100"; Linux: "Qty/ FreeQty".
+    header = ["Item", "Batch No.", "Qty Sale+Free", "Taxable Amount"]
+    cols = _map_columns(header)
+    assert header[cols["quantity"]] == "Qty Sale+Free" and "free_quantity" not in cols
+    item = _build_item(["PYRIGESIC", "P15009", "500+100", "13681.80"], cols, header, [])
+    assert (_v(item, "quantity"), _v(item, "free_quantity")) == ("500", "100")
+    # A heading for free goods alone stays free goods.
+    assert "quantity" not in _map_columns(["Item", "Batch", "Free Qty", "Amount"])
+
+
+def test_the_billed_quantity_wins_over_loose_units():
+    # Cipla: "Box | Loose Qty | ... | Billed Qty." - the loose column is mostly empty.
+    header = ["Batch Number", "Box", "Loose Qty", "Product Description", "Billed Qty.", "Taxable Value"]
+    assert header[_map_columns(header)["quantity"]] == "Billed Qty."

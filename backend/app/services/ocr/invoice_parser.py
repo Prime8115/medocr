@@ -37,7 +37,7 @@ from app.services.ocr.invoice_header import (
     _has_doubled_glyphs,
 )
 from app.services.ocr.invoice_checks import SUMMED_CONFIDENCE, line_arithmetic_holds
-from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout
+from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout, without_watermark
 
 log = logging.getLogger(__name__)
 
@@ -68,8 +68,12 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # Free/scheme quantity is claimed BEFORE quantity so a "F.QTY" column can
     # never be mistaken for the billed quantity.
     # "Fr. Qty." (Kanchan) normalises to "frqty", which matched nothing before.
-    "free_quantity": (["freeqty", "frqty", "schemeqty", "free", "fqty", "scheme", "bonus"], ["%", "value", "amount"]),
-    "quantity": (["quantity", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
+    # "D.Qty" (IPCA): the deal quantity - goods given free on the scheme.
+    "free_quantity": (["freeqty", "frqty", "schemeqty", "dealqty", "free", "fqty", "scheme", "bonus"],
+                      ["%", "value", "amount"]),
+    # "Billed Qty." before a bare "qty": Cipla prints "Loose Qty" (mostly empty)
+    # first, and its billed quantity is the one the stock and the amount follow.
+    "quantity": (["quantity", "billedqty", "billqty", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
     "mrp": (["mrp"], ["%"]),
     "ptr": (["pricetoretailer", "retailerprice", "ptr"], ["%"]),
     "pts": (["pricetostockist", "stockistprice", "distributorprice", "distprice", "pts"], ["%"]),
@@ -84,7 +88,7 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # Bare "DIS" (Marg): the line's discount rate.
     "discount_percent": (["disc%", "discount%", "discount", "disc", "dis"], ["amt", "amount", "value", "rs"]),
     # "Spl.Dis. Amount" (Ajanta) - "Dis." as well as "Disc.".
-    "discount_amount": (["discamt", "discountamt", "discountamount", "disamount", "disamt"], ["%"]),
+    "discount_amount": (["discamt", "discountamt", "discountamount", "discamount", "disamount", "disamt"], ["%"]),
     "cd_percent": (["cd%", "cashdisc%", "cashdiscount%"], ["amt", "amount", "rs"]),
     "cd_amount": (["cdamt", "cdamount", "cashdiscamt", "cashdiscountamt"], ["%"]),
     "wp_percent": (["wp%", "wpdisc%"], ["amt", "amount"]),
@@ -119,7 +123,8 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     "amount": (
         # Bare "TAXABLE" (the Marg-style ERP layout: "AMOUNT | DISC | TAXABLE")
         # names the taxable value; its "AMOUNT" is the figure before discount.
-        ["taxableamount", "taxablevalue", "taxableamt", "taxable", "amount", "value", "total"],
+        ["taxableamount", "taxablevalue", "taxableamt", "taxable", "assessablevalue", "assessable",
+         "amount", "value", "total"],
         # A tax column is not the line's own amount, and neither is a discount
         # column. Overseas prints "Disc Value" and "CGST Amount" beside its
         # taxable "Trans. Value"; without these, the sum of the invoice was the
@@ -221,7 +226,10 @@ def _map_columns(header_row) -> dict:
                 # "Taxable Amt after Disc." (Zuventus) IS the taxable amount;
                 # the discount it mentions is already taken off.
                 excluded = any(e in h for e in excludes) and not (
-                    field == "amount" and keyword.startswith("taxable"))
+                    field == "amount" and keyword.startswith("taxable")) and not (
+                    # "PRODUCT NAME (HSN CODE)" (Mankind) is the product's
+                    # name, whatever else the heading mentions.
+                    field == "description" and h.startswith(keyword) and len(keyword) >= 7)
                 if keyword in h and not excluded:
                     hit = idx
                     break
@@ -229,11 +237,37 @@ def _map_columns(header_row) -> dict:
                 mapping[field] = hit
                 taken.add(hit)
                 break
+    # "D.Qty" (IPCA) is the deal quantity - free goods - and its bare "Sale"
+    # column the quantity sold. Matched whole: "Billed Qty" also ends in "dqty".
+    qty_at = mapping.get("quantity")
+    if qty_at is not None and norms[qty_at] in ("dqty", "dealqty"):
+        sale = next((i for i, h in enumerate(norms) if h == "sale" and i not in taken), None)
+        if sale is not None:
+            if "free_quantity" not in mapping:
+                mapping["free_quantity"] = qty_at
+            else:
+                taken.discard(qty_at)
+            mapping["quantity"] = sale
+            taken.add(sale)
+    # One column for both, quantity first: "Qty Sale+Free" over "500+100" (East
+    # India), "Qty/ FreeQty" (Linux). Claimed by "free", the billed quantity was
+    # read as free goods and the quantity left blank. It is the quantity
+    # column; "+" or "/" in the cell splits off the free part (_build_item).
+    free_at = mapping.get("free_quantity")
+    if "quantity" not in mapping and free_at is not None:
+        head = norms[free_at]
+        at_qty = min((head.find(w) for w in ("qty", "quantity") if w in head), default=-1)
+        if 0 <= at_qty < head.find("free"):
+            mapping["quantity"] = mapping.pop("free_quantity")
     # When the taxable column is headed as such, a plain "AMOUNT" beside it is
     # the line before its discount - the gross.
     amount_at = mapping.get("amount")
-    if amount_at is not None and "taxable" in norms[amount_at] and "gross_amount" not in mapping:
-        plain = next((i for i, h in enumerate(norms) if h in ("amount", "amt", "value") and i not in taken), None)
+    if amount_at is not None and ("taxable" in norms[amount_at] or "assessable" in norms[amount_at]) \
+            and "gross_amount" not in mapping:
+        # ...one printed BEFORE it: Wanbury's "Amt" after its taxable column is
+        # a tax amount, not the line before discount.
+        plain = next((i for i, h in enumerate(norms)
+                      if h in ("amount", "amt", "value") and i not in taken and i < amount_at), None)
         if plain is not None:
             mapping["gross_amount"] = plain
             taken.add(plain)
@@ -263,6 +297,14 @@ def _header_text(header_row, idx: Optional[int]) -> str:
     return _clean(header_row[idx])
 
 
+# A rate column headed by "tax" alone, naming no head.
+# A bare "GST" (IPCA prints "GST | IGST | CGST | SGST" over "12 | 0.00 | 146.32 |
+# 146.32") is the whole rate too - taken as CGST, it was paired up to 18%.
+_BARE_TAX_RATE = ("tax%", "taxrate", "tax%rate", "gst", "gstrate")
+# "6.00/6.00" under it: the CGST and SGST rates of an intra-state line.
+_RATE_PAIR = re.compile(r"^\s*(\d{1,2}(?:\.\d+)?)\s*/\s*(\d{1,2}(?:\.\d+)?)\s*$")
+
+
 def _gst_columns(header_row) -> List[int]:
     """Indices of GST-rate columns (CGST/SGST/IGST) whose percentage we sum.
 
@@ -275,6 +317,9 @@ def _gst_columns(header_row) -> List[int]:
     out = []
     for idx, c in enumerate(header_row):
         h = _norm(c)
+        if h in _BARE_TAX_RATE:
+            out.append(idx)   # "Tax%" (Troikaa): the line's whole GST rate
+            continue
         if "gst" not in h:
             continue
         if "%" in str(c) or "rate" in h:
@@ -382,7 +427,7 @@ _TOTAL_PATTERNS = [
     r"net\s*to\s*pay",
     r"grand\s*total",
     r"bill\s*amount",
-    r"invoice\s*(?:total|amount|value)",
+    r"invoice\s*(?:total|amount|amt|value)",
     r"total\s*invoice",
     r"net\s*amount",
     r"total\s*amount",
@@ -403,14 +448,55 @@ _MONEY = r"(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]{2,})"
 _TOTAL_TAIL = r"(?:\s*(?:amt|amount|value|payable|due|rs|inr)\.?){0,2}\s*[:\-]?\s*"
 
 
+# Aristo's only figure for the bill is "Gross Amount 6,577.10" (lines,
+# discount and tax) before it sets off a credit note to "Amount Payable:
+# -90.00". Only when the WHOLE bill names no other total: the first page of
+# a two-page bill (Stedman) prints its "Gross Amount" before any tax.
+_LAST_RESORT_TOTAL = re.compile(r"gross\s*amount" + _TOTAL_TAIL + _MONEY, re.I)
+
+
+def _whole_bill_total(text: str) -> Optional[str]:
+    total = _extract_total(text)
+    if total is None:
+        found = [m for m in _LAST_RESORT_TOTAL.findall(text or "") if re.search(r"[1-9]", m)]
+        total = found[-1].replace(",", "") if found else None
+    return total
+
+
 def _extract_total(text: str) -> Optional[str]:
     """The invoice's printed total, preferring the most specific wording.
 
     Falls back to the amount-in-words line, which for some suppliers (Bharat
     Serums) is the only place the grand total appears at all.
     """
+    # A labelled figure the bill also spells out is its total, whichever label
+    # it sits under: Ajanta prints "Grand Total 59,443.21", then "Less Special
+    # Disc. 1,806.12", then "Invoice Amount 57,637.00" - and the words say
+    # Fifty Seven Thousand Six Hundred Thirty Seven.
+    words = total_from_words(text)
+    if words is not None:
+        # Exactly first: the words name whole rupees, as the rounded total does.
+        for tolerance in (0.005, 1.0):
+            for pattern in _TOTAL_PATTERNS:
+                for m in re.findall(pattern + _TOTAL_TAIL + _MONEY, text or "", re.I):
+                    if re.search(r"[1-9]", m) and abs(float(m.replace(",", "")) - float(words)) < tolerance:
+                        return m.replace(",", "")
     for pattern in _TOTAL_PATTERNS:
         matches = re.findall(pattern + _TOTAL_TAIL + _MONEY, text or "", re.I)
+        # A zero is no bill's total: Bayer heads a summary row "... INVOICE
+        # AMOUNT" and the row beneath starts with its 0.00 cash discount. Its
+        # total is the "NET AMOUNT PAYABLE" further down.
+        matches = [m for m in matches if re.search(r"[1-9]", m)]
+        if len({m.replace(",", "") for m in matches}) > 1:
+            # Several figures under one label: the one the bill also spells
+            # out is its total. IPCA prints "Net Amount : 236867.00", the words
+            # for it, then "Net Amount Payable 236655.00" after deducting TDS -
+            # tax the BUYER withholds, not a lower price.
+            words = total_from_words(text)
+            if words is not None:
+                spelled = [m for m in matches if abs(float(m.replace(",", "")) - float(words)) < 1.0]
+                if spelled:
+                    return spelled[-1].replace(",", "")
         if matches:
             # The last occurrence is the foot of the bill.
             return matches[-1].replace(",", "")
@@ -532,6 +618,32 @@ _INVOICE_DATE = [
     re.compile(r"\bdated?\s*[:\-]\s*" + _DATE_VALUE, re.I),
     re.compile(r"\bdate\s*[:\-]\s*" + _DATE_VALUE, re.I),
 ]
+
+
+# A bare "Date :" that belongs to some other reference on the line: "Cust
+# Reference Date :08/08/2025" (Ajanta) above its own "DATE : 19/09/2025".
+_OTHER_DATE = re.compile(
+    r"(?:ref(?:erence)?|order|po|lr|l\.r|due|cust(?:omer)?|challan|cheque|chq|ack|e-?way\s*bill|"
+    r"delivery|dispatch|mfg|exp(?:iry)?|dl|licen[cs]e|claim)\.?\s*(?:no\.?\s*)?$",
+    re.I,
+)
+
+
+def _invoice_date_match(text: Optional[str]):
+    """The invoice's own date: a labelled invoice date first, else the first
+    bare "Date" that is not another reference's date - and when every bare
+    date is another's (an e-way bill or IRN acknowledgement dated the same
+    day is all some bills print), the first of them, as before."""
+    first_other = None
+    for n, pattern in enumerate(_INVOICE_DATE):
+        for m in pattern.finditer(text or ""):
+            if n >= 3:
+                before = (text or "")[max(0, m.start() - 30):m.start()].split("\n")[-1]
+                if _OTHER_DATE.search(before.strip()):
+                    first_other = first_other or m
+                    continue
+            return m
+    return first_other
 
 
 def _buyer_boundary(words, page_height: float) -> Optional[float]:
@@ -701,7 +813,7 @@ def _extract_header_meta(
         rest = re.search(re.escape(number) + r"[^\n]*\n[ \t]*([A-Za-z0-9][A-Za-z0-9\-/]*)", text or "")
         if rest and any(ch.isdigit() for ch in rest.group(1)):
             number = number + rest.group(1)
-    inv_dt = next((m for m in (p.search(text or "") for p in _INVOICE_DATE) if m), None)
+    inv_dt = _invoice_date_match(text)
 
     supplier = {
         "name": _f(name),
@@ -980,6 +1092,45 @@ def _split_side_by_side(heading, value: str) -> Dict[str, str]:
     return out
 
 
+def _split_code_cell(heading, value: str) -> Dict[str, str]:
+    """Serial, HSN and batch printed side by side under one heading.
+
+    Blue Cross heads one column "SR. BATCH NO. HSN CODE NO." and prints
+    "1 30049079 AGB2513 ANGICAM" - serial, HSN, batch, and the first word of
+    the product's name, which runs in from the next column. Split only when
+    the cell holds an HSN-shaped number AND a batch-shaped code; the words
+    after them go back to the front of the description.
+    """
+    head = _norm(heading)
+    if "hsn" not in head or not any(k in head for k in ("batch", "bno")) or not value:
+        return {}
+    tokens = value.split()
+    if tokens and re.fullmatch(r"\d{1,3}", tokens[0]):
+        tokens = tokens[1:]   # the serial number
+    hsn = next((i for i, t in enumerate(tokens) if re.fullmatch(r"\d{4}(?:\d{2}){0,2}", t)), None)
+    batch = next((i for i, t in enumerate(tokens) if i != hsn and re.search(r"[A-Za-z]", t)
+                  and re.search(r"\d", t) and 3 <= len(t) <= 20), None)
+    if hsn is None or batch is None:
+        return {}
+    out = {"hsn": tokens[hsn], "batch_no": tokens[batch]}
+    rest = [t for i, t in enumerate(tokens) if i not in (hsn, batch) and i > max(hsn, batch)]
+    if rest:
+        out["description_prefix"] = " ".join(rest)
+    return out
+
+
+def _split_price_and_quantity(heading, value: str) -> Dict[str, str]:
+    """"PTR * QUANTITY" over "28.57 800" (Blue Cross): the price, then the count."""
+    head = _norm(heading)
+    if "ptr" not in head or not any(k in head for k in ("quantity", "qty")):
+        return {}
+    numbers = (value or "").split()
+    if len(numbers) != 2 or not re.fullmatch(r"\d[\d,]*\.\d{2}", numbers[0]) \
+            or not re.fullmatch(r"\d[\d,]*", numbers[1]):
+        return {}
+    return {"ptr": numbers[0].replace(",", ""), "quantity": numbers[1].replace(",", "")}
+
+
 # The whole GST rates (CGST + SGST together, or IGST).
 _FULL_SLABS = {0.25, 1.0, 3.0, 5.0, 12.0, 18.0, 28.0, 40.0}
 _CARRIED_FORWARD = re.compile(r"\b(balance\s*[bc]\s*/?\s*f|brought\s*forward|carried\s*forward)\b", re.I)
@@ -990,9 +1141,14 @@ _NOT_A_PRODUCT = re.compile(
     r"^(cn|dn)\s*no|=====)",
     re.I,
 )
+_PAGE_FURNITURE = re.compile(
+    r"\s(?:printed\s+(?:date|on|by)\s*:|page\s+\d+\s+of\s+\d+|\d[\d.]*\s*\*\s*\d+(?:\.\d+)?\s*\+\s*\d+(?:\.\d+)?\s*%\s*=)",
+    re.I)
+_MAKER_IN_DESC = re.compile(r"\s(?:mfg|mfr|mkt|marketed\s+by|manufactured\s+by)\s*[.:]\s*(?!(?:date|dt)\b)(\S.*)$", re.I)
 # Where footer text starts when it runs onto the last product's description.
 _FOOTER_IN_DESC = re.compile(r"\s(?:scheme\s+discount|discount\s+sgst|rupees|=====|value\s*:|"
                              r"credit\s+note|debit\s+note|terms\s*(?:and|&)\s*conditions|"
+                             r"printed\s+(?:date|on)\s*:|"
                              r"\d[\d,]*\.\d{2}\s+\d[\d,]*\.\d{2})", re.I)
 _HEADING_WORDS = {"amount", "value", "total", "qty", "quantity", "rate", "description", "particulars",
                   "product", "item", "schamt", "taxable"}
@@ -1030,6 +1186,21 @@ def _unwrapped_number(cell):
     if len(decimals) + len(tail) != 2:
         return cell
     return whole + tail
+
+
+def _tax_base(item: dict, rate_cell=None) -> Optional[str]:
+    """The value a line's GST is charged on: its amount, less the line's own
+    discount % when the amount is plainly before it - quantity times a price
+    the line prints. Sumbiotic's 1,272.90 less 10% is taxed on 1,145.61."""
+    amount = _num((item.get("amount") or {}).get("value"))
+    disc = _num((item.get("discount_percent") or {}).get("value"))
+    qty = _num((item.get("quantity") or {}).get("value"))
+    if amount is None or not disc or not 0 < float(disc) < 100 or not qty:
+        return amount
+    prices = [_num(rate_cell)] + [_num((item.get(k) or {}).get("value")) for k in ("rate", "pts", "ptr")]
+    if any(p and abs(float(qty) * float(p) - float(amount)) <= max(0.05, 0.001 * float(amount)) for p in prices):
+        return f"{float(amount) * (1 - float(disc) / 100):.2f}"
+    return amount
 
 
 def _build_item(row, cols: dict, header_row, gst_cols: List[int],
@@ -1091,6 +1262,15 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             if field == "expiry" and cols.get("expiry") not in (None, idx):
                 continue
             item[field] = _f(value)
+        if "\n" in str(row[idx] or "").strip():
+            continue
+        for field, value in {**_split_code_cell(heading, _clean(row[idx])),
+                             **_split_price_and_quantity(heading, _clean(row[idx]))}.items():
+            if field == "description_prefix":
+                desc = f"{value} {desc}".strip()
+                item["description"] = _f(desc)
+            elif not (item.get(field) or {}).get("value") or cols.get(field) == idx:
+                item[field] = _f(value)
 
     # A tax head's heading run into the line's own "AMOUNT" heading (Aurowin:
     # "SGST | CGST AMOUNT" over "2.50 | 2.50 1403.40"): the cell holds the
@@ -1112,6 +1292,39 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 item["amount"] = _f(f"{figures[1]:.2f}")
                 item.pop(f"{head}_amount", None)
                 break
+            # Both heads' rates, then the amount: Agresco heads its last column
+            # "SGST CGST Amount" over "6.00 6.00 1240.20".
+            if len(figures) == 3 and figures[0] == figures[1] and figures[0] * 2 in _FULL_SLABS \
+                    and figures[2] > 10 * figures[0]:
+                for which in ("cgst", local or "sgst"):
+                    if not (item.get(f"{which}_percent") or {}).get("value"):
+                        item[f"{which}_percent"] = _f(f"{figures[0]:g}")
+                item["amount"] = _f(f"{figures[2]:.2f}")
+                item.pop(f"{head}_amount", None)
+                break
+
+    # The line amount in an unheaded last column, run into the cell beside it:
+    # Kreit heads "... CGST | Value" and prints "270.11 3001.25" under the
+    # last heading - the CGST and then the amount (25 x 120.05). The mapped
+    # "Value" read as the amount summed the bill's tax. Taken only when the
+    # mapped figure is NOT quantity x rate and the row's last figure is.
+    qty, rate = _num(cell("quantity")), _num(cell("rate"))
+    if qty and rate and row:
+        dis = _num((item.get("discount_percent") or {}).get("value"))
+        built = float(qty) * float(rate) * (1 - (float(dis) if dis and float(dis) < 100 else 0) / 100)
+        tol = max(1.0, 0.005 * built)
+        have = _num((item.get("amount") or {}).get("value"))
+        last = [float(n.replace(",", "")) for n in _NUM.findall(str(row[-1] or "").split("\n")[0])]
+        if built > 0 and (have is None or abs(float(have) - built) > tol) and len(last) >= 2 \
+                and abs(last[-1] - built) <= tol:
+            item["amount"] = _f(f"{last[-1]:.2f}")
+
+    # "20+2" under Qty (Agresco, Marg): twenty billed and two free - and
+    # "500+100" or "10/2" under a "Qty Sale+Free" / "Qty/ FreeQty" heading.
+    plus = re.fullmatch(r"\s*(\d+)\s*[+/]\s*(\d+)\s*", str(cell("quantity") or "").split("\n")[0])
+    if plus and not (item.get("free_quantity") or {}).get("value"):
+        item["quantity"] = _f(plus.group(1))
+        item["free_quantity"] = _f(plus.group(2))
 
     # A "discount %" over 100 is money, not a rate: the ERP above heads its
     # discount column just "DISC" and prints 870.46 rupees in it.
@@ -1148,14 +1361,33 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     # number that is either a 665% tax rate or a lost amount, so a merged cell is
     # split: the first number is the rate, the second is the tax.
     gst_vals = []
+    whole_rate = None   # from a column printing the line's whole GST rate
     for gi in gst_cols:
         if gi >= len(row):
             continue
         numbers = [float(n.replace(",", "")) for n in _NUM.findall(str(row[gi] or ""))]
         if not numbers:
             continue
-        rate = next((n for n in numbers if _is_gst_rate(n)), None)
         head = _norm(header_row[gi]) if gi < len(header_row) else ""
+        if head in _BARE_TAX_RATE:
+            # Troikaa's "Tax%" prints "6.00/6.00": CGST over SGST, both halves
+            # of one slab. A single figure is the line's whole rate: split
+            # between CGST and SGST within a state, all IGST across states.
+            pair = _RATE_PAIR.match(str(row[gi] or "").splitlines()[0] if row[gi] else "")
+            if pair and float(pair.group(1)) == float(pair.group(2)) and \
+                    float(pair.group(1)) * 2 in _FULL_SLABS:
+                whole_rate = float(pair.group(1)) * 2
+            elif numbers[0] in _FULL_SLABS | {0.0}:
+                whole_rate = numbers[0]
+            else:
+                continue
+            heads = {"igst": whole_rate} if interstate else \
+                {"cgst": whole_rate / 2, local or "sgst": whole_rate / 2} if interstate is False or pair else {}
+            for which, pct in heads.items():
+                if not (item.get(f"{which}_percent") or {}).get("value"):
+                    item[f"{which}_percent"] = _f(f"{pct:g}")
+            continue
+        rate = next((n for n in numbers if _is_gst_rate(n)), None)
         which = _tax_head(head, interstate, local)
         if rate is None:
             # No figure here can be a rate, so the cell holds the TAX ITSELF.
@@ -1182,7 +1414,8 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     # that is the LINE's amount printed in the tax column (Klingen heads its
     # last column just "C G S T" over "6.00 7521.50" - 50 x 150.43). As tax it
     # was 75 times too much; as the amount it reconciles.
-    if cols.get("amount") is None and not (item.get("amount") or {}).get("value"):
+    # (Already found as the row's last figure, it still is not the tax.)
+    if cols.get("amount") is None:
         qty = _num(cell("quantity"))
         rate = _num(cell("rate"))
         for head in ("cgst", "sgst", "igst", "utgst"):
@@ -1191,8 +1424,36 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 continue
             built = float(qty) * float(rate)
             if built > 0 and abs(float(value) - built) <= max(1.0, 0.005 * built):
-                item["amount"] = _f(f"{float(value):.2f}")
+                if not (item.get("amount") or {}).get("value"):
+                    item["amount"] = _f(f"{float(value):.2f}")
                 item.pop(f"{head}_amount", None)
+                break
+
+    # No tax recognised by heading, but two side-by-side columns we did not
+    # claim hold a real GST rate and exactly that rate's tax on the line:
+    # Wanbury heads them "MISC Rate | Amt" over "5.00 | 6.67" (5% of 133.47).
+    # The arithmetic, not the heading, says it is the line's GST.
+    if not gst_vals and not any((item.get(f"{h}_percent") or {}).get("value")
+                                for h in ("cgst", "sgst", "igst", "utgst")):
+        base = _num((item.get("amount") or {}).get("value"))
+        claimed_now = set(cols.values()) | set(gst_cols)
+        for idx in range(len(row) - 1):
+            if not base or idx in claimed_now or idx + 1 in claimed_now:
+                continue
+            rate, tax = _num(row[idx]), _num(row[idx + 1])
+            if rate is None or tax is None or float(rate) not in _FULL_SLABS:
+                continue
+            if abs(float(base) * float(rate) / 100 - float(tax)) <= max(0.02, 0.003 * float(tax)):
+                rate_f, tax_f = float(rate), float(tax)
+                if interstate is True:
+                    item["igst_percent"], item["igst_amount"] = _f(f"{rate_f:g}"), _f(f"{tax_f:.2f}")
+                elif interstate is False:
+                    for head in ("cgst", "sgst"):
+                        item[f"{head}_percent"] = _f(f"{rate_f / 2:g}", confidence=_DERIVED_CONFIDENCE)
+                        item[f"{head}_amount"] = _f(f"{tax_f / 2:.2f}", confidence=_DERIVED_CONFIDENCE)
+                gst_vals = [rate_f]
+                if not (item.get("net_amount") or {}).get("value"):
+                    item["net_amount"] = _f(f"{float(base) + tax_f:.2f}", confidence=_DERIVED_CONFIDENCE)
                 break
 
     # Within a state CGST and SGST are always the same rate and amount. When
@@ -1222,7 +1483,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     # the same - derived, so held below full confidence. And a head "amount"
     # equal to its own rate is the rate read twice (Wockhardt's "6.00").
     if interstate is False and not (item.get("igst_percent") or {}).get("value"):
-        taxable_now = _num((item.get("amount") or {}).get("value"))
+        taxable_now = _tax_base(item, cell("rate"))
         for have, want in (("cgst", "sgst"), ("sgst", "cgst")):
             pct = _num((item.get(f"{have}_percent") or {}).get("value"))
             if not pct or float(pct) <= 0:
@@ -1250,6 +1511,9 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                     gst_vals = [rate / 2, rate / 2]
             break
 
+    if whole_rate is not None:
+        # The bill's own whole rate; the heads' columns beside it only split it.
+        gst_vals = [whole_rate]
     if gst_vals:
         item["gst_percent"] = _f(str(round(sum(gst_vals), 2)))
     elif (item.get("gst_percent") or {}).get("value") in (None, "0.0", "0"):
@@ -1264,7 +1528,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     # still stated the line's tax - it is the taxable value at that rate, which
     # is what GST is. Computed, so held below full confidence: the reviewer can
     # see it was worked out rather than read.
-    taxable = _num((item.get("amount") or {}).get("value"))
+    taxable = _tax_base(item, cell("rate"))
     if taxable is not None:
         for head in ("cgst", "sgst", "igst", "utgst"):
             pct = _num((item.get(f"{head}_percent") or {}).get("value"))
@@ -1305,6 +1569,10 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         for idx, heading in enumerate(header_row):
             head = _norm(heading)
             if "disc" not in head or idx >= len(row):
+                continue
+            if idx in cols.values() or idx in gst_cols:
+                # Raptakos runs "Additional Discount" into its taxable value and
+                # SGST % headings: that column is claimed, and its 9.00 is a rate.
                 continue
             numbers = _NUM.findall(str(row[idx] or ""))
             if numbers:
@@ -1399,6 +1667,39 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     real_batch = _is_batch(batch)
     if re.fullmatch(r"[0-9a-fA-F]{32,}", desc.replace(" ", "")):
         return None  # an IRN or hash printed in the grid
+    code_words = str((item.get("product_code") or {}).get("value") or "").split()
+    if len(code_words) > 1 and any(ch.isdigit() for ch in code_words[0]) \
+            and not any(ch.isdigit() for w in code_words[1:] for ch in w):
+        # "DFT05 Ace | Revelol 50/5 10s" (IPCA): the name's first word sits in
+        # the code column. A product code is one token.
+        desc = f"{' '.join(code_words[1:])} {desc}".strip()
+        item["description"] = _f(desc)
+        item["product_code"] = _f(code_words[0])
+    furniture = _PAGE_FURNITURE.search(desc)
+    if furniture and furniture.start() > 0:
+        # Page furniture printed under the grid, caught by the last line:
+        # "TELMIKAA MT 50MG Printed Date: 28-08-2025" (Troikaa), Klingen's
+        # tax working "14580*6+6%=874.8SGST+...".
+        desc = desc[:furniture.start()].strip(" ,:-")
+        item["description"] = _f(desc)
+    batch_words = str((item.get("batch_no") or {}).get("value") or "").split()
+    if len(batch_words) > 1 and all(w.isalpha() and len(w) >= 3 for w in batch_words[:-1]) \
+            and any(ch.isdigit() for ch in batch_words[-1]):
+        # "KLINPRO PROTEIN | POWDER NHPR25109" (Klingen): the name's last
+        # word spilled into the batch column. A batch is one code.
+        desc = f"{desc} {' '.join(batch_words[:-1])}".strip()
+        item["description"] = _f(desc)
+        item["batch_no"] = _f(batch_words[-1])
+        batch = batch_words[-1]
+        real_batch = _is_batch(batch)
+    maker = _MAKER_IN_DESC.search(desc)
+    if maker and maker.start() > 0:
+        # "NIGRILOW CREAM 50GM Mfg : MAXNOVA HEALTHCARE" (Cosmin): the maker,
+        # printed on the line under the name, is not part of the name.
+        if not (item.get("manufacturer") or {}).get("value"):
+            item["manufacturer"] = _f(maker.group(1).strip())
+        desc = desc[:maker.start()].strip()
+        item["description"] = _f(desc)
     junk_text = _NOT_A_PRODUCT.search(desc)
     if junk_text or re.fullmatch(r"[\s₹$.,:\d/-]*", desc) or desc.strip(" :.").lower() in _HEADING_WORDS:
         has_qty_or_amount = any((_num((item.get(k) or {}).get("value")) or 0) and
@@ -1654,6 +1955,96 @@ def _slab_tax_totals(invoice_meta: dict, text: str) -> None:
         invoice_meta["total_gst_amount"] = _f(f"{sum(heads.values()):.2f}")
 
 
+# A tax head's total at the END of a summary line: "SGST 6% 169.32" (Alchem,
+# beside its terms), "CGST VALUE 1,048.41" (Mahavir). Anchored to the line's
+# end so a group heading "SGST% : 6.00 631.05" (rate, then amount) is not one.
+_SUMMARY_TAX = re.compile(
+    r"(?:^|\s)(CGST|SGST|IGST|UTGST)\s*(?:@?\s*([\d.]+)\s*%|value|amount|amt|payable|payble)?\s*[:\-]?\s*"
+    r"(?:rs\.?\s*)?([\d,]+\.\d{1,2})\s*$",
+    re.I | re.M,
+)
+
+
+def _summary_tax_totals(invoice_meta: dict, text: str) -> None:
+    """Each tax head's total from the bill's summary lines, when no labelled
+    "Total CGST" was read. Alchem and Mahavir print GST only there - none on
+    the lines - so without it their lines could never build up to the total.
+    A head printed on every page is counted once; two slabs of a head add.
+    """
+    found: Dict[str, Dict[tuple, float]] = {}
+    for m in _SUMMARY_TAX.finditer(text or ""):
+        try:
+            value = float(m.group(3).replace(",", ""))
+        except ValueError:
+            continue
+        if value > 0:
+            found.setdefault(m.group(1).lower(), {})[(m.group(2), value)] = value
+    bill = _num((invoice_meta.get("total_amount") or {}).get("value"))
+    for head, slabs in found.items():
+        # One head's tax is at most a fifth of the bill (half the 40% slab).
+        # 3100820 prints "CGST 2.5000 % 740.64" - the slab's TAXABLE value,
+        # with the tax on the line below - summing to the whole bill's base.
+        if bill and sum(slabs.values()) > 0.2 * float(bill):
+            continue
+        key = f"total_{head}_amount"
+        leaf = invoice_meta.get(key) or {}
+        if not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE:
+            invoice_meta[key] = _f(f"{sum(slabs.values()):.2f}")
+
+
+_SUB_TOTAL = re.compile(r"\bsub\s*-?\s*total\s*[:\-]?\s*(?:rs\.?\s*)?([\d,]+\.\d{1,2})\b", re.I)
+
+
+def _taxable_from_sub_total(invoice_meta: dict, text: str) -> None:
+    """A "SUB TOTAL" is the taxable value when the bill's own tax heads build
+    it up to its grand total. Cosmin prints SUB TOTAL 30,058.29 + SGST and
+    CGST 2,705.24 each = 35,469.00 - after a 5% discount it never prints, so
+    without this figure its lines (31,640.32) had nothing to step down to.
+    """
+    leaf = invoice_meta.get("total_taxable_amount") or {}
+    if leaf.get("value") and leaf.get("confidence") != _SUMMED_CONFIDENCE:
+        return
+    total = _num((invoice_meta.get("total_amount") or {}).get("value"))
+    heads = [_num((invoice_meta.get(f"total_{h}_amount") or {}).get("value"))
+             for h in ("cgst", "sgst", "igst", "utgst")]
+    tax = sum(float(h) for h in heads if h)
+    if not total or not tax:
+        return
+    for m in _SUB_TOTAL.finditer(text or ""):
+        value = float(m.group(1).replace(",", ""))
+        if abs(value + tax - float(total)) <= 1.0:
+            invoice_meta["total_taxable_amount"] = _f(f"{value:.2f}")
+            return
+
+
+def _gst_total_from_heads(invoice_meta: dict) -> None:
+    """The bill's GST total is its heads added up. Marg heads a class table
+    "SGST CGST TOTAL GST SUB TOTAL" and a stray figure was read under the
+    label (AANAV: 90.00 against SGST and CGST PAYBLE 329.82 each); the heads
+    it prints as payable are the specific figures, and they win."""
+    def printed(key):
+        leaf = invoice_meta.get(key) or {}
+        if not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE:
+            return None
+        return _num(leaf.get("value"))
+
+    found = {h: printed(f"total_{h}_amount") for h in ("cgst", "sgst", "igst", "utgst")}
+    found = {h: float(v) for h, v in found.items() if v is not None and float(v) > 0}
+    # Every head the bill charges must be printed: CGST with its SGST/UTGST
+    # pair, or IGST. Abbott prints only "CGST :Rs. 7,722.00" legibly - half
+    # the tax - and that half is not its GST total.
+    if "cgst" in found and not ({"sgst", "utgst"} & set(found)):
+        return
+    if ({"sgst", "utgst"} & set(found)) and "cgst" not in found:
+        return
+    heads = list(found.values())
+    if not heads:
+        return
+    total = printed("total_gst_amount")
+    if total is None or abs(float(total) - sum(heads)) > 1.0:
+        invoice_meta["total_gst_amount"] = _f(f"{sum(heads):.2f}")
+
+
 def _drop_impossible_tax_total(invoice_meta: dict) -> None:
     """A "total GST" larger than the top GST rate allows is a misread: Marg's
     class table prints "TOTAL GST TOTAL 62434.99" and the bill's whole taxable
@@ -1748,11 +2139,14 @@ def parse_scanned_invoice(data: bytes, content_type: str,
     fields = meta or {"supplier": {}, "invoice": {}}
     full_text = "\n".join(page_texts)
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
-        fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+        fields.setdefault("invoice", {})["total_amount"] = _f(_whole_bill_total(full_text))
     _total_from_words_if_missing(fields, full_text)
 
     invoice_meta = fields.setdefault("invoice", {})
     _slab_tax_totals(invoice_meta, full_text)
+    _summary_tax_totals(invoice_meta, full_text)
+    _taxable_from_sub_total(invoice_meta, full_text)
+    _gst_total_from_heads(invoice_meta)
     _drop_impossible_tax_total(invoice_meta)
     for key, value in sum_line_totals(line_items).items():
         if not (invoice_meta.get(key) or {}).get("value"):
@@ -1919,7 +2313,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
             last_table_page = None
 
             for page_no in wanted:
-                page = pdf.pages[page_no]
+                page = without_watermark(pdf.pages[page_no])
                 # Same tolerance as the table reader, so header fields do not
                 # arrive run together on PDFs that carry no space characters.
                 page_texts[page_no] = page.extract_text(x_tolerance=WORD_TOLERANCE) or ""
@@ -1970,7 +2364,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                     # through the columns of the last page that had one -
                     # worked out only now, when a page needs it.
                     if carried_layout is None:
-                        carried_layout = page_layout(pdf.pages[last_table_page]) or False
+                        carried_layout = page_layout(without_watermark(pdf.pages[last_table_page])) or False
                     if carried_layout:
                         word_items = _rows_from_tables(extract_word_tables(page, carried_layout),
                                                        word_labels, interstate, local_head)
@@ -2012,7 +2406,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     fields = meta or {"supplier": {}, "invoice": {}}
     # A total printed only on the last page won't be in the first page's text.
     if not (fields.get("invoice", {}).get("total_amount") or {}).get("value"):
-        fields.setdefault("invoice", {})["total_amount"] = _f(_extract_total(full_text))
+        fields.setdefault("invoice", {})["total_amount"] = _f(_whole_bill_total(full_text))
     _total_from_words_if_missing(fields, full_text)
     # Nor will references printed only on a later page: Kanchan and Zydus print
     # their IRN in the foot of the last page. Read from every page of the copy,
@@ -2032,6 +2426,9 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     # so the tax split always reaches the shop's accounts.
     invoice_meta = fields.setdefault("invoice", {})
     _slab_tax_totals(invoice_meta, full_text)
+    _summary_tax_totals(invoice_meta, full_text)
+    _taxable_from_sub_total(invoice_meta, full_text)
+    _gst_total_from_heads(invoice_meta)
     _drop_impossible_tax_total(invoice_meta)
     for key, value in sum_line_totals(line_items).items():
         if not (invoice_meta.get(key) or {}).get("value"):

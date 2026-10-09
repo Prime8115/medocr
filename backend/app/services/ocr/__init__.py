@@ -328,7 +328,13 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         drop_copied_pans(fields, hints.get("document_text") or hints.get("party_text") or "")
         items = fields.get("line_items") or []
         before = len(items)
-        items, removed = dedupe_line_items(items)
+        # A bill may list the same item twice on purpose (Corona does, twice):
+        # when the lines as printed already add up to the bill's own totals,
+        # nothing is a reprint and nothing is removed.
+        if reconcile_invoice(fields).get("total_reconciles") is True:
+            removed = 0
+        else:
+            items, removed = dedupe_line_items(items)
         fields["line_items"] = items
         integrity["duplicates_removed"] = removed
         if removed:
@@ -460,6 +466,22 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
     items = parsed.get("line_items") or []
     if not items:
         return False
+
+    def value(item, key):
+        return str((item.get(key) or {}).get("value") or "").strip()
+
+    # A reading that adds up is still useless without what stock is made of.
+    # Lupin's lines summed exactly, every one with no quantity; Meher's two
+    # products both read "SRN". The AI reads those - by eye, but whole.
+    billed = [i for i in items if value(i, "amount") not in ("", "0", "0.00")]
+    if billed and sum(1 for i in billed if value(i, "quantity")) * 2 < len(billed):
+        log.info("document %s: most lines read without a quantity - handing to the AI", document_id)
+        return False
+    names = {value(i, "description").upper() for i in items}
+    if len(items) >= 2 and len(names) == 1 and len(next(iter(names))) <= 5 \
+            and len({value(i, "batch_no") for i in items}) > 1:
+        log.info("document %s: every product read under one name - handing to the AI", document_id)
+        return False
     if len(items) >= _SHORT_INVOICE_LINES:
         return True
     report = reconcile_invoice(parsed)
@@ -478,7 +500,10 @@ def process_document(document_id: str, file_bytes: bytes, content_type: str, doc
     the shop is the buyer on its own purchase bills (parties.py)."""
     from app.services.ocr.parties import OWN_GSTINS
 
-    token = OWN_GSTINS.set(tuple(own_gstins or ()))
+    # A mapping {GSTIN: the shop's name} also lets a cut-off buyer name be
+    # finished; a plain list of GSTINs only settles who is who.
+    own = dict(own_gstins) if isinstance(own_gstins, dict) else tuple(own_gstins or ())
+    token = OWN_GSTINS.set(own)
     try:
         return _process_document(document_id, file_bytes, content_type, doc_type, on_progress)
     finally:
