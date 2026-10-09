@@ -273,6 +273,9 @@ def test_a_refused_schema_is_not_sent_again_by_the_same_worker(monkeypatch):
     configs = p._client.models.configs
     assert len(configs) == 3          # refused, retried - then one call only
     assert configs[2].response_json_schema is None
+    # ...at the configured temperature, as the first was: left out, every later
+    # invoice was read at the model's default.
+    assert configs[2].temperature == settings.ocr_temperature == configs[1].temperature
 
 
 # --- a hung request: a time limit, and straight to the fallback --------------

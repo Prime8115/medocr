@@ -423,6 +423,9 @@ class GeminiProvider(OCRProvider):
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     max_output_tokens=settings.ocr_max_output_tokens,
+                    # Left out here, every invoice after the first in a process
+                    # was read at the model's default temperature, not ours.
+                    temperature=settings.ocr_temperature,
                 ),
             )
             raw = (getattr(resp, "text", "") or "").strip()
