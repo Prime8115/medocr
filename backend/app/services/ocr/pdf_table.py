@@ -60,7 +60,9 @@ _FOOTER = re.compile(
     # coming back are not goods bought.
     r"|\badjustment\s*detail|\bsale\s*return\s*no"
     # "Gross Inv. Val. :87,535.62" (Blue Cross), then its credit notes listed.
-    r"|\bgross\s*inv",
+    r"|\bgross\s*inv"
+    # "CLASS TOTAL SCHEME DISCOUNT SGST CGST ..." (NSV): its GST-class table.
+    r"|\bclass\s*total\b",
     re.I,
 )
 _NUMERIC = re.compile(r"^-?[\d,]+\.?\d*$")

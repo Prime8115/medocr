@@ -85,6 +85,11 @@ _GST_LABEL = re.compile(r"\b(?:gst|cgst|sgst|igst|utgst|cess)\b", re.I)
 
 _NOISE_WORDS = ("rupees", "rupee", "only", "and", "paise", "paisa", "rs", "inr")
 
+# A word that can carry a spelled-out amount on to its next line.
+_NUMBER_WORD = (r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
+                r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+                r"eighty|ninety|hundred|thousand|lakhs?|lacs?|crores?|and)")
+
 # Longest first, so "sixty" is matched before "six" and "thirteen" before "three".
 _VOCABULARY = sorted(
     set(_UNITS) | set(_TENS) | {"hundred"} | {w for w, _ in _SCALES} | set(_NOISE_WORDS),
@@ -190,6 +195,13 @@ def total_from_words(text: str) -> Optional[str]:
         if _TAX_LABEL.search(label) or _GST_LABEL.search(label):
             continue
         words = match.group(name)
+        # Words that wrap onto the next line: Torrent's "RUPEES SEVEN LAKH
+        # TWENTY-FOUR THOUSAND EIGHT" / "HUNDRED TWENTY-NINE AND TWENTY-FIVE
+        # PAISA ONLY" read as 7,24,008 - the hundreds were on the next line.
+        rest = re.match(r"[ \t]*\n[ \t]*(" + _NUMBER_WORD + r"\b[A-Za-z \-]{0,200})", (text or "")[match.end(name):],
+                        re.I)
+        if rest and not re.search(r"\bonly\s*$", words, re.I):
+            words = words + " " + re.split(r"\bonly\b", rest.group(1), flags=re.I)[0]
         value = _words_to_int(words)
         # A pharmacy invoice below a rupee, or above ten crore, is a misparse
         # rather than a total. A wrong total is worse than no total: it would

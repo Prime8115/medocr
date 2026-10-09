@@ -15,6 +15,7 @@ import base64
 import contextvars
 import json
 import logging
+import re
 from typing import Dict, Optional
 
 log = logging.getLogger(__name__)
@@ -78,8 +79,17 @@ def read(file_bytes: bytes, content_type: str) -> Optional[Dict[str, object]]:
 
 def apply(fields: dict) -> list:
     """Use the QR's figures on a reading. Returns notes for the reviewer."""
+    if not isinstance(fields, dict):
+        return []
+    # An IRN printed across two lines comes back with the break in it: Win
+    # Medicare's "...600197 e9e9e0ab..." is 64 hex characters and a space.
+    node = (fields.get("invoice") or {}).get("irn")
+    if isinstance(node, dict) and node.get("value"):
+        joined = re.sub(r"\s+", "", str(node["value"]))
+        if joined != node["value"] and re.fullmatch(r"[0-9A-Fa-f]{64}", joined):
+            node["value"] = joined
     qr = EINVOICE_QR.get()
-    if not qr or not isinstance(fields, dict):
+    if not qr:
         return []
     notes = []
 

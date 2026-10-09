@@ -75,7 +75,20 @@ def kind_from_page(text: Optional[str]) -> Optional[str]:
     layout. A field label ("Challan No.", "Credit Note Date") is not a title.
     """
     found = None
-    for line in (text or "").splitlines()[:_HEADING_LINES]:
+    lines = (text or "").splitlines()
+    for line in lines[:3]:
+        # A title opening one of the first lines, in any case: Wanbury's
+        # "Credit Note- Document (Returns) - Expired Returns".
+        for kind, pattern, _words in _KINDS[:3]:
+            if re.match(rf"\s*(?:{pattern})\b(?!\s*(?:no\b|number|date|ref|#|:|\.\s*no))", line, re.I):
+                return kind
+    # Numbered as a sales return and nowhere as an invoice: AANAV heads its
+    # page "GST INVOICE" but numbers it "S.Return No. : CN00001", and its
+    # grand total is nil after the credit it gives.
+    if re.search(r"\bs(?:ales)?\.?\s*return\s*no\b", text or "", re.I) and not re.search(
+            r"\b(?:tax\s*|gst\s*)?inv(?:oice)?\.?\s*no\b\.?\s*[:\-]?\s*[A-Za-z]*\d", text or "", re.I):
+        return "return"
+    for line in lines[:_HEADING_LINES]:
         for part in re.split(r"\s{3,}|\t|\|", line):
             kind = kind_of_title(part)
             if kind and kind != INVOICE:

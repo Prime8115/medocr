@@ -168,6 +168,9 @@ def _check_line_arithmetic(c: _Checks, items: List[dict]) -> None:
         qty, rate, amount = _n(it.get("quantity")), _n(it.get("rate")), _n(it.get("amount"))
         if not qty or not rate or not amount or amount <= 0:
             continue
+        # The line before its discount, where the bill prints it: Cipla
+        # Health takes 57% off a lotion, and quantity x rate is the base value.
+        amount = _n(it.get("gross_amount")) or amount
         tested += 1
         # Discounts shrink a line, tax-inclusive amounts inflate it; only a gross
         # mismatch means a misread column (same band as invoice_checks).
@@ -202,6 +205,11 @@ def _check_line_tax(c: _Checks, items: List[dict], fields: Optional[dict] = None
             bases = [taxable]
             if disc and 0 < disc < 100:
                 bases.append(taxable * (1 - disc / 100.0))
+            # ...or after its own discount in money: Pfizer prints DALACIN's
+            # 49,770.60 with "Additional Discount 2,488.53-" under it.
+            off = _n(it.get("discount_amount"))
+            if off and 0 < off < taxable:
+                bases.append(taxable - off)
             if bill_share:
                 bases.append(taxable * bill_share)
             if not any(_close(b * rate / 100.0, tax, 0.10, 0.01) for b in bases):
@@ -235,15 +243,34 @@ def _check_line_net(c: _Checks, items: List[dict], combined: bool = False) -> No
              lambda i: [_line(i, "net_amount"), _line(i, "amount")])
 
 
+def _uniform_cash_discount(items: List[dict]) -> Optional[float]:
+    """The share of every line left after a cash discount the bill takes off
+    each taxable value and prints no column for - Centaur: "Cash Discount is
+    deducted directly from Taxable Value column", 0.5% on every line. None
+    unless every line with a gross shows the same share, below one."""
+    shares = []
+    for it in items:
+        gross, disc, taxable = (_n(it.get("gross_amount")), _n(it.get("discount_amount")) or 0.0,
+                                _n(it.get("amount")))
+        if gross and taxable and gross - disc > 0:
+            shares.append(taxable / (gross - disc))
+    if len(shares) < 2 or not 0.9 <= min(shares) < 0.9999 or max(shares) - min(shares) > 0.0005:
+        return None
+    return sum(shares) / len(shares)
+
+
 def _check_line_discount(c: _Checks, items: List[dict]) -> None:
     bad, tested = [], 0
+    share = _uniform_cash_discount(items) or 1.0
     for i, it in enumerate(items):
         gross, disc, taxable = (_n(it.get("gross_amount")), _n(it.get("discount_amount")),
                                 _n(it.get("amount")))
-        if gross is None or disc is None or taxable is None or disc == 0:
+        # Not a free line: Cipla Health values its free strips and their
+        # discount, and charges nothing for them.
+        if gross is None or disc is None or taxable is None or disc == 0 or taxable == 0:
             continue
         tested += 1
-        if not _close(gross - disc, taxable, 0.5, 0.005):
+        if not _close(gross - disc, taxable, 0.5, 0.005) and not _close((gross - disc) * share, taxable, 0.5, 0.005):
             bad.append(i)
     _verdict(c, "line_discount", "Gross less discount gives the taxable value", tested, bad,
              "gross less discount does not give the taxable value",

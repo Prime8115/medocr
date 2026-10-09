@@ -21,6 +21,7 @@ from app.services.ocr.classify import classify_text
 from app.services.ocr.invoice_checks import (
     complete_from_the_bill,
     drop_copied_pans,
+    refile_party_pans,
     show_combined_utgst,
     dedupe_line_items,
     flag_invalid_gstins,
@@ -337,6 +338,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
 
         check_warnings.extend(einvoice_qr.apply(fields))
         complete_from_the_bill(fields)
+        refile_party_pans(fields, hints.get("document_text") or hints.get("party_text") or "")
         drop_copied_pans(fields, hints.get("document_text") or hints.get("party_text") or "")
         items = fields.get("line_items") or []
         before = len(items)
@@ -370,8 +372,16 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             # copies' lines are gone. Not the parser's: it reads the heads off
             # their printed labels, and a bill at odds with itself (K Sales,
             # Torrent) is the reviewer's to see, not ours to smooth over.
-            from app.services.ocr.invoice_checks import tax_heads_from_rates
+            from app.services.ocr.invoice_checks import (
+                line_rates_from_stated_tax,
+                quantity_from_charge,
+                tax_heads_from_rates,
+            )
 
+            for correct in (quantity_from_charge, line_rates_from_stated_tax):
+                note = correct(fields)
+                if note:
+                    check_warnings.append(note)
             heads_note = tax_heads_from_rates(fields)
             if heads_note:
                 check_warnings.append(heads_note)

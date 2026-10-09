@@ -34,6 +34,10 @@ _DATE = (
 )
 _MONEY = r"([\d,]+\.\d{2}|[\d,]{2,})"
 _TOKEN = r"([A-Za-z0-9][A-Za-z0-9\-\/]*)"
+# An order reference may carry the time it was raised: Dr. Reddy's prints
+# "PO No : 4614-21/08-02:06 PM ZJRS". Cut at the colon, the rest looked like a
+# label (a value is never followed by a colon) and the PO came back blank.
+_ORDER_TOKEN = r"([A-Za-z0-9][A-Za-z0-9\-\/]*(?::[0-5]\d(?:[ \t]*[AP]M\b)?)?)"
 
 # A GSTIN is exactly 15 characters: 2-digit state code, the 10-character PAN,
 # a 1-digit entity number, a literal Z, and a checksum. An earlier version of
@@ -102,7 +106,7 @@ _REFERENCES: Dict[str, Tuple[List[str], str]] = {
     "transport": (["Transport Name", "Transporter", "Name of Carrier", "Carrier",
                    "Transportation Mode", "Transport Mode", "Mode of Transport", "Transport"],
                   r"([A-Za-z][A-Za-z0-9 .,&\-']{2,48})"),
-    "po_no": (["PO No", "P O No", "Order No", "Purchase Order No", "Ord Ref No"], _TOKEN),
+    "po_no": (["PO No", "P O No", "Order No", "Purchase Order No", "Ord Ref No"], _ORDER_TOKEN),
 }
 
 _DATES: Dict[str, List[str]] = {
@@ -136,7 +140,8 @@ _TOTALS: Dict[str, List[str]] = {
 # the column beside it says.
 _NEXT_LABEL = re.compile(
     r"\s{2,}|\b(?:LR|L\.R|GSTIN|GST\s*NO|PAN|Invoice|Due|Cases|Date|Mode|Weight|"
-    r"Vehicle|Transporter|Transport|TEL|Phone|Mobile|FSSAI|DL|State|PO)\b",
+    # "LR NO : Order No 3: 001061319" (Ajanta): an empty LR, then the order's label.
+    r"Vehicle|Transporter|Transport|TEL|Phone|Mobile|FSSAI|DL|State|PO|Order)\b",
     re.I,
 )
 
@@ -262,6 +267,10 @@ def extract_references(text: str, exclude: Optional[str] = None) -> Dict[str, Op
             found = _NEXT_LABEL.split(found)[0].strip(" .,-:") or None
             if not found or _is_label_not_value(found, text):
                 continue
+            # The first word of the next label, reached across a line break:
+            # East India's empty "Depot Order No. :" sits over "Party Order No.".
+            if found.isalpha() and re.search(re.escape(found) + r"[ \t]+(?:order|ord|ref|po)\b", text, re.I):
+                continue
             if field == "transport" and _is_address_not_carrier(found):
                 continue
             if field == "irn":
@@ -272,7 +281,10 @@ def extract_references(text: str, exclude: Optional[str] = None) -> Dict[str, Op
         out[field] = _labelled(text, labels, _DATE)
         if out[field] is None:
             # Allow a reference number to sit between the label and its date.
-            out[field] = _labelled(text, labels, r"[A-Za-z0-9\-/]{0,20}\s*(?:date|dt)\s*[:\-]?\s*" + _DATE)
+            # Never another field's date label: Ajanta's empty "LR Date :"
+            # is followed by "Order Date :02/07/2025".
+            out[field] = _labelled(text, labels, r"(?!(?:order|po|invoice|inv|bill|due|ack|e-?way)\b)"
+                                                 r"[A-Za-z0-9\-/]{0,20}\s*(?:date|dt)\s*[:\-]?\s*" + _DATE)
     return out
 
 

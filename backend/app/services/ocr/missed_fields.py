@@ -19,7 +19,7 @@ the bill prints there, (2) the list the AI gap-fill is asked to complete, and
 import re
 from typing import Dict, List, NamedTuple, Optional
 
-from app.services.ocr.invoice_header import _DATE, _LABEL_WORDS
+from app.services.ocr.invoice_header import _DATE, _LABEL_WORDS, _is_label_not_value
 
 _SAME_LINE = r"[ \t]*"
 _SEP = _SAME_LINE + r"[:\-#]?" + _SAME_LINE
@@ -83,12 +83,34 @@ def _get(fields: dict, path: str) -> str:
     return _value((fields.get(section) or {}).get(key))
 
 
+# Numbers the bill identifies itself or the order by always carry a digit:
+# Sun prints the shop's name, "Buyer PO No. :shree simba chemist".
+_NEEDS_A_DIGIT = ("invoice.invoice_no", "invoice.po_no")
+
+
+def _not_a_value(spec: Printed, value: str, text: str, after: str) -> bool:
+    """A word that is the next label, or a blank's stand-in - never a miss.
+
+    "LR No : LR Date :" (Corona, Wockhardt) and "Invoice No : Invoice Date :"
+    (Health N U) leave the field blank: the word read is where the NEXT label
+    starts. "GR/LR No. : na" and "LR NO:hd" are the bill saying there is none,
+    and the header reader rejects them the same way.
+    """
+    if _is_label_not_value(value, text):
+        return True
+    if value.isalpha() and re.match(r"[ \t]*(?:date|dt|no)\b", after, re.I):
+        return True
+    return spec.path in _NEEDS_A_DIGIT and not any(ch.isdigit() for ch in value)
+
+
 def printed_value(text: str, spec: Printed) -> Optional[tuple]:
     """(label as printed, value) for the first real value after a label, or None."""
     for pattern in spec.patterns:
         for m in re.finditer(pattern + _SEP + _VALUE[spec.kind], text or "", re.I):
             value = m.group(m.lastindex).strip()
             if value.lower() in _LABEL_WORDS:
+                continue
+            if spec.kind == "token" and _not_a_value(spec, value, text, text[m.end(m.lastindex):]):
                 continue
             label = re.sub(r"\s+", " ", text[m.start():m.start(m.lastindex)]).strip(" :-#")
             return label, value

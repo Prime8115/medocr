@@ -481,8 +481,13 @@ def tds_deducted(text: str) -> List[float]:
         at = re.search(r"\btds\b", line, re.I)
         if not at:
             continue
-        for m in _MONEY_FIGURE.finditer(line[at.end():]):
-            value = float(m.group(1).replace(",", ""))
+        figures = [m.group(1) for m in _MONEY_FIGURE.finditer(line[at.end():])]
+        # ...or whole rupees ending the line: Ajanta's "TDS 854".
+        whole = re.match(r"\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*(\d[\d,]*)\s*$", line[at.end():], re.I)
+        if not figures and whole:
+            figures = [whole.group(1)]
+        for figure in figures:
+            value = float(figure.replace(",", ""))
             if 0 < value and value not in out:
                 out.append(value)
     return out
@@ -768,6 +773,48 @@ def show_combined_utgst(fields: dict, page_text: str) -> bool:
     return shown
 
 
+def refile_party_pans(fields: dict, page_text: str) -> List[str]:
+    """A PAN filed under the wrong party, put back where its GSTIN says.
+
+    A PAN is the middle of its owner's GSTIN. Adroit and Troikaa print the
+    buyer's "PAN : AASCA3306L" where the header reader looked for the
+    supplier's, and the supplier was given its customer's PAN. A party's PAN
+    that is another party's is moved to that party when it has none; the
+    party keeps its own only when the page prints it. Returns the paths changed.
+    """
+    from app.services.ocr.invoice_header import _GSTIN_SHAPE
+
+    text = (page_text or "").upper()
+    blocks = {p: fields.get(p) for p in ("supplier", "bill_to", "ship_to") if isinstance(fields.get(p), dict)}
+    owner = {}
+    for party, block in blocks.items():
+        gstin = _v(block.get("gstin")).upper().replace(" ", "")
+        if len(gstin) == 15:
+            owner.setdefault(gstin[2:12], party)
+    changed: List[str] = []
+    for party, block in blocks.items():
+        pan = _v(block.get("pan")).upper()
+        whose = owner.get(pan)
+        gstin = _v(block.get("gstin")).upper().replace(" ", "")
+        own = gstin[2:12] if len(gstin) == 15 else ""
+        if not pan or not own or pan == own:
+            continue
+        # Its own PAN, where the page prints it apart from a GSTIN - Centaur
+        # prints "Co. PAN No.:AAACC0444K" at the top and its C&F agent's
+        # "PAN No :AARFP5807B" in the consignor block, which the AI took.
+        printed = any(not _GSTIN_SHAPE.search(text[max(0, m.start() - 2):m.end() + 3])
+                      for m in re.finditer(re.escape(own), text))
+        if not printed and whose in (None, party):
+            continue
+        block["pan"] = {"value": own if printed else None, "confidence": 1.0 if printed else None}
+        changed.append(f"{party}.pan")
+        other = blocks.get(whose) if whose not in (None, party) else None
+        if other is not None and not _v(other.get("pan")):
+            other["pan"] = {"value": pan, "confidence": 1.0}
+            changed.append(f"{whose}.pan")
+    return changed
+
+
 def drop_copied_pans(fields: dict, page_text: str) -> List[str]:
     """Blank a party's PAN that is only the middle of its GSTIN.
 
@@ -963,10 +1010,18 @@ def tax_heads_from_rates(fields: dict) -> Optional[str]:
     if any(a is None for a in amounts) or any(r is None for r in rates):
         return None
     line_sum = sum(amounts)
-    if line_sum <= 0 or abs(line_sum - taxable) > 1.0:
+    if line_sum <= 0:
         return None
     from_rates = round(sum(a * r / 100.0 for a, r in zip(amounts, rates)), 2)
-    if abs(taxable + from_rates - total) > 1.0:
+    if abs(line_sum - taxable) > 1.0:
+        # The taxable value AND the tax read off one slab of two: Freyn's
+        # summary prints 6% on 1,597.50 and 9% on 10,883.00, and the AI gave
+        # 10,883.00 and its tax alone. The lines and their rates make the
+        # total to the rupee - both are taken from them.
+        if abs(line_sum + from_rates - total) > 1.0:
+            return None
+        invoice["total_taxable_amount"] = _leaf(f"{line_sum:.2f}", _DERIVED_CONFIDENCE)
+    elif abs(taxable + from_rates - total) > 1.0:
         return None
     inter = bool(heads.get("igst")) and not heads.get("cgst")
     if inter:
@@ -980,6 +1035,90 @@ def tax_heads_from_rates(fields: dict) -> Optional[str]:
     return (f"The tax heads read come to {_fmt(read)}, which with the taxable value does not reach the "
             f"bill's total; the lines' own GST rates give {_fmt(from_rates)}, which does - taken from the "
             "rates. Please check the tax heads against the bill.")
+
+
+_LINE_RATES = (0.0, 5.0, 12.0, 18.0, 28.0)
+
+
+def line_rates_from_stated_tax(fields: dict) -> Optional[str]:
+    """AI-read line GST rates that cannot give the tax the bill states,
+    corrected where changing one or two lines' rates - one way only - does.
+
+    Win Medicare prints its lines in groups under "GST Rate: 12.00 CGST Amt:
+    808.51", and the AI gave the first line 18% and the fourth 0%: its lines
+    came to 1,816.89 of tax where the bill states 1,662.60. At 12% both, the
+    lines give exactly the stated tax. Only when the bill agrees with itself
+    (taxable + tax = total), so the stated tax is the one to meet.
+    """
+    from itertools import combinations, product
+
+    invoice = fields.get("invoice") or {}
+    items = fields.get("line_items") or []
+    taxable, total, tax = (_num(invoice.get("total_taxable_amount")), _num(invoice.get("total_amount")),
+                           _bill_tax(invoice))
+    amounts = [_num(i.get("amount")) for i in items]
+    rates = [_num(i.get("gst_percent")) for i in items]
+    if not (taxable and total and tax) or not items or None in amounts or None in rates:
+        return None
+    if abs(taxable + tax - total) > 1.0 or abs(sum(amounts) - taxable) > 1.0:
+        return None
+    current = sum(a * r / 100.0 for a, r in zip(amounts, rates))
+    if abs(current - tax) <= 1.0:
+        return None
+    found = None
+    for size in (1, 2):
+        hits = []
+        for lines in combinations(range(len(items)), size):
+            for new in product(_LINE_RATES, repeat=size):
+                if any(n == rates[i] for i, n in zip(lines, new)):
+                    continue
+                trial = current + sum(amounts[i] * (n - rates[i]) / 100.0 for i, n in zip(lines, new))
+                if abs(trial - tax) <= 0.5:
+                    hits.append(dict(zip(lines, new)))
+        if len(hits) > 1:
+            return None   # more than one way: not ours to choose
+        if hits:
+            found = hits[0]
+            break
+    if not found:
+        return None
+    inter = bool(_num(invoice.get("total_igst_amount"))) and not _num(invoice.get("total_cgst_amount"))
+    for i, rate in found.items():
+        item, amount = items[i], amounts[i]
+        item["gst_percent"] = _leaf(f"{rate:g}", _DERIVED_CONFIDENCE)
+        heads = {"igst": rate} if inter else {"cgst": rate / 2, "sgst": rate / 2}
+        for head in ("cgst", "sgst", "igst"):
+            pct = heads.get(head, 0.0)
+            item[f"{head}_percent"] = _leaf(f"{pct:g}", _DERIVED_CONFIDENCE)
+            item[f"{head}_amount"] = _leaf(f"{amount * pct / 100.0:.2f}", _DERIVED_CONFIDENCE)
+    lines = ", ".join(f"line {i + 1} at {r:g}%" for i, r in sorted(found.items()))
+    return (f"The lines' GST rates gave {_fmt(round(current, 2))} of tax where the bill states "
+            f"{_fmt(tax)}; with {lines} they give exactly that. Please check those rates.")
+
+
+def quantity_from_charge(fields: dict) -> Optional[str]:
+    """An AI-read line whose "free" quantity is the one it is charged for.
+
+    C G Marketing prints "Cs | Pcs | UPC" - cases, pieces and units per case -
+    and the AI gave the units per case (24) as the quantity and the pieces
+    (10) as free goods. The line charges 10 x 170.25 = 1,702.50: free goods
+    are never charged, so the figure the charge is built on is the quantity.
+    """
+    changed = []
+    for n, item in enumerate(fields.get("line_items") or []):
+        qty, free, rate = _num(item.get("quantity")), _num(item.get("free_quantity")), _num(item.get("rate"))
+        charged = _num(item.get("gross_amount")) or _num(item.get("amount"))
+        if not (qty and free and rate and charged) or free == qty:
+            continue
+        if abs(qty * rate - charged) > max(0.05, 0.002 * charged) \
+                and abs(free * rate - charged) <= max(0.05, 0.002 * charged):
+            item["quantity"] = _leaf(item["free_quantity"].get("value"), _DERIVED_CONFIDENCE)
+            item["free_quantity"] = _leaf(None, None)
+            changed.append(n + 1)
+    if not changed:
+        return None
+    return (f"Line {', '.join(map(str, changed))}: the quantity read does not give the line's charge; "
+            "the figure read as free goods does - taken as the quantity. Please check.")
 
 
 def complete_from_the_bill(fields: dict) -> List[str]:
