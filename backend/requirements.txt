@@ -23,11 +23,16 @@ pillow>=10.3.0
 python-dateutil>=2.9.0
 tzdata>=2024.1   # Gemini quota resets at midnight Pacific; slim images lack zoneinfo data
 rapidfuzz>=3.9.0
-pypdf>=4.0.0
-pdfplumber>=0.11.0
-pypdfium2>=4.30.0   # renders scanned PDF pages for the local OCR fallback
+# The PDF readers are pinned to the versions the invoice corpus verified: a
+# new release can change the text a bill yields (pypdf 6.20 did), and so what
+# every supplier's invoice reads as. Upgrade deliberately: bump, run the
+# corpus (scripts/corpus.py repin), review, re-record the AI path if needed.
+pypdf==6.19.0
+pdfplumber==0.11.10
+pdfminer.six==20260107
+pypdfium2==5.13.0   # renders scanned PDF pages for the local OCR fallback
 pillow-heif>=0.18.0  # iPhone HEIC/HEIF photos, converted to JPEG at upload
-zxing-cpp>=2.2.0     # the e-invoice's signed QR code: the portal's own IRN and GSTINs
+zxing-cpp==3.1.1     # the e-invoice's signed QR code: the portal's own IRN and GSTINs
 
 # --- Storage (optional S3) ---
 boto3>=1.34.0
