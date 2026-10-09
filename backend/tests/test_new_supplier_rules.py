@@ -191,3 +191,64 @@ def test_a_page_drawn_sideways_reads_like_one_drawn_upright():
     turned = parse_invoice_pdf(sideways)
     assert turned and len(turned["line_items"]) == len(upright["line_items"]) == 6
     assert [_v(i, "batch_no") for i in turned["line_items"]] == [_v(i, "batch_no") for i in upright["line_items"]]
+
+
+# --- long and multi-page bills, tax stated per slab ------------------------------------
+
+def test_decimals_wrapped_to_the_next_line_are_rejoined():
+    from app.services.ocr.invoice_parser import _unwrapped_number
+
+    assert _unwrapped_number("6,576.6\n0") == "6,576.60"
+    assert _unwrapped_number("15,108.\n00") == "15,108.00"
+    assert _unwrapped_number("6.00\n12") == "6.00\n12"   # a whole figure, then another
+
+
+def test_tax_stated_per_slab_gives_the_bills_tax_and_taxable_totals():
+    from app.services.ocr.invoice_parser import _slab_tax_totals
+
+    text = ("Add CGST 6.00 % On Taxable Value 668,913.93 40,134.82\n"
+            "Add SGST 6.00 % On Taxable Value 668,913.93 40,134.82\n"
+            "Add CGST 2.50 % On Taxable Value 18,500.93 462.53\n"
+            "Add SGST 2.50 % On Taxable Value 18,500.93 462.53\n")
+    invoice: dict = {}
+    _slab_tax_totals(invoice, text)
+    assert _v(invoice, "total_taxable_amount") == "687414.86"
+    assert _v(invoice, "total_cgst_amount") == "40597.35"
+    assert _v(invoice, "total_gst_amount") == "81194.70"
+
+
+def test_a_running_total_brought_forward_is_not_part_of_the_first_item():
+    header = ["DESCRIPTION", "BATCH", "QTY", "RATE", "AMOUNT"]
+    row = ["Balance B/F\nOLMIN 20-CH", "AOLR25003", "30", "173.29", "220,830.00\n5,198.70"]
+    item = _build_item(row, _map_columns(header), header, [])
+    assert _v(item, "description") == "OLMIN 20-CH" and _v(item, "amount") == "5198.70"
+
+
+def test_within_a_state_cgst_equals_sgst():
+    header = ["DESCRIPTION", "BATCH", "QTY", "RATE", "AMOUNT", "CGST %"]
+    # Only the CGST half read: its pair is the same.
+    half = _build_item(["CELEVIDA", "B1", "10", "1199.52", "11995.20", "9.00"],
+                       _map_columns(header), header, [5], interstate=False)
+    assert _v(half, "sgst_percent") == "9" and _v(half, "gst_percent") == "18.0"
+    # The combined rate in one column, with the full tax: split evenly.
+    whole = ["AZICOX", "B2", "36", "51.10", "1839.60", "12 220.75"]
+    item = _build_item(whole, _map_columns(header), header, [5], interstate=False)
+    assert _v(item, "cgst_percent") == "6" and _v(item, "sgst_amount") == "110.38"
+
+
+def test_a_tax_total_above_the_top_rate_is_dropped():
+    from app.services.ocr.invoice_parser import _drop_impossible_tax_total
+
+    invoice = {"total_gst_amount": _leaf("62434.99"), "total_taxable_amount": _leaf("62434.99")}
+    _drop_impossible_tax_total(invoice)
+    assert "total_gst_amount" not in invoice
+
+
+def test_a_footer_on_the_last_product_is_cut_not_the_product():
+    header = ["DESCRIPTION", "BATCH", "QTY", "RATE", "AMOUNT"]
+    row = ["RIFABLOG-400 TAB SCHEME DISCOUNT 0.00 1374.28 0.00 0.00 Seventeen only", "WT/25/049",
+           "10", "282.86", "2828.60"]
+    item = _build_item(row, _map_columns(header), header, [])
+    assert _v(item, "description") == "RIFABLOG-400 TAB"
+    junk = ["(W) BRANCH A/C-810000000011373", "0 0.0", "", "", "0.00"]
+    assert _build_item(junk, _map_columns(header), header, []) is None
