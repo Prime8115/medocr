@@ -264,7 +264,9 @@ def resolve(fields: dict, text: str, stream_text: str = "") -> List[str]:
     """
     try:
         notes = _resolve_gstins(fields, text or stream_text, stream_text)
-        return notes + _resolve_names(fields, stream_text or text, text)
+        notes = notes + _resolve_names(fields, stream_text or text, text)
+        _tidy_names(fields)
+        return notes
     except Exception:  # noqa: BLE001 - a second opinion never breaks a reading
         return []
 
@@ -304,6 +306,25 @@ def _lines_below_name(text: str, gstin: str, name: str) -> Optional[int]:
                     return back
         return None
     return None
+
+
+_NAME_RUN_ON = re.compile(
+    r"\s+(?:invoiced\s+at\b|customer\s+ord|ord(?:er)?\.?\s*no\b|gstin\b|gst\s*no\b|pan\s*(?:no)?\s*[:.]|"
+    r"d\.?l\.?\s*no\b|[0-9a-f]{32,})", re.I)
+
+
+def _tidy_names(fields: dict) -> None:
+    """Cut a party's name where something that is not its name runs on:
+    "BLUE CROSS LABORATORIES PVT LTD. INVOICED AT: ... 29b56488..." and
+    "SHREE SIMBA CHEMIST CUSTOMER ORD. NO : 17185 ..." (Blue Cross)."""
+    for party in ("supplier", "bill_to", "ship_to"):
+        name = _value(fields, party, "name")
+        if not name:
+            continue
+        cut = _NAME_RUN_ON.split(name)[0].strip(" ,.:-")
+        if cut and cut != name and len(_key(cut)) >= 4:
+            leaf = (fields.get(party) or {}).get("name") or {}
+            _set(fields, party, "name", cut, confidence=leaf.get("confidence") or RESOLVED_CONFIDENCE)
 
 
 def _resolve_gstins(fields: dict, text: str, stream_text: str = "") -> List[str]:

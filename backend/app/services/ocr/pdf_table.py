@@ -33,6 +33,9 @@ _HEADER_KEYWORDS = (
 _MIN_HEADER_HITS = 4
 
 # A line that ends the line-item table.
+_CARRIED_TOTAL = re.compile(
+    r"\b(balance\s*b\s*/?\s*f|balance\s*c\s*/?\s*f|brought\s*forward|carried\s*forward|"
+    r"carried\s*over|b\s*/\s*f\b|c\s*/\s*f\b)", re.I)
 _FOOTER = re.compile(
     # "GST Summary (15621.50 @ 6.00% SGST=937.29,CGST=937.29)" - Overseas sets
     # its summary block in the table's own columns, so every figure on that line
@@ -256,19 +259,38 @@ def _is_record_start(cells: List[str], numeric_columns: Sequence[int]) -> bool:
     return filled >= 2
 
 
-def extract_word_tables(page) -> List[List[List[str]]]:
-    """Rebuild line-item tables from a PDF page's word positions."""
+def _page_words(page) -> List[Word]:
     try:
-        words = page.extract_words(
-            keep_blank_chars=False, use_text_flow=False, x_tolerance=WORD_TOLERANCE
-        )
+        return page.extract_words(keep_blank_chars=False, use_text_flow=False, x_tolerance=WORD_TOLERANCE)
     except Exception as exc:  # noqa: BLE001 - a page we cannot read is not fatal
         log.debug("pdf_table: extract_words failed (%s)", exc)
         return []
-    return tables_from_words(words)
 
 
-def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
+def extract_word_tables(page, layout: Optional[List[dict]] = None) -> List[List[List[str]]]:
+    """Rebuild line-item tables from a PDF page's word positions. `layout` is
+    an earlier page's columns, for a continuation page that prints no header."""
+    return tables_from_words(_page_words(page), layout)
+
+
+def page_layout(page) -> Optional[List[dict]]:
+    """The item table's columns on this page - its headings and where they
+    sit - or None when the page prints no header band."""
+    lines = _visual_lines(_page_words(page))
+    band = _find_header_band(lines)
+    if band is None:
+        return None
+    columns = _cluster_columns(lines[band[0]:band[1] + 1])
+    body = lines[band[1] + 1:]
+    for i, line in enumerate(body):
+        if _FOOTER.search(_line_text(line)):
+            body = body[:i]
+            break
+    columns = _add_unheaded_leading_column(columns, body)
+    return columns if len(columns) >= 5 else None
+
+
+def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None) -> List[List[List[str]]]:
     """Rebuild line-item tables from positioned words. Same shape as extract_tables().
 
     The words may come from anywhere that can say where each one sits - a
@@ -285,18 +307,24 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
     lines = _visual_lines(words)
     band = _find_header_band(lines)
     if band is None:
-        return []
-    start, end = band
-
-    columns = _cluster_columns(lines[start:end + 1])
-    # Only the real rows may vote on the column layout: the declaration and
-    # tax-summary prose beneath them aligns with nothing.
-    body = lines[end + 1:]
-    for i, line in enumerate(body):
-        if _FOOTER.search(_line_text(line)):
-            body = body[:i]
-            break
-    columns = _add_unheaded_leading_column(columns, body)
+        if not layout:
+            return []
+        # A continuation page that prints no header of its own (Alkem's pages
+        # 2-4): the first page's columns, and the rows from the first real
+        # record on - the page's own letterhead above it is not a row.
+        columns, end, carried = list(layout), -1, True
+    else:
+        start, end = band
+        carried = False
+        columns = _cluster_columns(lines[start:end + 1])
+        # Only the real rows may vote on the column layout: the declaration and
+        # tax-summary prose beneath them aligns with nothing.
+        body = lines[end + 1:]
+        for i, line in enumerate(body):
+            if _FOOTER.search(_line_text(line)):
+                body = body[:i]
+                break
+        columns = _add_unheaded_leading_column(columns, body)
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)
@@ -353,8 +381,26 @@ def tables_from_words(words: Sequence[Word]) -> List[List[List[str]]]:
         text = _line_text(line)
         if _FOOTER.search(text):
             break
+        if _CARRIED_TOTAL.search(text):
+            # A page's running total brought forward or carried over (Eris
+            # prints "Balance B/F 2,359,633.25" above a page's first item,
+            # which then took that as its amount). Never a product, never part
+            # of one.
+            continue
         cells = _assign(line, edges, n)
         if not any(cells):
+            continue
+        if carried and not rows and not _is_record_start(cells, numeric_columns):
+            continue  # the continuation page's letterhead, above its first row
+        if (_is_record_start(cells, numeric_columns) and rows and not cells[description_col].strip()
+                and all(not rows[-1][i].strip() for i, c in enumerate(cells) if c.strip())):
+            # The rest of the row above, printed on the line beneath it: Alkem
+            # prints a long item's prices and amount under its name and
+            # quantities. No product name of its own, and every figure lands
+            # in a column the row above left empty.
+            for i, c in enumerate(cells):
+                if c.strip():
+                    rows[-1][i] = c
             continue
         if _is_record_start(cells, numeric_columns):
             top = line[0]

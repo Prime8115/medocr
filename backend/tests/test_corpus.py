@@ -71,14 +71,16 @@ def _read(entry: dict) -> dict:
         from app.config import settings
         from app.services.ocr import process_document
 
-        saved = (settings.gemini_api_key, settings.gemini_api_keys)
-        settings.gemini_api_key, settings.gemini_api_keys = None, None
+        # The AI is never called here: a bill the free reader declines goes to the
+        # stand-in reader, so "declined" is visible without a key or a network.
+        saved = (settings.gemini_api_key, settings.gemini_api_keys, settings.allow_mock_ocr)
+        settings.gemini_api_key, settings.gemini_api_keys, settings.allow_mock_ocr = None, None, True
         try:
             data = (ROOT / entry["file"]).read_bytes()
             _cache[entry["file"]] = process_document("corpus", data, "application/pdf", doc_type="invoice",
                                                      own_gstins=SHOP_GSTINS)
         finally:
-            settings.gemini_api_key, settings.gemini_api_keys = saved
+            settings.gemini_api_key, settings.gemini_api_keys, settings.allow_mock_ocr = saved
     return _cache[entry["file"]]
 
 

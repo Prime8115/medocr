@@ -476,6 +476,11 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         discounted = _discounted_gross(items)
         if discounted is not None:
             candidates.append(("lines less their own discount % + per-line GST", discounted))
+        # The lines' own printed net amounts, tax included (Sun prints only
+        # these, with no tax columns). Every line must carry one.
+        nets = [_num(i.get("net_amount")) for i in items]
+        if nets and all(n is not None for n in nets):
+            candidates.append(("the lines' net amounts (tax included)", round(sum(nets), 2)))
         tolerance = total_tolerance(printed_total, len(items))
         # The closest candidate decides, so the one reported is the real build-up.
         best_name, best_value = min(candidates, key=lambda c: abs(c[1] - printed_total))
@@ -511,8 +516,12 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
             for figure in printed_invoice_totals(page_text):
                 if abs(figure - printed_total) <= tolerance:
                     continue
+                # Only a build-up WITH tax is an invoice value: Sun prints its
+                # taxable "Total Value" too, and the lines alone matched it -
+                # the GST then read as a 549,297-rupee "deduction".
                 hit = next(((n, v) for n, v in candidates
-                            if abs(v - figure) <= total_tolerance(figure, len(items))), None)
+                            if ("gst" in n.lower() or "tax" in n.lower())
+                            and abs(v - figure) <= total_tolerance(figure, len(items))), None)
                 if hit:
                     reconciles = True
                     reconciled_by = f"{hit[0]} = the invoice value the bill prints ({_fmt(figure)})"

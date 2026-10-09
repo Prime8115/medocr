@@ -80,7 +80,9 @@ def same(kind, a, b):
     if kind == "name":
         a2 = re.sub(r"(private|pvt|limited|ltd|the|ms)", "", key(a))
         b2 = re.sub(r"(private|pvt|limited|ltd|the|ms)", "", key(b))
-        return bool(a2) and bool(b2) and (a2.startswith(b2[:10]) or b2.startswith(a2[:10]))
+        # Same start AND about the same length: a run-on name never agrees.
+        return bool(a2) and bool(b2) and (a2.startswith(b2[:10]) or b2.startswith(a2[:10])) \
+            and max(len(a2), len(b2)) <= 1.5 * min(len(a2), len(b2)) + 4
     if kind == "ref":
         return key(a) == key(b)  # exact: a cut-off number must never count as agreeing
     if kind == "exp":
@@ -93,12 +95,14 @@ def read_free(data: bytes, own_gstins=()) -> dict:
     from app.config import settings
     from app.services.ocr import process_document
 
-    saved = (settings.gemini_api_key, settings.gemini_api_keys)
-    settings.gemini_api_key, settings.gemini_api_keys = None, None
+    # The AI is never called here: a bill the free reader declines goes to the
+    # stand-in reader, so "declined" is visible without a key or a network.
+    saved = (settings.gemini_api_key, settings.gemini_api_keys, settings.allow_mock_ocr)
+    settings.gemini_api_key, settings.gemini_api_keys, settings.allow_mock_ocr = None, None, True
     try:
         return process_document("corpus", data, "application/pdf", doc_type="invoice", own_gstins=own_gstins)
     finally:
-        settings.gemini_api_key, settings.gemini_api_keys = saved
+        settings.gemini_api_key, settings.gemini_api_keys, settings.allow_mock_ocr = saved
 
 
 def summary(result: dict) -> dict:
