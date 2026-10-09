@@ -1,6 +1,32 @@
 """PDF helpers for chunked processing of long documents."""
+import hashlib
 import io
+import threading
+from collections import OrderedDict
 from typing import List
+
+# One scan asks "is this a digital PDF? a scanned one?" several times over -
+# routing, the party check, the fallback, the parser - and each answer opened
+# and parsed the whole file again. Under a burst of uploads that was the same
+# work done five times per document. The answers are kept, keyed by the file's
+# own hash, for the few files in flight.
+_ANSWERS: "OrderedDict[tuple, bool]" = OrderedDict()
+_ANSWERS_LOCK = threading.Lock()
+_ANSWERS_KEPT = 64
+
+
+def _remembered(kind: str, data: bytes, args: tuple, compute) -> bool:
+    key = (kind, hashlib.blake2b(data, digest_size=16).digest(), args)
+    with _ANSWERS_LOCK:
+        if key in _ANSWERS:
+            _ANSWERS.move_to_end(key)
+            return _ANSWERS[key]
+    answer = compute()
+    with _ANSWERS_LOCK:
+        _ANSWERS[key] = answer
+        while len(_ANSWERS) > _ANSWERS_KEPT:
+            _ANSWERS.popitem(last=False)
+    return answer
 
 
 def page_count(data: bytes) -> int:
@@ -57,6 +83,10 @@ def _sample_indexes(total: int, pages: int) -> List[int]:
 
 
 def is_scanned_pdf(data: bytes, sample_pages: int = 3) -> bool:
+    return _remembered("scanned", data, (sample_pages,), lambda: _is_scanned_pdf(data, sample_pages))
+
+
+def _is_scanned_pdf(data: bytes, sample_pages: int) -> bool:
     """True if the PDF's pages are pictures - a scanner's or a phone's - even
     when it also carries text.
 
@@ -104,6 +134,11 @@ def image_only_pdf(data: bytes, dpi: int = 200, quality: int = 85) -> bytes:
 
 
 def is_digital_pdf(data: bytes, min_chars_per_page: int = 200, sample_pages: int = 3) -> bool:
+    return _remembered("digital", data, (min_chars_per_page, sample_pages),
+                       lambda: _is_digital_pdf(data, min_chars_per_page, sample_pages))
+
+
+def _is_digital_pdf(data: bytes, min_chars_per_page: int, sample_pages: int) -> bool:
     """True if the PDF was made by software (billing software, "print to PDF"),
     so its text IS the document and can be read directly instead of sending
     page images to the vision model. Scanned/photographed PDFs return False -

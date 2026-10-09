@@ -26,6 +26,7 @@ every gap look four times wider than the tuning expects and every column splits.
 import csv
 import io
 import logging
+import os
 import subprocess
 from typing import Dict, List, Optional, Sequence
 
@@ -109,6 +110,14 @@ def _tsv_to_words(tsv: str, scale: float) -> List[Word]:
     return words
 
 
+def single_threaded_env() -> dict:
+    """Tesseract's environment with OpenMP held to one thread. Left alone it
+    takes every core for each page, and with several scans read at once
+    (ocr_max_concurrent_jobs) the threads fought over the CPU and every scan
+    ran slower than one at a time. Its own advice for parallel runs."""
+    return {**os.environ, "OMP_THREAD_LIMIT": "1"}
+
+
 def page_words(image, dpi: int = RENDER_DPI) -> List[Word]:
     """Positioned words for one rendered page image, or [] if Tesseract cannot."""
     try:
@@ -120,7 +129,7 @@ def page_words(image, dpi: int = RENDER_DPI) -> List[Word]:
             [settings.tesseract_cmd, "stdin", "stdout", "-l", settings.tesseract_lang,
              "--psm", _PSM, "tsv"],
             input=buf.getvalue(), capture_output=True,
-            timeout=settings.tesseract_timeout_seconds,
+            timeout=settings.tesseract_timeout_seconds, env=single_threaded_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         log.warning("tesseract_table: tesseract could not run (%s)", exc)

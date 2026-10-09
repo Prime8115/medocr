@@ -18,6 +18,7 @@ from fastapi import (
     UploadFile,
 )
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.core.deps import get_current_user, require_owner
@@ -50,7 +51,7 @@ from app.services.ocr.verify import open_checks, reverify
 from app.services.supplier_choices import apply_remembered, decide
 from app.services.supplier_coverage import arrival as arrival_snapshot
 from app.services.supplier_coverage import coverage as supplier_coverage
-from app.services.shop_identity import own_gstins, set_own_gstins
+from app.services.shop_identity import own_identity, set_own_gstins
 from app.services.supplier_labels import apply_learned, changed_paths, learn_from_edit
 from app.services.telemetry import extraction_health, health_warnings
 from app.services.storage import storage
@@ -143,7 +144,7 @@ def _process_job(db: Session, job: OcrJob) -> None:
     failure: Optional[Exception] = None
     try:
         result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress,
-                                  own_gstins=own_gstins(db, doc.shop_id))
+                                  own_gstins=own_identity(db, doc.shop_id))
     except OCRError as exc:
         db.rollback()
         if exc.kind == "busy" and _requeue_when_busy(db, job_id, exc):
@@ -387,8 +388,12 @@ async def submit_document(
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"File exceeds {settings.max_upload_mb} MB.")
 
+    # Checking, cleaning and splitting a PDF is CPU work, and this handler runs
+    # on the server's event loop: done inline, one large upload stalled every
+    # other request - the app's polling included - until it finished. It runs
+    # on a worker thread instead.
     try:
-        prepared = intake.prepare(data, file.content_type, file.filename)
+        prepared = await run_in_threadpool(intake.prepare, data, file.content_type, file.filename)
     except intake.UploadRejected as exc:
         log.info("upload refused (%s): %s", exc.reason, file.filename)
         raise HTTPException(status_code=400, detail=exc.message)
@@ -405,9 +410,10 @@ async def submit_document(
 
     parts = [prepared.data]
     if prepared.content_type == intake.PDF and settings.upload_split_invoices:
-        groups = intake.invoice_groups(prepared.data)
+        groups = await run_in_threadpool(intake.invoice_groups, prepared.data)
         if len(groups) > 1:
-            parts = [intake.pdf_pages(prepared.data, pages) for pages in groups]
+            parts = await run_in_threadpool(
+                lambda: [intake.pdf_pages(prepared.data, pages) for pages in groups])
             log.info("upload %s: %d invoices in one PDF, one document each", file.filename, len(parts))
 
     docs = []

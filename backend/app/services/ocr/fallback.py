@@ -37,6 +37,7 @@ from app.services.ocr.invoice_header import (
     gstin_is_valid,
 )
 from app.services.ocr.pdf_utils import extract_text_pages, is_digital_pdf, page_count
+from app.services.ocr.tesseract_table import single_threaded_env
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ def _ocr_image(image) -> str:
         result = subprocess.run(
             [settings.tesseract_cmd, "stdin", "stdout", "-l", settings.tesseract_lang, "--psm", "3"],
             input=buf.getvalue(), capture_output=True, timeout=settings.tesseract_timeout_seconds,
+            env=single_threaded_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("tesseract failed: %s", exc)
