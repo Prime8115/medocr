@@ -456,6 +456,13 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         from app.services.ocr import document_kind
 
         title = ((fields.get("invoice") or {}).get("document_title") or {})
+        if not (isinstance(title, dict) and title.get("value")):
+            # The free reader reads the title off the page like every other
+            # header field (the AI is asked for it directly).
+            printed = document_kind.title_from_page(hints.get("document_text") or hints.get("party_text") or "")
+            if printed:
+                title = {"value": printed, "confidence": 1.0}
+                fields.setdefault("invoice", {})["document_title"] = title
         integrity["document_kind"] = document_kind.detect(
             title.get("value") if isinstance(title, dict) else None,
             hints.get("document_text") or hints.get("party_text") or "")

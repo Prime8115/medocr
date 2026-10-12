@@ -45,7 +45,8 @@ _LABEL = re.compile(
     # numbers themselves: on "RUPEES FIFTY-FOUR THOUSAND FIFTY-EIGHT ONLY" the
     # old pattern took the hyphen in "FIFTY-FOUR" for the separator and read the
     # remainder, "EIGHT ONLY", as the amount - 8 rupees for a 54,058 bill.
-    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*:-?\s*(?P<words>[A-Za-z \-]{10,200})"
+    # ...and "Amount in Word:Rs. Four Lakh..." (Zuventus): "Rs." after the colon.
+    r"(?:amount|total|rupees)[^:\n]{0,30}(?:in\s*words|words)?\s*:-?\s*(?:rs\.?\s*)?(?P<words>[A-Za-z \-]{10,200})"
     # Tally prints "Amount Chargeable (in words)" with the figure on the NEXT
     # line and no colon - MSV Lifesciences - and a scanner may garble the
     # words before "(in words)". The bracketed label alone is enough.
@@ -202,6 +203,13 @@ def total_from_words(text: str) -> Optional[str]:
                         re.I)
         if rest and not re.search(r"\bonly\s*$", words, re.I):
             words = words + " " + re.split(r"\bonly\b", rest.group(1), flags=re.I)[0]
+        # The amount ends at its "Rupees" or "Only": Zuventus runs on into
+        # "...Eight Hundred Nineteen Rupees Invoice Total: 463819.24".
+        lead = re.match(r"\s*rupees?\s+", words, re.I)
+        body = words[lead.end():] if lead else words
+        cut = re.search(r"\b(?:rupees?|only)\b", body, re.I)
+        if cut and re.search(r"[A-Za-z]", body[cut.end():]):
+            words = body[:cut.start()]
         value = _words_to_int(words)
         # A pharmacy invoice below a rupee, or above ten crore, is a misparse
         # rather than a total. A wrong total is worse than no total: it would

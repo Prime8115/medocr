@@ -126,7 +126,11 @@ _TOTALS: Dict[str, List[str]] = {
     "total_taxable_amount": ["Total Taxable Value", "Total Taxable Amount", "Total Taxable", "Total Amount Before Tax",
                              "Taxable Value Total", "Basic Amount", "Total Basic"],
     "total_discount_amount": ["Total Discount Amount", "Total Discount Amt", "Total Discount", "Discount Total", "SD Discount",
-                              "Total Disc Amt", "Total Disc", "Less Discount", "Less Special Disc", "Less Scheme Disc", "Less Disc"],
+                              "Total Disc Amt", "Total Disc", "Less Discount", "Less Special Disc", "Less Scheme Disc", "Less Disc",
+                              # The Marg summary's "DISC AMOUNT 1374.28" / "DIS AMT. 111.08" (Aurowin,
+                              # Ceptor, Gobinda); "Trade Discount 14,193.24" (Prabodhan); "Less :
+                              # Trade Disc. -15947.15" (Lupin).
+                              "Disc Amount", "Dis Amt", "Trade Discount", "Less Trade Disc"],
     "total_cgst_amount": ["Total CGST Amt", "Total CGST Amount", "Total CGST", "CGST Total"],
     "total_sgst_amount": ["Total SGST Amt", "Total SGST Amount", "Total SGST", "SGST Total",
                           "Total UTGST Amt"],
@@ -297,6 +301,20 @@ def extract_totals(text: str) -> Dict[str, Optional[str]]:
         # reads as "Total CGST 9.00" across the line break.
         value = _labelled(text, labels, r"(?:rs\.?|inr|₹)?\s*" + _MONEY + r"(?![\d,.]*\s*%)")
         out[field] = value.replace(",", "") if value else None
+    if out.get("total_discount_amount") is None:
+        # "Cash Discount @ 0.5%: -2081.04" (Zuventus): its rate between.
+        m = re.search(r"\bcash\s*discount\s*@\s*[\d.]+\s*%[:\-\s]*" + _MONEY, text or "", re.I)
+        if m:
+            out["total_discount_amount"] = m.group(1).replace(",", "")
+    if out.get("total_taxable_amount") is None:
+        # A bare "Taxable Value: 6,263.92" (Aristo, after its 1% cash
+        # discount) - only when printed once, and alone: a bill printing it per
+        # GST slab (V L: "Taxable Value 13988.40 10745.15 21014.20 45747.75")
+        # names no single total that way.
+        found = re.findall(r"\btaxable\s*value\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*" + _MONEY + r"(?![\d.,])(?![\d,.]*\s*%)(?![ \t]+[\d,]+\.\d{2})",
+                           text or "", re.I)
+        if len(set(found)) == 1:
+            out["total_taxable_amount"] = found[0].replace(",", "")
     return out
 
 

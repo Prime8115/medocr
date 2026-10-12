@@ -501,6 +501,10 @@ _TOTAL_PATTERNS = [
     # "Round Off (+/-): 0.09 ... NET RECEIVABLE Rs. 724829.25" (Torrent), after
     # a "Grand Total: 724829.16" that is before the round-off.
     r"net\s*receivable",
+    # "Invoice Round Off Value : 154,687.000" (Mylan): the rounded total. (Not
+    # Eris's "Net Payment": that is after the TDS the buyer withholds, and the
+    # invoice's value stays its total, as on every TDS bill.)
+    r"round\s*off\s*value",
     r"net\s*to\s*pay",
     # "TOTALPAY 12,799.00" (Hindustan Capsule, set without spaces).
     r"total\s*pay(?:able)?\b",
@@ -658,7 +662,8 @@ _GSTIN = re.compile(r"\bG\s*S\s*T\s*(?:IN|No)?\.?\s*(?:no\.?)?\s*[:\-]?\s*([0-9A
 _INVOICE_NO = re.compile(r"\binvoice\s*(?:no|num(?:ber)?|#)\.?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)", re.I)
 # How suppliers label the number, most specific first. Not \b-anchored on the
 # left: Aaraf's licence runs straight into "...21B-585861Invoice No. : A000298".
-_NO_VALUE = r"[ \t]*[:\-#]?[ \t]*([A-Za-z0-9][A-Za-z0-9\-/]*[A-Za-z0-9])"
+# ...with its separator doubled: "Invoice Number: :3250201584" (Sanofi).
+_NO_VALUE = r"(?:[ \t]*[:\-#])*[ \t]*([A-Za-z0-9][A-Za-z0-9\-/]*[A-Za-z0-9])"
 _INVOICE_NO_LABELS = [
     re.compile(r"(?<![A-Za-z])(?:tax\s*|gst\s*|sales\s*)?inv(?:oice)?\.?[ \t]*(?:no|num(?:ber)?|#)\.?"
                + _NO_VALUE, re.I),
@@ -668,6 +673,14 @@ _INVOICE_NO_LABELS = [
     # "Doc. No/Date : 5403626760/25.08.2025" (Zuventus): number and date as one.
     re.compile(r"(?<![A-Za-z])(?:invoice|inv|bill|doc(?:ument)?)\.?[ \t]*no\.?[ \t]*/[ \t]*(?:date|dt)\.?"
                r"[ \t]*[:\-]?[ \t]*([A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])(?=[ \t]*/)", re.I),
+    # "Tax Invoice" heading, its number under a bare "No. :" on the next line:
+    # Eris and Kanchan print "No. : I25846207265" there and their SAP "SD Doc
+    # No." two lines below - the document number, not the invoice's.
+    re.compile(r"tax[ \t]*invoice[^\n]*\n[^\n]*?(?<![A-Za-z.])(?<!doc )(?<!order )(?<!lr )(?<!po )(?<!dl )"
+               r"no\.?[ \t]*:" + _NO_VALUE, re.I),
+    # A credit note's own number before its document number: "Credit note :
+    # CS0000001364" over "Doc No : 55958966" (Indchemie).
+    re.compile(r"(?<![A-Za-z])credit[ \t]*note[ \t]*:" + _NO_VALUE, re.I),
     re.compile(r"(?<![A-Za-z])doc(?:ument)?\.?[ \t]*no\.?" + _NO_VALUE, re.I),
     # A credit note's own number: "CREDITNOTENO.C000084" (Hindustan Capsule).
     re.compile(r"(?<![A-Za-z])credit[ \t]*note[ \t]*no\.?" + _NO_VALUE, re.I),
@@ -680,6 +693,42 @@ _INVOICE_NO_LABELS = [
 _LOOKS_LIKE_DATE = re.compile(
     r"^(?:(?:0?[1-9]|[12]\d|3[01])([/\-.])(?:0?[1-9]|1[0-2])\1(?:\d{2}|\d{4})"
     r"|\d{4}([/\-.])(?:0?[1-9]|1[0-2])\2(?:0?[1-9]|[12]\d|3[01]))$")
+
+
+# Labels a bill prints its own number under, as (first word, second word).
+_NUMBER_LABELS = (("invoice", "no"), ("inv", "no"), ("bill", "no"), ("tax", "invoice"))
+
+
+def _number_under_label(page) -> Optional[str]:
+    """The invoice number printed BELOW its label rather than after it.
+
+    Health N U runs "Invoice No : Invoice Date : 20/08/2025" along one line
+    and prints "C201INCU2600871" under the first label; IPCA heads two columns
+    "Tax Invoice | Tax Invoice Date" over "134LS5002111 | 28/06/2025". Flat
+    text cannot pair them; the words' positions can. Only a code with a digit
+    that is not a date, directly beneath the label.
+    """
+    try:
+        words = page.extract_words(x_tolerance=WORD_TOLERANCE)
+    except Exception:  # noqa: BLE001
+        return None
+    for i, w in enumerate(words[:-1]):
+        first, second = _norm(w["text"]), _norm(words[i + 1]["text"])
+        for a, b in _NUMBER_LABELS:
+            if first != a or not second.startswith(b):
+                continue
+            after = _norm(words[i + 2]["text"]) if i + 2 < len(words) else ""
+            if b == "invoice" and after.startswith(("date", "no", "dt", "value", "amount")):
+                continue
+            left, right = float(w["x0"]) - 15, float(words[i + 1]["x1"]) + 40
+            bottom = max(float(w["bottom"]), float(words[i + 1]["bottom"]))
+            below = [c for c in words
+                     if bottom < float(c["top"]) < bottom + 28 and float(c["x1"]) > left and float(c["x0"]) < right
+                     and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\-/]{3,24}", c["text"])
+                     and re.search(r"\d", c["text"]) and not _LOOKS_LIKE_DATE.match(c["text"])]
+            if below:
+                return min(below, key=lambda c: (float(c["top"]), abs(float(c["x0"]) - float(w["x0"]))))["text"]
+    return None
 
 
 def find_invoice_no(text: str) -> Optional[str]:
@@ -708,6 +757,14 @@ _DATE_VALUE = (
     r"|[0-3]?\d[\s./\-](?:" + _MONTH_NAME + r")[a-z]*[\s./\-]\d{2,4})"
 )
 _INVOICE_DATE = [
+    # "Inv Dt : 19/06/2025" (Parshva), "Invoice Dt :08/09/2025" (Mylan,
+    # Wayonext): the date's own label, abbreviated.
+    re.compile(r"\binv(?:oice)?\.?\s*dt\.?\s*[:\-]{0,2}\s*" + _DATE_VALUE, re.I),
+    # "Date of Invoice: 29.09.2025" (Sun).
+    re.compile(r"\bdate\s*of\s*invoice\s*[:\-]?\s*" + _DATE_VALUE, re.I),
+    # "Invoice No. : KLPL000419Date : 13-08-2025" (Klingen): its label run
+    # into the number before it.
+    re.compile(r"invoice\s*no\.?\s*[:\-]?\s*[A-Za-z0-9\-/]*\d(?:date|dt)\s*[:\-]\s*" + _DATE_VALUE, re.I),
     # "INVOICEDATE:-05/09/2025" (Hindustan Capsule): a colon and a dash.
     re.compile(r"\binvoice\s*date\s*[:\-]{0,2}\s*" + _DATE_VALUE, re.I),
     re.compile(r"\binvoice\s*no.*?\bdt\.?\s*[:\-]?\s*" + _DATE_VALUE, re.I),
@@ -716,6 +773,9 @@ _INVOICE_DATE = [
                r"[ \t]*[:\-]?[ \t]*[A-Za-z0-9\-]+[ \t]*/[ \t]*" + _DATE_VALUE, re.I),
     re.compile(r"\bdated?\s*[:\-]\s*" + _DATE_VALUE, re.I),
     re.compile(r"\bdate\s*[:\-]\s*" + _DATE_VALUE, re.I),
+    # A bare "Date 25/07/2025" with no colon (Alchem, Kiana, Lavue) - last,
+    # and like every bare date, never one another label claims.
+    re.compile(r"\bdate[ \t]+" + _DATE_VALUE, re.I),
 ]
 
 
@@ -736,7 +796,7 @@ def _invoice_date_match(text: Optional[str]):
     first_other = None
     for n, pattern in enumerate(_INVOICE_DATE):
         for m in pattern.finditer(text or ""):
-            if n >= 3:
+            if n >= 6:   # the bare "Date" forms
                 before = (text or "")[max(0, m.start() - 30):m.start()].split("\n")[-1]
                 if _OTHER_DATE.search(before.strip()):
                     first_other = first_other or m
@@ -1316,6 +1376,12 @@ def _tax_base(item: dict, rate_cell=None) -> Optional[str]:
     disc = _num((item.get("discount_percent") or {}).get("value"))
     qty = _num((item.get("quantity") or {}).get("value"))
     if amount is None or not disc or not 0 < float(disc) < 100 or not qty:
+        return amount
+    # ...unless the line's gross shows the discount already taken: Lupin's
+    # 30,510.00 less its 10% IS the 27,459.00 printed - at a PTS that is
+    # itself the discounted price, so quantity x PTS matched too.
+    gross = _num((item.get("gross_amount") or {}).get("value"))
+    if gross and abs(float(gross) * (1 - float(disc) / 100) - float(amount)) <= max(0.05, 0.001 * float(amount)):
         return amount
     prices = [_num(rate_cell)] + [_num((item.get(k) or {}).get("value")) for k in ("rate", "pts", "ptr")]
     if any(p and abs(float(qty) * float(p) - float(amount)) <= max(0.05, 0.001 * float(amount)) for p in prices):
@@ -2263,6 +2329,78 @@ _SLAB_TAX = re.compile(
 )
 
 
+_GROUP_RATE = re.compile(r"\bgst\s*rate\s*:?\s*(\d{1,2}(?:\.\d+)?)\b(?=[^\n]*\bcgst\s*amt|[^\n]*\bigst\s*amt)",
+                         re.I)
+
+
+def _rates_from_group_rows(items: List[dict], text: str, interstate: Optional[bool]) -> None:
+    """Each line's GST rate from the group row printed after it.
+
+    Modi-Mundipharma and Win-Medicare print no rate on the lines: each group
+    of lines ends with "GST Rate : 12.00 CGST Amt : 3028.89 SGST Amt : ...".
+    A line with no rate of its own takes the rate of the first such row after
+    it on the page (found by its batch), split CGST/SGST within a state.
+    """
+    rows = [(m.start(), float(m.group(1))) for m in _GROUP_RATE.finditer(text or "")]
+    if not rows:
+        return
+    for item in items:
+        if (item.get("gst_percent") or {}).get("value"):
+            continue
+        batch = (item.get("batch_no") or {}).get("value")
+        at = (text or "").find(batch) if batch else -1
+        if at < 0:
+            continue
+        rate = next((r for start, r in rows if start > at), None)
+        if rate is None or not _is_gst_rate(rate):
+            continue
+        item["gst_percent"] = _f(f"{rate:g}", confidence=_DERIVED_CONFIDENCE)
+        # A "net" equal to the taxable value is the line before this tax
+        # (INV 383's "Total Amount"), not a total that includes it.
+        if (item.get("net_amount") or {}).get("value") == (item.get("amount") or {}).get("value") and rate > 0:
+            item.pop("net_amount", None)
+        heads = {"igst": rate} if interstate else {"cgst": rate / 2, "sgst": rate / 2}
+        for head, pct in heads.items():
+            if not (item.get(f"{head}_percent") or {}).get("value"):
+                item[f"{head}_percent"] = _f(f"{pct:g}", confidence=_DERIVED_CONFIDENCE)
+
+
+def _half_tax_from_rates(items: List[dict]) -> Optional[float]:
+    """Each of CGST and SGST as the lines' own GST rates give it - None unless
+    every line carries an amount and a rate."""
+    total = 0.0
+    for item in items:
+        amount = _num((item.get("amount") or {}).get("value"))
+        rate = _num((item.get("gst_percent") or {}).get("value"))
+        if amount is None or rate is None:
+            return None
+        total += float(amount) * float(rate) / 200.0
+    return total or None
+
+
+def _printed_head_total(text: str, near: float) -> Optional[float]:
+    """A CGST (or SGST) total the bill prints, near what its lines add up to.
+
+    Within a state the two heads are equal, so the bill's own figure shows as
+    the same amount twice on one line - or once, after an "Add : C GST" style
+    label. Only a figure within a rupee (or 0.2%) of the lines' sum is taken:
+    the lines prove which figure it is, the bill gives its exact value.
+    """
+    if near <= 0:
+        return None
+    slack = max(1.0, 0.002 * near)
+    for line in (text or "").splitlines():
+        values = [float(f.replace(",", "")) for f in re.findall(r"(?<![\d.,])\d[\d,]*\.\d{2}(?![\d])", line)]
+        # ...side by side or with the rate between: "8,611.46 6.00 8,611.46" (Lupin).
+        pairs = [a for a in set(values) if values.count(a) >= 2 and a > 0]
+        if re.search(r"\b(?:add|total|less)?\s*:?\s*[cs]\s*gst\b", line, re.I) and len(values) == 1:
+            pairs.append(values[0])
+        for value in pairs:
+            if abs(value - near) <= slack:
+                return value
+    return None
+
+
 def _slab_tax_totals(invoice_meta: dict, text: str) -> None:
     """The bill's tax and taxable totals from its per-slab tax lines.
 
@@ -2661,7 +2799,20 @@ def parse_scanned_invoice(data: bytes, content_type: str,
     _total_by_cross_foot(invoice_meta, full_text, line_items)
     _drop_impossible_tax_total(invoice_meta)
     _scale_worked_out_tax(line_items, invoice_meta)
-    for key, value in sum_line_totals(line_items).items():
+    _rates_from_group_rows(line_items, full_text, interstate)
+    summed = sum_line_totals(line_items)
+    for key in ("total_cgst_amount", "total_sgst_amount"):
+        # The bill's own CGST and SGST totals, printed in a row with no label of
+        # their own - "76577.30 4990.90 4990.90" (Brinton), "Add : C GST
+        # 14995.75" (Glowderma), "Total : 50481.54 3028.89 3028.89" (INV 383).
+        # Added up from the lines they came out a paisa or two away from it.
+        # ...or, where the lines print rates and no tax, what their rates give.
+        near = float(summed[key]) if summed.get(key) else _half_tax_from_rates(line_items)
+        if not (invoice_meta.get(key) or {}).get("value") and near:
+            printed = _printed_head_total(full_text, near)
+            if printed is not None:
+                invoice_meta[key] = _f(f"{printed:.2f}")
+    for key, value in summed.items():
         if not (invoice_meta.get(key) or {}).get("value"):
             # Added up from the lines, not read off the bill - held below a
             # printed figure, so nothing mistakes it for the bill's own total.
@@ -2794,6 +2945,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     full_text = ""
     interstate: Optional[bool] = None
     local_head: Optional[str] = None
+    header_number_below: Optional[str] = None
 
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -2839,6 +2991,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                         supplier_region_lines(page),
                         regions,
                     )
+                    header_number_below = _number_under_label(page)
                     # Decided once, from the two GSTINs: an intra-state sale is
                     # CGST + SGST, an inter-state one is IGST. Suppliers head a
                     # single column for both, so the heading alone cannot say.
@@ -2947,15 +3100,37 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     _total_by_cross_foot(invoice_meta, full_text, line_items)
     _drop_impossible_tax_total(invoice_meta)
     _scale_worked_out_tax(line_items, invoice_meta)
-    for key, value in sum_line_totals(line_items).items():
+    _rates_from_group_rows(line_items, full_text, interstate)
+    summed = sum_line_totals(line_items)
+    for key in ("total_cgst_amount", "total_sgst_amount"):
+        # The bill's own CGST and SGST totals, printed in a row with no label of
+        # their own - "76577.30 4990.90 4990.90" (Brinton), "Add : C GST
+        # 14995.75" (Glowderma), "Total : 50481.54 3028.89 3028.89" (INV 383).
+        # Added up from the lines they came out a paisa or two away from it.
+        # ...or, where the lines print rates and no tax, what their rates give.
+        near = float(summed[key]) if summed.get(key) else _half_tax_from_rates(line_items)
+        if not (invoice_meta.get(key) or {}).get("value") and near:
+            printed = _printed_head_total(full_text, near)
+            if printed is not None:
+                invoice_meta[key] = _f(f"{printed:.2f}")
+    for key, value in summed.items():
         if not (invoice_meta.get(key) or {}).get("value"):
             # Added up from the lines, not read off the bill - held below a
             # printed figure, so nothing mistakes it for the bill's own total.
             invoice_meta[key] = _f(value, confidence=_SUMMED_CONFIDENCE)
 
     fields["line_items"] = line_items
+    stream = _stream_text(data)
+    if not (invoice_meta.get("invoice_no") or {}).get("value"):
+        # The number where the page's layout hides it: printed under its label
+        # (Health N U, IPCA), or interleaved with the licence beside it, which
+        # the text in drawing order still reads whole (AARAF's "...21B-585861
+        # Invoice No. : A000298").
+        number = header_number_below or find_invoice_no(stream)
+        if number:
+            invoice_meta["invoice_no"] = _f(number)
     fields["_hints"] = {
-        "stream_text": _stream_text(data),
+        "stream_text": stream,
         "copies_detected": copies,
         "stated_item_count": stated_count,
         "price_labels": labels,

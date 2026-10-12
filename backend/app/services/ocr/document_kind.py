@@ -118,6 +118,47 @@ def kind_from_page(text: Optional[str]) -> Optional[str]:
     return found
 
 
+# A document title as bills print it, for reading it back off the page.
+_TITLE_PHRASE = re.compile(
+    r"(?:(?:gst|tax|retail|sales)\s*)?(?:invoice|bill)\s+cum\s+[a-z ]{3,30}?challan"
+    r"|(?:gst\s*)?(?:tax\s*)?(?:retail\s*|sales\s*)?invoice"
+    r"|bill\s*of\s*supply|(?:gst\s*)?credit\s*note|(?:gst\s*)?debit\s*note|(?:delivery\s*)?chall?an"
+    r"|pro\s*-?\s*forma\s*invoice|(?:sales|purchase|goods)\s*return|return\s*note",
+    re.I,
+)
+_LABEL_AFTER = re.compile(r"\s*(?:no\b|number|date|dt\b|ref|#|:|\.\s*no|value|amount|amt|total)", re.I)
+
+
+def title_from_page(text: Optional[str]) -> Optional[str]:
+    """The title the bill prints at its head, as printed - "TAX INVOICE",
+    "GST INVOICE", "Credit Note" - or None.
+
+    The free reader fills every other header field from the page and left this
+    one blank: only the AI was asked for it. It is the phrase near the top
+    that names what the document is (kind_from_page), never a field label
+    ("Invoice No.", "Invoice Date") and never a sentence in the footer.
+    """
+    kind = kind_from_page(text)
+    if not kind:
+        return None
+    for line in (text or "").splitlines()[:_HEADING_LINES]:
+        for m in _TITLE_PHRASE.finditer(line):
+            if _LABEL_AFTER.match(line, m.end()):
+                continue
+            phrase = re.sub(r"\s+", " ", m.group()).strip()
+            # "Tax Invoice" taken in any case (kind_from_page does the same);
+            # any other kind only as the heading kind_from_page found.
+            if kind_of_title(phrase) == kind:
+                return phrase
+    # The heading as printed, even where the page shows the document is
+    # something else: AANAV heads its sales return "GST INVOICE".
+    for line in (text or "").splitlines()[:_HEADING_LINES]:
+        for part in re.split(r"\s{3,}|\t|\|", line):
+            if kind_of_title(part):
+                return re.sub(r"\s+", " ", _COPY_WORDS.sub(" ", part)).strip(" .-()")
+    return None
+
+
 def detect(title: Optional[str], page_text: Optional[str]) -> Optional[str]:
     """The document's kind, from the AI's reading of its title and the page's
     own text. Anything that is not an invoice wins: a credit note one reader

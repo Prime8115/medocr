@@ -335,3 +335,57 @@ def test_a_distributors_price_is_not_the_pts_but_can_be_the_billed_rate():
     resolve_billed_rate([item])
     assert _v(item, "pts") is None
     assert _v(item, "rate") == "12870.00" and _v(item, "rate_source") == "Dist.Price"
+
+
+# --- header fields found by the client-tester audit ---------------------------------
+
+def test_invoice_numbers_under_their_many_labels():
+    assert find_invoice_no("Invoice Number: :3250201584 Transportation Mode") == "3250201584"
+    assert find_invoice_no("BILL TO SHIP TO Tax Invoice\nEASTERN AGENCY PVT LTD No. : I25846207265 "
+                           "Date : 04.10.2025\nLIMITED SD Doc No. : 9035616019") == "I25846207265"
+    assert find_invoice_no("INDCHEMIE Credit note : CS0000001364\nDoc No : 55958966") == "CS0000001364"
+
+
+def test_invoice_dates_under_their_many_labels():
+    from app.services.ocr.invoice_parser import _invoice_date_match
+
+    def date(text):
+        m = _invoice_date_match(text)
+        return m.group(1) if m else None
+    assert date("PAN : AADFP5700F Inv Dt : 19/06/2025 Due : 11/07/2025") == "19/06/2025"
+    assert date("Date of Invoice: 29.09.2025 AWB Date: 03.10.2025") == "29.09.2025"
+    assert date("Invoice No. : KLPL000419Date : 13-08-2025\nDue Date : 03-09-2025") == "13-08-2025"
+    assert date("UNIT NO. 101, Date 25/07/2025\nDue Date : 08/09/2025") == "25/07/2025"
+
+
+def test_discount_totals_under_their_many_labels():
+    from app.services.ocr.invoice_header import extract_totals
+    assert extract_totals("Total Items : 6 DISC AMOUNT 1374.28")["total_discount_amount"] == "1374.28"
+    assert extract_totals("Less : Trade Disc. -15947.15")["total_discount_amount"] == "15947.15"
+    assert extract_totals("Cash Discount @ 0.5%: -2081.04 414124.34")["total_discount_amount"] == "2081.04"
+
+
+def test_a_taxable_value_printed_once_and_alone():
+    from app.services.ocr.invoice_header import extract_totals
+    assert extract_totals("GST 5% Taxable Value: 6,263.92 CGST Value: 156.59")["total_taxable_amount"] == "6263.92"
+    # Per slab, with the total last: no single figure to take.
+    assert extract_totals("Taxable Value 13988.40 10745.15 21014.20 45747.75")["total_taxable_amount"] is None
+
+
+def test_the_printed_head_total_beats_the_lines_sum():
+    from app.services.ocr.invoice_parser import _printed_head_total
+    assert _printed_head_total("76577.30 4990.90 4990.90", 4990.92) == 4990.90
+    assert _printed_head_total("143,524.33 6.00 8,611.46 6.00 8,611.46", 8611.40) == 8611.46
+    assert _printed_head_total("Add : C GST 14995.75", 14995.76) == 14995.75
+    assert _printed_head_total("76577.30 4990.90 4990.90", 2500.00) is None   # nowhere near
+
+
+def test_a_group_rows_rate_reaches_its_lines():
+    from app.services.ocr.invoice_parser import _rates_from_group_rows
+    items = [{"batch_no": _leaf("4146"), "amount": _leaf("1658.57"), "net_amount": _leaf("1658.57")},
+             {"batch_no": _leaf("E25"), "amount": _leaf("253.22")}]
+    text = ("ACOCONTIN 4146 1658.57\nGST Rate : 12.00 CGST Amt : 99.51 SGST Amt : 99.51\n"
+            "NUSOWIN E25 253.22\nGST Rate : 18.00 CGST Amt : 22.79 SGST Amt : 22.79")
+    _rates_from_group_rows(items, text, interstate=False)
+    assert [_v(i, "gst_percent") for i in items] == ["12", "18"]
+    assert _v(items[0], "net_amount") is None    # its "Total Amount" was before the tax

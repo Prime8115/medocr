@@ -1169,6 +1169,15 @@ def quantity_from_charge(fields: dict) -> Optional[str]:
             "the figure read as free goods does - taken as the quantity. Please check.")
 
 
+def _discount_as_a_figure(fields: dict) -> None:
+    """A discount total is an amount taken off, never a negative one: Mednosis
+    prints "Disc. Amount: -516.84" and the minus is the bill's way of saying
+    "less"."""
+    leaf = (fields.get("invoice") or {}).get("total_discount_amount")
+    if isinstance(leaf, dict) and str(leaf.get("value") or "").strip().startswith("-"):
+        leaf["value"] = str(leaf["value"]).strip().lstrip("-").strip()
+
+
 def complete_from_the_bill(fields: dict) -> List[str]:
     """Fill fields that the bill states implicitly, for EITHER reader.
 
@@ -1190,6 +1199,7 @@ def complete_from_the_bill(fields: dict) -> List[str]:
     invoice = fields.get("invoice")
     if not isinstance(invoice, dict):
         return filled
+    _discount_as_a_figure(fields)
 
     supplier = _v((fields.get("supplier") or {}).get("gstin"))
     buyer = _v((fields.get("bill_to") or {}).get("gstin")) or _v((fields.get("ship_to") or {}).get("gstin"))
