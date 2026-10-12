@@ -32,8 +32,8 @@
       "header_expect": {
         "invoice.lr_no": "5140404",
         "invoice.lr_date": null,
-        "invoice.po_no": "100178296",
-        "invoice.po_date": "30.06.2025",
+        "invoice.po_no": "GN-15912-1068-SHREE",
+        "invoice.po_date": null,
         "invoice.due_date": null,
         "invoice.irn": "2f3f6b648341c052b7c4850b5d965f4fc1df38b645c16a29d9deede7fbd3f7c7",
         "invoice.transport": null,
@@ -74,8 +74,8 @@
       "header_expect": {
         "invoice.lr_no": null,
         "invoice.lr_date": null,
-        "invoice.po_no": "30426170",
-        "invoice.po_date": "10.09.2025",
+        "invoice.po_no": "5248",
+        "invoice.po_date": "09.09.2025",
         "invoice.due_date": "01.10.2025",
         "invoice.irn": "d7c4eed7d3ff34acf46c45252b5e0b1ac000888ec7c3f8a2392d41d28edcb7e6",
         "invoice.transport": null,
