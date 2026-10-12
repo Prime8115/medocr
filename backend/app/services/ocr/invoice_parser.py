@@ -38,6 +38,7 @@ from app.services.ocr.invoice_header import (
 )
 from app.services.ocr.invoice_checks import SUMMED_CONFIDENCE, line_arithmetic_holds
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout, without_watermark
+from app.services.ocr import lessons
 
 log = logging.getLogger(__name__)
 
@@ -220,13 +221,33 @@ def _find_header_row(table) -> Optional[int]:
 
 
 def _map_columns(header_row) -> dict:
-    """Map our field -> column index.
+    """Map our field -> column index: what this shop has taught us about the
+    supplier's columns first (lessons.py), then the keyword rules."""
+    norms = [_norm(c) for c in header_row]
+    forced, forbidden = lessons.column_lessons(norms)
+    mapping = _keyword_columns(header_row, forbidden)
+    for idx, fields in forbidden.items():
+        for field in fields:
+            lessons.used(field, _clean(header_row[idx]), "not")
+    for idx, field in forced.items():
+        # The lesson's column is this field - and no other field is read from it.
+        for other in [f for f, i in mapping.items() if i == idx or f == field]:
+            mapping.pop(other)
+        mapping[field] = idx
+        lessons.used(field, _clean(header_row[idx]), "is")
+    return mapping
+
+
+def _keyword_columns(header_row, forbidden: Optional[dict] = None) -> dict:
+    """Map our field -> column index by the headings' wording.
 
     Keywords are tried in PREFERENCE order, and the whole header is scanned for
     each keyword before moving to the next one. That is what makes the mapping
     stable across suppliers: a column literally headed "RATE" always wins over a
-    "PTR" column that happens to be printed to its left.
+    "PTR" column that happens to be printed to its left. A column a supplier's
+    lesson says is NOT a field is never matched to it.
     """
+    forbidden = forbidden or {}
     norms = [_norm(c) for c in header_row]
     mapping: dict = {}
     taken: set = set()
@@ -234,7 +255,7 @@ def _map_columns(header_row) -> dict:
         for keyword in includes:
             hit = None
             for idx, h in enumerate(norms):
-                if not h or idx in taken:
+                if not h or idx in taken or field in forbidden.get(idx, ()):
                     continue
                 # "Taxable Amt after Disc." (Zuventus) IS the taxable amount;
                 # the discount it mentions is already taken off.
@@ -2187,6 +2208,12 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
             continue  # not a line-item table we understand
         gst_cols = _gst_columns(header_row)
         labels.update(price_labels(cols, header_row))
+        # Every mapped column's own heading, for tracing a value back to the
+        # bill - and a reviewer's correction back to the column it came from.
+        for field, idx in cols.items():
+            heading = re.sub(r"\s+", " ", _header_text(header_row, idx)).strip()
+            if heading:
+                labels.setdefault(f"column:{field}", heading)
         rows = []
         for row in _with_detail_lines_folded(table[data_from:], cols):
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
@@ -2768,6 +2795,7 @@ def parse_scanned_invoice(data: bytes, content_type: str,
             # text and may interleave - the reconciliation check below is what
             # keeps a bad reading out.
             meta = _extract_header_meta(text, [(0.0, ln) for ln in text.splitlines()])
+            lessons.choose(text)
             local_head = local_tax_head(
                 (meta.get("supplier", {}).get("gstin") or {}).get("value"),
                 (meta.get("bill_to", {}).get("gstin") or {}).get("value"),
@@ -2992,6 +3020,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                         regions,
                     )
                     header_number_below = _number_under_label(page)
+                    lessons.choose(page_texts[page_no])
                     # Decided once, from the two GSTINs: an intra-state sale is
                     # CGST + SGST, an inter-state one is IGST. Suppliers head a
                     # single column for both, so the heading alone cannot say.

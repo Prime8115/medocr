@@ -20,7 +20,10 @@ function row(overrides: Partial<documentsApi.SupplierCoverage> = {}): documentsA
   };
 }
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(documentsApi.getSupplierLessons).mockResolvedValue([]);
+});
 
 describe('Suppliers', () => {
   test('lists suppliers with what needs attention', async () => {
@@ -49,5 +52,20 @@ describe('Suppliers', () => {
     expect(fieldName('invoice.due_date')).toBe('due date');
     expect(fieldName('bill_to.name')).toBe('bill-to name');
     expect(fieldName('line_items')).toBe('line items');
+  });
+});
+
+describe('SupplierLessons', () => {
+  test('shows what was learned and lets a lesson be forgotten', async () => {
+    vi.mocked(documentsApi.getSupplierReport).mockResolvedValue({ window_days: 90, suppliers: [row()] });
+    vi.mocked(documentsApi.getSupplierLessons).mockResolvedValue([{
+      id: 'l1', supplier_gstin: '27AAACI9822K1Z9', heading: 'RETAILER RATE', field: 'ptr', kind: 'is',
+      active: true, times_used: 4, times_undone: 0, times_failed: 0,
+    }]);
+    render(<Suppliers />);
+    expect(await screen.findByText('Learned from your corrections')).toBeTruthy();
+    expect(screen.getByText(/RETAILER RATE/)).toBeTruthy();
+    expect(screen.getByText('4×')).toBeTruthy();
+    expect(screen.getByText('Forget')).toBeTruthy();
   });
 });

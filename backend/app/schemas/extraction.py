@@ -307,6 +307,15 @@ class ExtractionMeta(BaseModel):
     # Which printed price column the bill turned out to be charged on
     # ("pts", "ptr", "rate", ...), decided from amount / quantity.
     billed_rate_column: Optional[str] = None
+    # The supplier's printed heading for each line field the reader mapped
+    # ({"ptr": "Trade Price/Unit"}) - where a correction's value came from.
+    columns: Optional[dict] = None
+    # The reading as it arrived, before any review (services/corrections.py).
+    original_fields: Optional[dict] = None
+    # Supplier lessons that shaped this reading, and ones dropped because the
+    # bill stopped adding up with them (services/supplier_profile.py).
+    lessons_applied: Optional[list] = None
+    lessons_failed: Optional[list] = None
     # Lines the supplier billed at zero (free/replacement supply).
     free_supply_lines: int = 0
     # Set when the AI could not read the document and it was sent for manual

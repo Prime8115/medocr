@@ -12,6 +12,7 @@ import { Truck } from 'lucide-react';
 
 import { getSupplierReport, type SupplierCoverage } from '../api/documents';
 import { fieldLabel as fieldName } from '../lib/verification';
+import SupplierLessons from './SupplierLessons';
 
 const STATUS: Record<SupplierCoverage['status'], { label: string; color: string }> = {
   needs_attention: { label: 'Needs attention', color: 'var(--danger)' },
@@ -129,6 +130,9 @@ export default function Suppliers() {
         When a reviewer fills in a field we missed, we learn where that supplier prints it, and read it there
         on its next bill.
       </div>
+      <SupplierLessons
+        names={Object.fromEntries((rows ?? []).filter((r) => r.supplier_gstin).map((r) => [r.supplier_gstin as string, r.supplier_name ?? '']))}
+      />
     </div>
   );
 }

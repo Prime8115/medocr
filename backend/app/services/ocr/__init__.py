@@ -406,6 +406,10 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             integrity["free_supply_lines"] = free
         # Decide which printed price column the bill was actually charged on,
         # before the arithmetic check runs against it.
+        columns = {k[len("column:"):]: v for k, v in (hints.get("price_labels") or {}).items()
+                   if k.startswith("column:")}
+        if columns:
+            integrity["columns"] = columns
         billed = resolve_billed_rate(fields.get("line_items") or [], hints.get("price_labels"))
         if billed:
             integrity["billed_rate_column"] = billed
@@ -553,9 +557,51 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
 
 
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None,
-                     own_gstins=None) -> dict:
+                     own_gstins=None, lessons=None) -> dict:
     """Read one document. `own_gstins` are the shop's own GSTINs, when known:
-    the shop is the buyer on its own purchase bills (parties.py)."""
+    the shop is the buyer on its own purchase bills (parties.py). `lessons`
+    are what the shop has taught the reader about its suppliers' columns
+    (ocr/lessons.py, services/supplier_profile.py).
+
+    A reading shaped by a lesson must still add up: if it does not, the bill is
+    read again without lessons, and the lesson is reported as having failed
+    (meta.lessons_failed) - a lesson can never make a bill read worse."""
+    from app.services.ocr import lessons as lesson_ctx
+
+    tokens = lesson_ctx.start(lessons)
+    try:
+        result = _read_once(document_id, file_bytes, content_type, doc_type, on_progress, own_gstins)
+        used = lesson_ctx.applied()
+        meta = result.setdefault("meta", {})
+        # Lessons shape the free reader's columns only. A bill it declined was
+        # read by the AI, untouched by them.
+        if not used or meta.get("pipeline") not in ("pdf_parser", "tesseract"):
+            return result
+        # Read again without them (the free reader is cheap): a lesson stays only
+        # if its reading fails no check the plain one passes. A bill can still add
+        # up with a wrong quantity - the line checks are what catch that.
+        off = lesson_ctx.DISABLED.set(True)
+        try:
+            plain = _read_once(document_id, file_bytes, content_type, doc_type, on_progress, own_gstins)
+        finally:
+            lesson_ctx.DISABLED.reset(off)
+        if _failed_checks(result) - _failed_checks(plain) or (
+                meta.get("total_reconciles") is False and (plain.get("meta") or {}).get("total_reconciles")):
+            plain.setdefault("meta", {})["lessons_failed"] = used
+            return plain
+        meta["lessons_applied"] = used
+        return result
+    finally:
+        lesson_ctx.finish(tokens)
+
+
+def _failed_checks(result: dict) -> set:
+    checks = (((result or {}).get("meta") or {}).get("verification") or {}).get("checks") or []
+    return {c.get("id") for c in checks if c.get("status") == "fail"}
+
+
+def _read_once(document_id: str, file_bytes: bytes, content_type: str, doc_type, on_progress,
+               own_gstins) -> dict:
     from app.services.ocr.parties import OWN_GSTINS
 
     # A mapping {GSTIN: the shop's name} also lets a cut-off buyer name be

@@ -40,7 +40,7 @@ from app.schemas.document import (
     ChooseRequest,
 )
 from app.schemas.extraction import validate_fields
-from app.services import intake, jobs, lifecycle
+from app.services import corrections, intake, jobs, lifecycle, supplier_profile
 from app.services.connectors import service as connector_service
 from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
@@ -144,7 +144,8 @@ def _process_job(db: Session, job: OcrJob) -> None:
     failure: Optional[Exception] = None
     try:
         result = process_document(document_id, data, job.content_type, job.doc_type, on_progress=_on_progress,
-                                  own_gstins=own_identity(db, doc.shop_id))
+                                  own_gstins=own_identity(db, doc.shop_id),
+                                  lessons=_shop_lessons(db, doc.shop_id))
     except OCRError as exc:
         db.rollback()
         if exc.kind == "busy" and _requeue_when_busy(db, job_id, exc):
@@ -166,6 +167,16 @@ def _process_job(db: Session, job: OcrJob) -> None:
             return
 
     _save_result(db, job_id, document_id, result, cause)
+
+
+def _shop_lessons(db: Session, shop_id: str) -> dict:
+    """What this shop has taught the reader about its suppliers' columns - never
+    a reason to fail a read."""
+    try:
+        return supplier_profile.lessons_for_shop(db, shop_id)
+    except Exception:  # noqa: BLE001
+        log.exception("could not load supplier lessons; reading without them")
+        return {}
 
 
 def _improve(db: Session, what: str, step, result: dict) -> dict:
@@ -204,6 +215,8 @@ def _save_result(db: Session, job_id: str, document_id: str, result: dict, cause
                               lambda r: apply_remembered(db, shop_id, "invoice", r), result)
             # How it looked before anyone touched it - for the supplier report.
             result = _improve(db, "the arrival snapshot", _with_arrival, result)
+            _improve(db, "lesson counts",
+                     lambda r: supplier_profile.record_outcome(db, shop_id, r.get("meta")) or r, result)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
@@ -222,7 +235,7 @@ def _save_result(db: Session, job_id: str, document_id: str, result: dict, cause
 
 def _with_arrival(result: dict) -> dict:
     result.setdefault("meta", {})["arrival"] = arrival_snapshot(result.get("meta"))
-    return result
+    return corrections.keep_original(result)
 
 
 def give_up_overdue(job_id: str) -> None:
@@ -569,6 +582,33 @@ def supplier_report(
     return {"window_days": days, "suppliers": supplier_coverage(docs, edits, labels, choices)}
 
 
+@router.get("/suppliers/lessons")
+def supplier_lessons(
+    gstin: Optional[str] = Query(None, min_length=15, max_length=15),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """What the reader has learned about each supplier's columns from this
+    shop's corrections - and how each lesson is doing."""
+    return {"lessons": supplier_profile.lessons_view(db, user.shop_id, gstin.upper() if gstin else None)}
+
+
+@router.delete("/suppliers/lessons/{lesson_id}")
+def forget_supplier_lesson(lesson_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Forget a lesson the reviewer knows to be wrong."""
+    from app.models.supplier_column_lesson import SupplierColumnLesson
+
+    row = db.query(SupplierColumnLesson).filter_by(id=lesson_id, shop_id=user.shop_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such lesson.")
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="supplier.lesson_forgotten", target=row.id,
+                    detail={"supplier_gstin": row.supplier_gstin, "field": row.field, "kind": row.kind,
+                            "heading": row.heading_printed}))
+    db.delete(row)
+    db.commit()
+    return {"deleted": lesson_id}
+
+
 def _get_owned_document(document_id: str, db: Session, user: User) -> Document:
     doc = (
         db.query(Document)
@@ -653,6 +693,14 @@ def update_document(
     except Exception:  # noqa: BLE001 - an old payload the schema now refuses
         old_clean = old_payload.get("fields") or {}
     changed = changed_paths(old_clean, clean)
+    # Each changed value, kept with what was read - the material lessons are
+    # learned from (services/corrections.py).
+    corrections.record(db, user.shop_id, doc.id, old_payload, old_clean, clean, user.id)
+    # ...and what they teach about this supplier's columns, against the reading
+    # as it arrived (its columns are what the lessons are about).
+    original = ((old_payload.get("meta") or {}).get("original_fields")) or old_clean
+    column_lessons = (supplier_profile.learn_from_edit(db, user.shop_id, old_payload, original, clean, user.id)
+                      if doc.doc_type == "invoice" else [])
     # Where the reviewer found what we missed, so this supplier's next bill is read there.
     learned = (learn_from_edit(db, user.shop_id, old_payload, clean, user.id)
                if doc.doc_type == "invoice" else [])
@@ -661,7 +709,7 @@ def update_document(
     doc.status = lifecycle.NEEDS_REVIEW
     supplier = (clean.get("supplier") or {})
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.edited", target=doc.id,
-                    detail={"changed": changed, "learned": learned,
+                    detail={"changed": changed, "learned": learned + column_lessons,
                             "supplier_gstin": (supplier.get("gstin") or {}).get("value"),
                             "supplier_name": (supplier.get("name") or {}).get("value")}))
     db.commit()

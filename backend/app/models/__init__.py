@@ -10,8 +10,10 @@ from app.models.inventory import InventoryItem
 from app.models.job import OcrJob
 from app.models.supplier_choice import SupplierChoice
 from app.models.supplier_label import SupplierLabel
+from app.models.document_correction import DocumentCorrection
+from app.models.supplier_column_lesson import SupplierColumnLesson
 
 __all__ = [
     "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "InventoryItem", "OcrJob", "SupplierChoice",
-    "SupplierLabel",
+    "SupplierLabel", "DocumentCorrection", "SupplierColumnLesson",
 ]

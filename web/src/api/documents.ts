@@ -142,3 +142,25 @@ export async function getSupplierReport(days = 90): Promise<SupplierReport> {
   const res = await api.get('/v1/documents/suppliers', { params: { days } });
   return res.data as SupplierReport;
 }
+
+/** A supplier column lesson learned from this shop's corrections (GET /v1/documents/suppliers/lessons). */
+export interface SupplierLesson {
+  id: string;
+  supplier_gstin: string;
+  heading: string;
+  field: string;
+  kind: 'is' | 'not';
+  active: boolean;
+  times_used: number;
+  times_undone: number;
+  times_failed: number;
+}
+
+export async function getSupplierLessons(): Promise<SupplierLesson[]> {
+  const res = await api.get('/v1/documents/suppliers/lessons');
+  return (res.data as { lessons: SupplierLesson[] }).lessons;
+}
+
+export async function forgetSupplierLesson(id: string): Promise<void> {
+  await api.delete(`/v1/documents/suppliers/lessons/${id}`);
+}
