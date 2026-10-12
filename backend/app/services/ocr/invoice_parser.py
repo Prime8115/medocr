@@ -1356,10 +1356,27 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         if " ".join(words[:cut]) in heading:
             desc = " ".join(words[cut:])
             break
+    # "Product Code & Description" (Lupin) prints each line's 6-digit code
+    # under its name, where it runs into the row below: "419552 SOFTOVAC
+    # 100GM 412689" starts with the line above's code and ends with its own
+    # (and the last line also takes in a footer, "GST IS NOT PAYABLE UNDER").
+    code = code_above = None
+    if "code" in _norm(heading) and cols.get("product_code") is None:
+        words = desc.split()
+        if len(words) > 1 and re.fullmatch(r"\d{6}", words[0]):
+            code_above, words = words[0], words[1:]
+        at = next((i for i in range(len(words) - 1, 0, -1) if re.fullmatch(r"\d{6}", words[i])), None)
+        if at is not None and (at == len(words) - 1 or len(words) - at > 3):
+            code, words = words[at], words[:at]
+        desc = " ".join(words)
     if not desc or len(desc) < 2:
         return None
 
     item = {"description": _f(desc)}
+    if code:
+        item["product_code"] = _f(code)
+    if code_above:
+        item["_code_above"] = code_above
     for field in _TEXT_FIELDS:
         if cols.get(field) is not None:
             item[field] = _f(_strip_stray(_clean(cell(field))))
@@ -2090,6 +2107,9 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
         for row in _with_detail_lines_folded(table[data_from:], cols):
             item = _build_item(row, cols, header_row, gst_cols, interstate, local)
             if item:
+                above = item.pop("_code_above", None)
+                if above and rows and not (rows[-1].get("product_code") or {}).get("value"):
+                    rows[-1]["product_code"] = _f(above)
                 rows.append(item)
         # The rest of the previous page's last line, at the top of this one.
         lead = _continued_from_last_page(table[data_from] if data_from < len(table) else None,

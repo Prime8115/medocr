@@ -275,3 +275,17 @@ def test_tax_on_the_value_after_a_lines_discount_in_money():
         "amount": _leaf("49770.60"), "discount_amount": _leaf("2488.53"),
         "cgst_percent": _leaf("2.5"), "cgst_amount": _leaf("1182.05")}]}
     assert _check(fields, "line_tax")["status"] == "pass"
+
+
+def test_a_code_printed_under_the_name_goes_to_its_own_line():
+    # Lupin: each line's code wraps into the row below, and the last row
+    # takes in a footer.
+    header = ["Product Code &", "Batch No.", "Qty. / UOM", "Amount"]
+    cols = _map_columns(header)
+    rows = [["APTIVATE SYRUP 175 ML", "A25429TM", "252", "27459.00"],
+            ["419552 SOFTOVAC 100GM 412689", "A25234MU", "350", "50625.00"],
+            ["VOVILUP SPRAY 512744 GST IS NOT PAYABLE UNDER", "VVP25001", "1", "0.00"]]
+    from app.services.ocr.invoice_parser import _rows_from_tables
+    items = _rows_from_tables([[header] + rows], {}, False, "sgst")
+    assert [(_v(i, "description"), _v(i, "product_code")) for i in items] == [
+        ("APTIVATE SYRUP 175 ML", "419552"), ("SOFTOVAC 100GM", "412689"), ("VOVILUP SPRAY", "512744")]
