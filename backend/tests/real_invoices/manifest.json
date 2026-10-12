@@ -227,7 +227,7 @@
       "pages": 1,
       "copies_detected": 1,
       "item_count": 1,
-      "billed_rate_column": "pts",
+      "billed_rate_column": "extra:Dist.Price",
       "rate_source_label": "Dist.Price",
       "total_reconciles": true,
       "has_ruled_table": true,

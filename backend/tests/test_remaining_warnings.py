@@ -306,3 +306,32 @@ def test_a_debit_credit_note_settled_on_the_bill_explains_its_words():
     report = reconcile_invoice(fields, total_in_words="144068.00", page_text=text)
     assert report["total_in_words_disagrees"] is False
     assert any("76.00" in w for w in report["warnings"])
+
+
+# --- pack, and a distributor's price ------------------------------------------------
+
+def test_a_pack_printed_in_the_name_column_that_says_so():
+    header = ["PRODUCT DESCRIPTION & PACKS", "BATCHNO", "QTY SALE", "TAXABLE VALUE"]
+    item = _item(header, ["BILASTERO 20 MG TABLETS 10'S", "2GT23084A", "6", "497.58"])
+    assert _v(item, "pack") == "10'S"
+    header = ["Product/Pack / UOM", "Batch No", "Qty.", "Taxable Amount"]
+    item = _item(header, ["GABAWOK NT 400MG 15T", "WTN5001", "10", "3,088.30"])
+    assert _v(item, "pack") == "15T"     # never the 400MG strength
+    # A name column that does not claim the pack is left alone.
+    item = _item(["Product Name", "Batch No", "Qty.", "Amount"], ["GABAWOK NT 400MG 15T", "W1", "10", "3088.30"])
+    assert _v(item, "pack") is None
+
+
+def test_a_pkg_detail_column_is_the_pack():
+    assert "pack" in _map_columns(["DESCRIPTION", "BATCH NO.", "QTY", "TAXABLE VALUE", "PKG DETAIL"])
+
+
+def test_a_distributors_price_is_not_the_pts_but_can_be_the_billed_rate():
+    from app.services.ocr.invoice_checks import resolve_billed_rate
+    header = ["Prod.Desc. & Pack", "Batch No", "Billed Qty", "M.R.P.", "PTR", "Dist.Price", "Value INR"]
+    assert "pts" not in _map_columns(header)
+    item = _item(header, ["Retelex Kit Sales", "TPV1A24A16", "10", "43480.17", "14300.00", "12870.00",
+                          "128700.00"])
+    resolve_billed_rate([item])
+    assert _v(item, "pts") is None
+    assert _v(item, "rate") == "12870.00" and _v(item, "rate_source") == "Dist.Price"

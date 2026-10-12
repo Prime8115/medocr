@@ -413,9 +413,15 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
         if sum(bool(re.search(p, col["label"], re.I))
                for p in (r"batch|lot", r"mfg|mfd", r"exp")) >= 2
     }
+    # A pack printed over two lines, centred on its row: Troikaa sets "10X10"
+    # just above the item's line and "CAP" just below it. Each piece goes to
+    # the record it sits nearer, and the pieces are joined, not stacked.
+    pack_cols = {i for i, col in enumerate(columns)
+                 if re.search(r"pack|pkg", col["label"], re.I) and i != description_col}
     continuation_cols = {
         i for i, col in enumerate(columns)
-        if i in stacked or re.search(r"cgst|sgst|igst|utgst|gst|tax|disc|rate|%", col["label"], re.I)
+        if i in stacked or i in pack_cols
+        or re.search(r"cgst|sgst|igst|utgst|gst|tax|disc|rate|%", col["label"], re.I)
     }
 
     # Lines with no numbers of their own, waiting to be given to a record:
@@ -427,7 +433,18 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             record[description_col] = (f"{otext} {record[description_col]}" if before
                                        else f"{record[description_col]} {otext}").strip()
         for col, val in ovals.items():
-            if record[col] and "\n" not in record[col]:
+            if col in pack_cols:
+                # Only a pack the row's own line leaves empty, and only a short
+                # unit after it: a neighbouring line's "TABLETS" or "INDIA" is
+                # some other cell's spill, never part of "10'S".
+                if before:
+                    if not record[col]:
+                        record[col] = val
+                elif record[col] and len(val) <= 4 and val.isalpha():
+                    # ...a word the cell broke, joined back: "10X10TA" over "B".
+                    glue = "" if len(val) <= 2 and re.search(r"\d[A-Za-z]+$", record[col]) else " "
+                    record[col] = f"{record[col]}{glue}{val}"
+            elif not before and record[col] and "\n" not in record[col]:
                 record[col] = f"{record[col]}\n{val}"
 
     for line in lines[end + 1:]:
@@ -475,7 +492,7 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                     rows.append(lead)
                     row_tops.append(otop)
                 else:
-                    give(cells, otext, {}, before=True)
+                    give(cells, otext, {c: v for c, v in ovals.items() if c in pack_cols}, before=True)
             orphans = []
             rows.append(cells)
             row_tops.append(top)

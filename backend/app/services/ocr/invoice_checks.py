@@ -210,14 +210,38 @@ def _matching_price_field(item: dict, unit: float) -> Optional[str]:
     match scores 1.0 and wins outright.
     """
     best, best_ratio = None, 0.0
-    for field in _PRICE_FIELDS:
-        price = _num(item.get(field))
+    candidates = [(field, _num(item.get(field))) for field in _PRICE_FIELDS]
+    # ...and a price column kept under the bill's own heading: Abbott charges
+    # its "Dist.Price" 12,870.00, which is no PTS - and its PTR 14,300.00 is
+    # only 10% above it, near enough to pass for a discounted PTR.
+    candidates += [(_EXTRA + str(e.get("label")), _num(e)) for e in item.get("extras") or []
+                   if isinstance(e, dict) and _PRICE_HEADING.search(str(e.get("label") or ""))
+                   # One figure, under one heading: never a merged run of cells
+                   # ("27.64 13820.00 0.00 ..." under five headings, East India).
+                   and _ONE_FIGURE.fullmatch(str(e.get("value") or "").strip())
+                   and len(str(e.get("label") or "")) <= 25]
+    for field, price in candidates:
         if not price:
             continue
         ratio = unit / price
         if 1 - _MAX_LINE_DISCOUNT <= ratio <= _MAX_PRICE_RATIO and ratio > best_ratio:
             best, best_ratio = field, ratio
     return best
+
+
+_EXTRA = "extra:"
+_PRICE_HEADING = re.compile(r"price|rate", re.I)
+_ONE_FIGURE = re.compile(r"[\d,]+(?:\.\d+)?")
+
+
+def _price_of(item: dict, field: str) -> Optional[dict]:
+    """The leaf for a price field - or for a price kept among the extras."""
+    if field.startswith(_EXTRA):
+        label = field[len(_EXTRA):]
+        return next((e for e in item.get("extras") or []
+                     if isinstance(e, dict) and str(e.get("label")) == label), None)
+    value = item.get(field)
+    return value if isinstance(value, dict) else None
 
 
 def resolve_billed_rate(items: List[dict], labels: Optional[dict] = None) -> Optional[str]:
@@ -259,11 +283,12 @@ def resolve_billed_rate(items: List[dict], labels: Optional[dict] = None) -> Opt
                     item["rate_source"] = {"value": labels.get(field, field.upper()), "confidence": None}
                     break
         return None
-    winner = max(votes, key=lambda f: (votes[f], -_PRICE_FIELDS.index(f)))
-    label = labels.get(winner, winner.upper())
+    winner = max(votes, key=lambda f: (votes[f], -(_PRICE_FIELDS.index(f) if f in _PRICE_FIELDS
+                                                   else len(_PRICE_FIELDS))))
+    label = winner[len(_EXTRA):] if winner.startswith(_EXTRA) else labels.get(winner, winner.upper())
 
     for item in items:
-        value = item.get(winner)
+        value = _price_of(item, winner)
         if isinstance(value, dict) and value.get("value") not in (None, ""):
             item["rate"] = {"value": value.get("value"), "confidence": value.get("confidence", 1.0)}
             # A label, not a measurement: confidence None keeps it out of the

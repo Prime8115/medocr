@@ -65,7 +65,8 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
     # heads one column "Exp.date / Mfg.date" - excluding it lost every expiry.
     "expiry": (["expdate", "expiry", "exp"], []),
-    "pack": (["packing", "pack"], []),
+    # "PKG DETAIL" (Himalaya): "1 X 60".
+    "pack": (["packing", "pack", "pkgdetail", "pkg"], []),
     # Free/scheme quantity is claimed BEFORE quantity so a "F.QTY" column can
     # never be mistaken for the billed quantity.
     # "Fr. Qty." (Kanchan) normalises to "frqty", which matched nothing before.
@@ -80,7 +81,9 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
     # Lupin heads "Trade Price/Unit | TP/ PTR Value": the price, then the
     # line's value at it - never the PTR.
     "ptr": (["pricetoretailer", "retailerprice", "ptr", "tradeprice/unit"], ["%", "value", "amount"]),
-    "pts": (["pricetostockist", "stockistprice", "distributorprice", "distprice", "pts"], ["%"]),
+    # Not a "Dist. Price" (Abbott): the distributor's price is not the PTS, and
+    # a bill that prints no PTS leaves it blank. It is kept under its own name.
+    "pts": (["pricetostockist", "stockistprice", "pts"], ["%"]),
     # An explicit billed-rate column. "NIR" (Net Invoice Rate) is tried first
     # because Bharat prints it beside a bare CGST "Rate" column that would
     # otherwise win. GST rate columns are excluded outright.
@@ -91,7 +94,9 @@ _COLS: Dict[str, Tuple[List[str], List[str]]] = {
         ["%", "mrp", "ptr", "pts", "cgst", "sgst", "igst", "gst", "tax", "disc"],
     ),
     # Bare "DIS" (Marg): the line's discount rate.
-    "discount_percent": (["disc%", "discount%", "discount", "disc", "dis"], ["amt", "amount", "value", "rs"]),
+    # Never a price: "Dist.Price" (Abbott) starts with "dis" too.
+    "discount_percent": (["disc%", "discount%", "discount", "disc", "dis"],
+                         ["amt", "amount", "value", "rs", "price"]),
     # "Spl.Dis. Amount" (Ajanta) - "Dis." as well as "Disc.".
     "discount_amount": (["discamt", "discountamt", "discountamount", "discamount", "disamount", "disamt"], ["%"]),
     "cd_percent": (["cd%", "cashdisc%", "cashdiscount%"], ["amt", "amount", "rs"]),
@@ -1318,6 +1323,11 @@ def _tax_base(item: dict, rate_cell=None) -> Optional[str]:
     return amount
 
 
+_PACK_IN_NAME = re.compile(
+    r"(?<![\d.])(\d+\s*[xX]\s*\d+(?:\s*[xX]\s*\d+)?|\d+\s*['\u2019`\ufffd]?\s*[sS]\b|\d+\s*(?:T|TAB|TABS|CAP|CAPS)\b|\d+(?:\.\d+)?\s*(?:GM|G|ML|KG|LTR|L)\b)",
+    re.I)
+
+
 def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 interstate: Optional[bool] = None,
                 local: Optional[str] = None) -> Optional[dict]:
@@ -1373,6 +1383,14 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         return None
 
     item = {"description": _f(desc)}
+    # The pack at the end of the name, where the name's column says it holds
+    # both: "Product & Pack" (Micropark "...(CHOCOLATE)200GM CARTON"),
+    # "Product Description & Packs" (Hetero "...TABLETS 10'S"), "Product/Pack /
+    # UOM" (Wockhardt "GABAWOK NT 400MG 15T"). Never a strength: 400MG stays.
+    if cols.get("pack") is None and re.search(r"pack", heading, re.I):
+        packs = _PACK_IN_NAME.findall(desc)
+        if packs:
+            item["pack"] = _f(re.sub(r"[\u2019`\ufffd]", "'", packs[-1]).upper())
     if code:
         item["product_code"] = _f(code)
     if code_above:
