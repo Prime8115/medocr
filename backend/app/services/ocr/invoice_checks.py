@@ -493,12 +493,24 @@ def tds_deducted(text: str) -> List[float]:
     return out
 
 
+# A debit/credit note settled on the bill, as a small table of its own: Abbott
+# prints "DB/CR Adj:" over "Doc. No. Date Amount" and, beneath, "4134168259
+# 14.08.2025 76.00" - and spells out its total 76 less than its figures.
+_ADJUSTMENT_TABLE = re.compile(r"\b(?:db|dr)\s*/\s*cr\s*adj", re.I)
+_ADJUSTMENT_ROW = re.compile(
+    r"doc\.?\s*no\.?\s*date\s*amount[^\n]*\n[^\n]*?\b\d{6,}\s+\d{2}[./-]\d{2}[./-]\d{2,4}\s+([0-9,]+\.\d{2})\b",
+    re.I)
+
+
 def credit_notes_set_off(text: str) -> List[float]:
     """Each credit-note amount the bill deducts from its own value."""
     out = []
-    for m in _CREDIT_NOTE_SET_OFF.finditer(text or ""):
+    found = [m.group(1) for m in _CREDIT_NOTE_SET_OFF.finditer(text or "")]
+    if _ADJUSTMENT_TABLE.search(text or ""):
+        found += [m.group(1) for m in _ADJUSTMENT_ROW.finditer(text or "")]
+    for figure in found:
         try:
-            value = float(m.group(1).replace(",", ""))
+            value = float(figure.replace(",", ""))
         except ValueError:
             continue
         if value > 0:
@@ -668,6 +680,17 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                 warnings.append(
                     f"The bill spells out {_fmt(spelled)}: its value {_fmt(built_from_lines)} less "
                     f"{_fmt(tds)} TDS, which the buyer deducts and pays to the government.")
+                break
+    if words_disagrees and page_text:
+        # ...or what is left after a debit/credit note the bill settles: Abbott's
+        # figures come to 144,144.00, it adjusts note 4134168259 for 76.00, and
+        # spells out One Lakh Forty Four Thousand Sixty Eight.
+        for note in credit_notes_set_off(page_text):
+            if abs(spelled - (built_from_lines - note)) <= _WORDS_TOLERANCE:
+                words_disagrees = False
+                warnings.append(
+                    f"The bill spells out {_fmt(spelled)}: its value {_fmt(built_from_lines)} less "
+                    f"{_fmt(note)}, a debit/credit note it settles on this invoice. Please confirm it.")
                 break
 
     if stated_item_count and items and stated_item_count != len(items):

@@ -223,7 +223,7 @@
     },
     {
       "file": "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf",
-      "why": "Bills ONE product, so the old three-line floor sent it to the AI. Prints the buyer's GSTIN inside its own address block and its own only in the footer, ends a stacked header with a lone '%' line, and its total in words disagrees with what its figures add up to.",
+      "why": "Bills ONE product, so the old three-line floor sent it to the AI. Prints the buyer's GSTIN inside its own address block and its own only in the footer, ends a stacked header with a lone '%' line, and spells out its total 76.00 below its figures - the debit/credit note it settles on the bill.",
       "pages": 1,
       "copies_detected": 1,
       "item_count": 1,
@@ -232,7 +232,7 @@
       "total_reconciles": true,
       "has_ruled_table": true,
       "reconciles_gst_inclusive": true,
-      "expected_warnings": [],
+      "expected_warnings": ["a debit/credit note it settles on this invoice"],
       "supplier_name": "Abbott Healthcare Pvt. Ltd",
       "supplier_gstin": "27AAACK3935D1ZS",
       "invoice_no": "3168532914",

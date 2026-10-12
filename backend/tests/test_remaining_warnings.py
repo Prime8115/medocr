@@ -289,3 +289,20 @@ def test_a_code_printed_under_the_name_goes_to_its_own_line():
     items = _rows_from_tables([[header] + rows], {}, False, "sgst")
     assert [(_v(i, "description"), _v(i, "product_code")) for i in items] == [
         ("APTIVATE SYRUP 175 ML", "419552"), ("SOFTOVAC 100GM", "412689"), ("VOVILUP SPRAY", "512744")]
+
+
+def test_a_debit_credit_note_settled_on_the_bill_explains_its_words():
+    # Abbott: figures 144,144.00, a "DB/CR Adj" table settling note
+    # 4134168259 for 76.00, and the words spell 144,068.
+    from app.services.ocr.invoice_checks import credit_notes_set_off, reconcile_invoice
+    text = ("Due Date DB/CR Adj: SGST/UTGST :Rs. 7,722.00\n"
+            "EASTERN AGENCIES HEALTHCARE PVDoc. No. Date Amount CESSES :Rs. 0.00\n"
+            "Please send the payment 4134168259 14.08.2025 76.00 Total :Rs. 144,144.00\n")
+    assert credit_notes_set_off(text) == [76.0]
+    fields = {"invoice": {"total_amount": _leaf("144144.00"), "total_cgst_amount": _leaf("7722.00"),
+                          "total_sgst_amount": _leaf("7722.00")},
+              "line_items": [{"amount": _leaf("128700.00"), "cgst_amount": _leaf("7722.00"),
+                              "sgst_amount": _leaf("7722.00")}]}
+    report = reconcile_invoice(fields, total_in_words="144068.00", page_text=text)
+    assert report["total_in_words_disagrees"] is False
+    assert any("76.00" in w for w in report["warnings"])

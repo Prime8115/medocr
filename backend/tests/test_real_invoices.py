@@ -508,14 +508,10 @@ def test_both_parties_are_read_as_printed(case, results):
         assert (block.get("gstin") or {}).get("value") == case[f"{party}_gstin"], party
 
 
-# The only check a real invoice may fail is one where the BILL is at fault:
-# Abbott spells out 144,068 while its own figures build to 144,144.
-# ...and Abbott's words and figures disagree on its total, which waits for
-# the reviewer to choose. (Zydus's and JB's two order references do not: the
-# shop's own PO is taken - choices.py.)
-_EXPECTED_FAILED_CHECKS = {
-    "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf": {"total_in_words", "choice_total"},
-}
+# No check a real invoice may fail. (Abbott's words are 76.00 below its
+# figures because it settles a debit/credit note of 76.00 on the same bill -
+# invoice_checks.credit_notes_set_off - which is said, not flagged.)
+_EXPECTED_FAILED_CHECKS: dict = {}
 
 
 @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
