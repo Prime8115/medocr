@@ -84,6 +84,10 @@ def _labelled_date(text: str, labels: List[str]) -> Optional[str]:
     return None
 
 
+# Labels under which a bill prints the BUYER's purchase order (_ORDER_SOURCES).
+_SHOPS_OWN_PO = ("PO Number", "Contract / PO ref")
+
+
 def reference_choices(text: str, fields: dict) -> List[dict]:
     """A choice for the PO when the bill prints two different references."""
     options = []
@@ -97,11 +101,17 @@ def reference_choices(text: str, fields: dict) -> List[dict]:
     current = ((fields.get("invoice") or {}).get("po_no") or {}).get("value")
     default = next((i for i, o in enumerate(options)
                     if o["values"]["invoice.po_no"] == current), 0)
+    # The shop's own purchase order is the PO: the bill labels it so ("PO
+    # Number", "Contract / PO ref"), and the other reference is the
+    # supplier's sales order. Decided on arrival - still shown, still
+    # changeable, and a shop's remembered pick for the supplier wins.
+    own = next((i for i, o in enumerate(options) if o["label"] in _SHOPS_OWN_PO), None)
     return [{
         "id": "po", "label": "Purchase order",
         "question": "The bill prints two order references. Which one is the purchase order?",
         "fields": ["invoice.po_no", "invoice.po_date"],
-        "options": options, "default": default, "chosen": None,
+        "options": options, "default": default if own is None else own,
+        "chosen": own, "auto": own is not None,
         "remember": True, "resolves": [],
     }]
 
@@ -160,8 +170,9 @@ def apply_default(fields: dict, choices: List[dict]) -> None:
     complete before anyone has decided."""
     for choice in choices:
         option = choice["options"][choice["default"]]
+        decided = choice.get("chosen") is not None
         for path, value in option["values"].items():
-            _set(fields, path, value, confidence=0.5)
+            _set(fields, path, value, confidence=1.0 if decided else 0.5)
 
 
 def pending(meta: Optional[dict]) -> List[dict]:
@@ -180,7 +191,7 @@ def choose(payload: dict, choice_id: str, option: int, user_id: Optional[str],
     for path, value in values.items():
         _set(fields, path, value)
     choice.update({
-        "chosen": option, "by": user_id, "remembered": remembered,
+        "chosen": option, "by": user_id, "remembered": remembered, "auto": False,
         "at": datetime.now(timezone.utc).isoformat(),
     })
     return choice

@@ -59,7 +59,10 @@ def apply_remembered(db: Session, shop_id: str, doc_type: str, payload: dict) ->
     supplier. Returns the payload, changed or not. Never raises."""
     try:
         gstin = _supplier_gstin(payload)
-        pending = ch.pending(payload.get("meta"))
+        # ...including one decided automatically on arrival (the shop's own PO):
+        # what the shop chose for this supplier before comes first.
+        pending = [c for c in (payload.get("meta") or {}).get("choices") or []
+                   if c.get("chosen") is None or c.get("auto")]
         if not gstin or not pending:
             return payload
         for choice in pending:

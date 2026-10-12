@@ -45,8 +45,8 @@ def test_two_order_references_become_a_choice():
                                               "invoice.po_date": None}
     assert choice["options"][1]["values"] == {"invoice.po_no": "100178296",
                                               "invoice.po_date": "30.06.2025"}
-    # The default is what was read anyway, so nothing changes until someone decides.
-    assert choice["default"] == 1
+    # The shop's own PO is the PO: decided on arrival, still shown and changeable.
+    assert choice["default"] == 0 and choice["chosen"] == 0 and choice["auto"] is True
 
 
 def test_a_reference_printed_below_its_label_is_offered():
@@ -62,7 +62,7 @@ def test_a_reference_printed_below_its_label_is_offered():
         {"invoice.po_no": "5248", "invoice.po_date": "09.09.2025"},
         {"invoice.po_no": "30426170", "invoice.po_date": "10.09.2025"},
     ]
-    assert choice["default"] == 1
+    assert choice["chosen"] == 0   # the contract PO is the shop's own
 
 
 def test_one_reference_is_no_choice():
@@ -107,11 +107,21 @@ def test_a_read_total_that_is_neither_option_is_offered_and_kept():
 
 # --- deciding -----------------------------------------------------------------------
 
-def test_an_undecided_choice_holds_the_verdict():
+def test_the_shops_own_po_is_taken_and_holds_nothing_up():
     payload = _payload()
+    assert payload["fields"]["invoice"]["po_no"]["value"] == "GN-15912-1068-SHREE"
     v = payload["meta"]["verification"]
-    assert v["verdict"] == "needs_check"
-    assert any(c["id"] == "choice_po" for c in v["checks"])
+    assert v["verdict"] == "verified"
+    assert not any(c["id"] == "choice_po" for c in v["checks"])
+
+
+def test_an_undecided_choice_holds_the_verdict():
+    meta = {"verification": {"checks": []},
+            "choices": ch.total_choice({"total_in_words": "144068.00", "total_in_words_disagrees": True,
+                                        "total_built_from_lines": "144144.00"})}
+    ch.settle_checks(meta)
+    assert meta["verification"]["verdict"] == "needs_check"
+    assert any(c["id"] == "choice_total" for c in meta["verification"]["checks"])
 
 
 def test_choosing_fills_the_fields_and_settles_the_verdict():
@@ -152,36 +162,32 @@ def _seed(db_session, shop_id):
         s.close()
 
 
-def test_approval_waits_for_a_choice_and_the_choice_is_remembered(client, db_session):
+def test_a_shops_own_pick_for_the_supplier_beats_the_automatic_po(client, db_session):
     headers = register_and_login(client)
     shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
     doc_id = _seed(db_session, shop_id)
 
-    # Not even "acknowledging" it gets past: it is a decision.
-    refused = client.post(f"/v1/documents/{doc_id}/approve", json={"acknowledged": ["choice_po"]},
-                          headers=headers)
-    assert refused.status_code == 409
-    assert refused.json()["detail"]["open_choices"][0]["id"] == "po"
-
-    chosen = client.post(f"/v1/documents/{doc_id}/choose",
-                         json={"choice": "po", "option": 0, "remember": True}, headers=headers)
-    assert chosen.status_code == 200, chosen.text
-    body = chosen.json()
-    assert body["payload"]["fields"]["invoice"]["po_no"]["value"] == "GN-15912-1068-SHREE"
-    assert body["payload"]["meta"]["verification"]["verdict"] == "verified"
+    # Arrives decided: nothing holds approval up.
     assert client.post(f"/v1/documents/{doc_id}/approve", json={"acknowledged": []},
                        headers=headers).status_code == 200
 
-    # Zydus's next bill arrives already decided - and still shows the choice.
+    # This shop posts Zydus's own order number instead - and says so once.
+    doc_id = _seed(db_session, shop_id)
+    chosen = client.post(f"/v1/documents/{doc_id}/choose",
+                         json={"choice": "po", "option": 1, "remember": True}, headers=headers)
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["payload"]["fields"]["invoice"]["po_no"]["value"] == "100178296"
+
+    # Zydus's next bill arrives with the shop's pick, not the automatic one.
     from app.services.supplier_choices import apply_remembered
     s = db_session()
     try:
         nxt = apply_remembered(s, shop_id, "invoice", _payload())
     finally:
         s.close()
-    assert nxt["fields"]["invoice"]["po_no"]["value"] == "GN-15912-1068-SHREE"
+    assert nxt["fields"]["invoice"]["po_no"]["value"] == "100178296"
     choice = nxt["meta"]["choices"][0]
-    assert choice["chosen"] == 0 and choice["remembered"] is True
+    assert choice["chosen"] == 1 and choice["remembered"] is True and choice["auto"] is False
     assert nxt["meta"]["verification"]["verdict"] == "verified"
 
 
@@ -189,7 +195,7 @@ def test_another_shop_does_not_inherit_the_decision(client, db_session):
     headers = register_and_login(client)
     shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
     doc_id = _seed(db_session, shop_id)
-    client.post(f"/v1/documents/{doc_id}/choose", json={"choice": "po", "option": 0}, headers=headers)
+    client.post(f"/v1/documents/{doc_id}/choose", json={"choice": "po", "option": 1}, headers=headers)
 
     from app.services.supplier_choices import apply_remembered
     s = db_session()
@@ -197,7 +203,8 @@ def test_another_shop_does_not_inherit_the_decision(client, db_session):
         other = apply_remembered(s, "some-other-shop", "invoice", _payload())
     finally:
         s.close()
-    assert other["meta"]["choices"][0]["chosen"] is None
+    # It gets the automatic answer - its own PO - not the first shop's pick.
+    assert other["meta"]["choices"][0]["chosen"] == 0 and other["meta"]["choices"][0]["auto"] is True
 
 
 def test_a_choice_that_does_not_exist_is_refused(client, db_session):

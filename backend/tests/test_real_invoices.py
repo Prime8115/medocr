@@ -510,15 +510,11 @@ def test_both_parties_are_read_as_printed(case, results):
 
 # The only check a real invoice may fail is one where the BILL is at fault:
 # Abbott spells out 144,068 while its own figures build to 144,144.
-# ...and the bills that give two answers to one field wait for the reviewer to
-# choose: Zydus prints a "PO Number" and an "Order No"; Abbott's words and
-# figures disagree on its total.
+# ...and Abbott's words and figures disagree on its total, which waits for
+# the reviewer to choose. (Zydus's and JB's two order references do not: the
+# shop's own PO is taken - choices.py.)
 _EXPECTED_FAILED_CHECKS = {
     "ABBOTT HEALTHCARE PRIVATE LIMITED.pdf": {"total_in_words", "choice_total"},
-    "Zydus PDF(1).pdf": {"choice_po"},
-    # JB prints its own "Ord. Ref. No." and, under a second label, the
-    # customer's "Contract Ref PO".
-    "J.B.CHEMICALS & PHARMA LIMITED (PHARMACARE).pdf": {"choice_po"},
 }
 
 
