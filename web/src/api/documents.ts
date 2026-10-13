@@ -127,6 +127,7 @@ export interface SupplierCoverage {
   pipelines: Record<string, number>;
   gap_filled_documents: number;
   learned_used_documents: number;
+  lessons_used_documents?: number;
   learned_labels: number;
   remembered_choices: number;
   last_seen: string | null;

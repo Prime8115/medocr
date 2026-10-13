@@ -85,3 +85,22 @@ def used(field: str, heading: str, kind: str) -> None:
 
 def applied() -> list:
     return list(_APPLIED.get() or [])
+
+
+def prompt_note() -> str:
+    """What this shop has taught us about the current supplier's columns, as
+    a note for the AI's instructions - for a bill the free reader handed on
+    (its supplier is known by then). Empty when there is nothing to say."""
+    gstin = _CURRENT.get()
+    if not gstin or DISABLED.get():
+        return ""
+    lessons = LESSONS.get().get(gstin) or {}
+    printed = lessons.get("printed") or {}
+    said = [f'the column headed "{printed.get(h, h)}" is the {field.replace("_", " ")}'
+            for h, field in (lessons.get("is") or {}).items()]
+    said += [f'the column headed "{printed.get(h, h)}" is NOT the {field.replace("_", " ")}'
+             for h, fields in (lessons.get("not") or {}).items() for field in fields]
+    if not said:
+        return ""
+    return ("\n\nThis supplier's bills, as the pharmacy's reviewers have corrected them before: "
+            + "; ".join(said) + ". Read each line's fields accordingly.")

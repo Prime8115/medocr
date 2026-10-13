@@ -78,7 +78,7 @@ def coverage(documents: Iterable, edits: Iterable, labels: Iterable, choices: It
             "supplier_gstin": gstin or None, "supplier_name": name, "documents": 0,
             "verified_on_arrival": 0, "edited_documents": 0, "last_seen": None,
             "_corrected": Counter(), "_missed": Counter(), "_failed": Counter(),
-            "_pipelines": Counter(), "_gap": 0, "_learned_used": 0, "_edited": set(),
+            "_pipelines": Counter(), "_gap": 0, "_learned_used": 0, "_lessons": 0, "_edited": set(),
         })
         row["documents"] += 1
         created = getattr(doc, "created_at", None)
@@ -100,6 +100,8 @@ def coverage(documents: Iterable, edits: Iterable, labels: Iterable, choices: It
         row["_pipelines"][first.get("pipeline") or meta.get("pipeline") or "unknown"] += 1
         row["_gap"] += 1 if first.get("gap_filled") else 0
         row["_learned_used"] += 1 if first.get("learned_filled") else 0
+        # Read with the columns this shop's corrections taught (supplier_profile.py).
+        row["_lessons"] += 1 if meta.get("lessons_applied") else 0
 
     for edit in edits:
         ident = by_doc.get(getattr(edit, "target", None))
@@ -137,6 +139,7 @@ def coverage(documents: Iterable, edits: Iterable, labels: Iterable, choices: It
             "pipelines": dict(row["_pipelines"]),
             "gap_filled_documents": row["_gap"],
             "learned_used_documents": row["_learned_used"],
+            "lessons_used_documents": row["_lessons"],
             "learned_labels": learned.get(row["supplier_gstin"], 0) if row["supplier_gstin"] else 0,
             "remembered_choices": remembered.get(row["supplier_gstin"], 0) if row["supplier_gstin"] else 0,
             "last_seen": row["last_seen"],

@@ -167,3 +167,16 @@ def test_lessons_can_be_seen_and_forgotten(client, db_session):
     assert client.get("/v1/documents/suppliers/lessons", headers=headers).json()["lessons"] == []
     # Another shop cannot touch it.
     assert client.delete(f"/v1/documents/suppliers/lessons/{lesson_id}", headers=headers).status_code == 404
+
+
+def test_the_ai_is_told_a_known_suppliers_columns():
+    from app.services.ocr import lessons
+    tokens = lessons.start({SUPPLIER: {"is": {"retailerrate": "ptr"}, "not": {"tpptrvalue": ["ptr"]},
+                                       "printed": {"retailerrate": "RETAILER RATE", "tpptrvalue": "TP/ PTR Value"}}})
+    try:
+        assert lessons.prompt_note() == ""            # supplier not known yet
+        lessons.choose(f"GSTIN: {SUPPLIER}")
+        note = lessons.prompt_note()
+        assert '"RETAILER RATE" is the ptr' in note and '"TP/ PTR Value" is NOT the ptr' in note
+    finally:
+        lessons.finish(tokens)

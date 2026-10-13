@@ -229,3 +229,40 @@ def test_the_supplier_report_is_per_shop(client, db_session):
     _seed(db_session, shop_id, _payload())
     other = register_and_login(client, email="other@shop.com", shop="Shop B")
     assert client.get("/v1/documents/suppliers", headers=other).json()["suppliers"] == []
+
+
+def test_an_approval_confirms_what_the_ai_filled_in_and_teaches_it(client, db_session):
+    """The AI filled the LR from the bill's text; the reviewer approved it as it
+    was. That is a confirmation - this supplier's next bill is read there
+    without asking the AI."""
+    headers = register_and_login(client)
+    shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
+    payload = _payload(lr_no="DK778812")
+    payload["meta"]["gap_filled"] = [{"path": "invoice.lr_no", "value": "DK778812"}]
+    doc_id = _seed(db_session, shop_id, payload)
+
+    r = client.post(f"/v1/documents/{doc_id}/approve", json={"acknowledged": []}, headers=headers)
+    assert r.status_code == 200, r.text
+    s = db_session()
+    try:
+        row = s.query(SupplierLabel).filter_by(shop_id=shop_id, field="invoice.lr_no").one()
+        assert row.supplier_gstin == GSTIN and "Docket" in row.label
+    finally:
+        s.close()
+    nxt = _next_bill(db_session, shop_id)
+    assert nxt["fields"]["invoice"]["lr_no"]["value"] == "DK901122"
+
+
+def test_an_approval_of_a_changed_ai_value_teaches_nothing_from_it(client, db_session):
+    headers = register_and_login(client)
+    shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
+    payload = _payload(lr_no="SOMETHING-ELSE")
+    payload["meta"]["gap_filled"] = [{"path": "invoice.lr_no", "value": "DK778812"}]
+    doc_id = _seed(db_session, shop_id, payload)
+    assert client.post(f"/v1/documents/{doc_id}/approve", json={"acknowledged": []},
+                       headers=headers).status_code == 200
+    s = db_session()
+    try:
+        assert s.query(SupplierLabel).filter_by(shop_id=shop_id).count() == 0
+    finally:
+        s.close()

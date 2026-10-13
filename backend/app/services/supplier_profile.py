@@ -36,7 +36,8 @@ def lessons_for_shop(db: Session, shop_id: str) -> Dict[str, dict]:
     for every active lesson of this shop."""
     out: Dict[str, dict] = {}
     for row in db.query(SupplierColumnLesson).filter_by(shop_id=shop_id, active=True):
-        entry = out.setdefault(row.supplier_gstin, {"is": {}, "not": {}})
+        entry = out.setdefault(row.supplier_gstin, {"is": {}, "not": {}, "printed": {}})
+        entry["printed"][row.heading] = row.heading_printed or row.heading
         if row.kind == "is":
             entry["is"][row.heading] = row.field
         else:

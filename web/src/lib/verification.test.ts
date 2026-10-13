@@ -86,3 +86,15 @@ describe('choices', () => {
     expect(pendingChoices(decided)).toEqual([]);
   });
 });
+
+describe('filledNotes - learned columns', () => {
+  it('names the columns read as the shop taught for this supplier', async () => {
+    const { filledNotes } = await import('./verification');
+    const notes = filledNotes({
+      meta: { lessons_applied: [{ field: 'ptr', heading: 'RETAILER RATE', kind: 'is' }, { field: 'pts', heading: 'X', kind: 'not' }] },
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('Learned from your earlier corrections');
+    expect(notes[0]).toContain('RETAILER RATE');
+  });
+});

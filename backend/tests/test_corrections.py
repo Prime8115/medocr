@@ -67,3 +67,35 @@ def test_an_edit_records_what_was_read_what_was_put_and_where_it_came_from(clien
         s.close()
     assert (row.field, row.line, row.value_read, row.value_corrected) == ("line.ptr", 0, "9785.71", "489.29")
     assert row.source == "TP/ PTR Value" and row.supplier_gstin == GSTIN and row.pipeline == "pdf_parser"
+
+
+def test_the_learning_report_counts_only_shops_that_share(client, db_session):
+    import importlib.util
+    import pathlib
+
+    spec = importlib.util.spec_from_file_location(
+        "learning_report", pathlib.Path(__file__).resolve().parents[1] / "scripts" / "learning_report.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    sharing = register_and_login(client)
+    assert client.put("/v1/auth/shop/share-corrections", json={"share": True}, headers=sharing).status_code == 200
+    shop_a = client.get("/v1/auth/me", headers=sharing).json()["shop_id"]
+    private = register_and_login(client, email="other@shop.com", shop="Shop B")
+    shop_b = client.get("/v1/auth/me", headers=private).json()["shop_id"]
+    from app.models.document import Document
+    s = db_session()
+    try:
+        for shop, gstin in ((shop_a, "27AAACI9822K1Z9"), (shop_a, GSTIN), (shop_b, GSTIN)):
+            doc = Document(shop_id=shop, doc_type="invoice", status="needs_review", payload={})
+            s.add(doc)
+            s.flush()
+            s.add(corrections.DocumentCorrection(shop_id=shop, document_id=doc.id, supplier_gstin=gstin,
+                                                 field="line.quantity", line=0, value_read="10",
+                                                 value_corrected="12", source="Qty.Sale"))
+        s.commit()
+        [row] = mod.report(s, days=7)
+    finally:
+        s.close()
+    assert (row["field"], row["heading"], row["corrections"], row["suppliers"], row["shops"]) == \
+        ("line.quantity", "Qty.Sale", 2, 2, 1)

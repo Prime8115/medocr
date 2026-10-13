@@ -138,7 +138,13 @@ export interface FilledField {
  * this supplier. Both are held at lower confidence; this says which and why.
  */
 export function filledNotes(payload: unknown): string[] {
-  const meta = (payload as { meta?: { gap_filled?: FilledField[]; learned_filled?: FilledField[] } } | null)?.meta;
+  const meta = (payload as {
+    meta?: {
+      gap_filled?: FilledField[];
+      learned_filled?: FilledField[];
+      lessons_applied?: { field: string; heading: string; kind: string }[];
+    };
+  } | null)?.meta;
   const notes: string[] = [];
   const ai = Array.isArray(meta?.gap_filled) ? meta!.gap_filled! : [];
   const learned = Array.isArray(meta?.learned_filled) ? meta!.learned_filled! : [];
@@ -148,6 +154,15 @@ export function filledNotes(payload: unknown): string[] {
   if (learned.length) {
     notes.push(
       `Read where a reviewer showed us for this supplier: ${learned.map((f) => fieldLabel(f.path)).join(', ')}.`,
+    );
+  }
+  // Columns read as this shop's corrections taught for the supplier.
+  const taught = (Array.isArray(meta?.lessons_applied) ? meta!.lessons_applied! : []).filter((l) => l.kind === 'is');
+  if (taught.length) {
+    notes.push(
+      `Learned from your earlier corrections for this supplier: ${taught
+        .map((l) => `${fieldLabel(`line_items.${l.field}`)} from “${l.heading}”`)
+        .join(', ')}.`,
     );
   }
   return notes;

@@ -86,6 +86,27 @@ def shop_profile(db: Session = Depends(get_db), user: User = Depends(get_current
     return {"name": shop.name if shop else None, "gstins": own_gstins(db, user.shop_id), "stated": stated}
 
 
+class ShareCorrections(BaseModel):
+    share: bool
+
+
+@router.put("/shop/share-corrections")
+def set_share_corrections(body: ShareCorrections, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """The owner's consent for this shop's corrections to improve the reader for
+    every shop (scripts/learning_report.py). Off until the owner turns it on."""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the shop owner can change this.")
+    shop = db.get(Shop, user.shop_id)
+    settings = dict(shop.settings or {})
+    settings["share_corrections"] = bool(body.share)
+    shop.settings = settings
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="shop.share_corrections_set",
+                    target=user.shop_id, detail={"share": bool(body.share)}))
+    db.commit()
+    return {"share_corrections": bool(body.share)}
+
+
 @router.put("/shop/gstins")
 def set_shop_gstins(body: ShopGstins, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The owner states the shop's GSTINs. Invalid ones (wrong check digit) are refused."""

@@ -21,6 +21,8 @@ figures have to reach the shop's accounts either way.
 import re
 from typing import Dict, List, Optional, Tuple
 
+from app.services.ocr.field_dictionary import DATE_LABELS, REFERENCE_LABELS, TOTAL_LABELS
+
 # A field is (list of label spellings, value pattern). Labels are matched
 # case-insensitively with flexible punctuation and spacing.
 # A date as Indian invoices print it, including the named-month form Menarini
@@ -102,63 +104,21 @@ def _labelled(text: str, labels: List[str], value: str) -> Optional[str]:
     return None
 
 
+
+
+
+
+# Each reference's wordings are in field_dictionary.py; here, what its value
+# looks like.
 _REFERENCES: Dict[str, Tuple[List[str], str]] = {
-    # "IRN No.: DDE3F8..." (Bharat), "IRN No. af84ef..." (Overseas): the "No."
-    # stopped a bare "IRN" label reaching the value.
-    "irn": (["IRN No", "IRN Number", "IRN"], r"([A-Fa-f0-9]{16,64})"),
-    "eway_bill_no": (["E Way Bill No", "EwayBill No", "E Way Bill", "Eway Bill"], r"(\d{10,16})"),
-    # The number before its date or vehicle: "LR No / Dt : 49853" (Cipla Health),
-    # "L.R.No/Date/: 772463" (Micropark), "LR No./Vehicle No. : 2069083"
-    # (Zuventus); "L.R.Number : LOCAL" (Raptakos, Sanofi).
-    "lr_no": (["LR No Dt", "LR No Date", "L R No Date", "LR No Vehicle No", "LR Number", "L R Number", "LR No", "L R No", "LR RR No",
-               "LR/RR No", "Lorry Receipt No"], _TOKEN),
-    # A transporter's name first; the mode only where no name is printed -
-    # Overseas states just "Transportation Mode : BY HAND DELIVERY".
-    "transport": (["Transport Name", "Transporter", "Name of Carrier", "Carrier",
-                   "Transportation Mode", "Transport Mode", "Mode of Transport", "Transport"],
-                  r"([A-Za-z][A-Za-z0-9 .,&\-']{2,48})"),
-    # The shop's own order reference before the supplier's order number: "Customer
-    # PO : 347" (Eris), "Cust. PO Ref. :" (Lupin), "Cust. Order Ref :5105" (Mylan,
-    # Piramal), "Party Order No. : 4779" (Medley), "Order Reference No.: MAIL
-    # ORDER" (Cipla Health), "PO No / Ref no: WA" (Dr. Krich), "Order Ref. & Date
-    # 5336" (Centaur) - then the order number itself, "Order number & Date:"
-    # (Sun).
-    "po_no": (["Customer PO", "CustomerPO", "Cust PO Ref", "Cust Order Ref", "Customer Ord No",
-               "Party Order No", "Order Reference No", "PO No Ref no", "Order Ref Date", "PO No", "P O No",
-               "Order No", "Purchase Order No", "Ord Ref No", "Order number Date"],
-              _ORDER_TOKEN),
+    "irn": (REFERENCE_LABELS["irn"], r"([A-Fa-f0-9]{16,64})"),
+    "eway_bill_no": (REFERENCE_LABELS["eway_bill_no"], r"(\d{10,16})"),
+    "lr_no": (REFERENCE_LABELS["lr_no"], _TOKEN),
+    "transport": (REFERENCE_LABELS["transport"], r"([A-Za-z][A-Za-z0-9 .,&\-']{2,48})"),
+    "po_no": (REFERENCE_LABELS["po_no"], _ORDER_TOKEN),
 }
-
-_DATES: Dict[str, List[str]] = {
-    # ...and the Marg "DUE DT 20-09-2025", Coxswain's "Payment Day :", Parshva's "Due :".
-    "due_date": ["Due Date", "Payment Due", "Due On", "Due Dt", "Payment Day", "Due"],
-    # Kanchan prints "LR/RR No. : 2035873 Date : 11/07/2025" - the number sits
-    # between the label and the date, so a plain "LR Date" never matches.
-    # Menarini prints "L.R. No. : LOCAL Date : 22 Sep 25".
-    "lr_date": ["LR Date", "L R Date", "LR No Dt", "LR Dt", "LR RR No", "LR/RR No",
-                "LR No", "L R No", "L.R. Date", "L.R. No", "LR/RR Date"],
-    "po_date": ["PO Date", "P O Date", "Ord Ref Date", "Order Date", "Order No",
-                "PO No", "P O No", "Cust Ord Rec Dt", "Cust Ord Dt", "Cust.Ord.Rec.Dt", "Cust Ord No"],
-}
-
-_TOTALS: Dict[str, List[str]] = {
-    "total_gst_amount": ["Total GST Amount", "Total GST Amt", "Total GST", "GST Total",
-                         "Total Tax Amount", "Total Tax"],
-    "total_taxable_amount": ["Total Taxable Value", "Total Taxable Amount", "Total Taxable", "Total Amount Before Tax",
-                             "Taxable Value Total", "Basic Amount", "Total Basic"],
-    "total_discount_amount": ["Total Discount Amount", "Total Discount Amt", "Total Discount", "Discount Total", "SD Discount",
-                              "Total Disc Amt", "Total Disc", "Less Discount", "Less Special Disc", "Less Scheme Disc", "Less Disc",
-                              # The Marg summary's "DISC AMOUNT 1374.28" / "DIS AMT. 111.08" (Aurowin,
-                              # Ceptor, Gobinda); "Trade Discount 14,193.24" (Prabodhan); "Less :
-                              # Trade Disc. -15947.15" (Lupin).
-                              "Disc Amount", "Dis Amt", "Trade Discount", "Less Trade Disc"],
-    "total_cgst_amount": ["Total CGST Amt", "Total CGST Amount", "Total CGST", "CGST Total"],
-    "total_sgst_amount": ["Total SGST Amt", "Total SGST Amount", "Total SGST", "SGST Total",
-                          "Total UTGST Amt"],
-    "total_igst_amount": ["Total IGST Amt", "Total IGST Amount", "Total IGST", "IGST Total"],
-    "total_utgst_amount": ["Total UTGST Amount", "Total UTGST", "UTGST Total"],
-}
-
+_DATES = DATE_LABELS
+_TOTALS = TOTAL_LABELS
 
 # Where a value ends because the next label has begun. The two party columns
 # flatten into one line of text, so a field's value runs straight into whatever

@@ -39,113 +39,12 @@ from app.services.ocr.invoice_header import (
 from app.services.ocr.invoice_checks import SUMMED_CONFIDENCE, line_arithmetic_holds
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout, without_watermark
 from app.services.ocr import lessons
+from app.services.ocr.field_dictionary import LINE_COLUMNS
 
 log = logging.getLogger(__name__)
 
-# field -> (keywords in PREFERENCE order, exclude keywords). Header cells are
-# normalized to lowercase with spaces/newlines/dots removed before matching.
-# Order of this dict matters: earlier fields claim their column first.
-_COLS: Dict[str, Tuple[List[str], List[str]]] = {
-    "description": (
-        ["productname", "itemname", "description", "proddesc", "particulars", "product",
-         "desc", "item", "goods", "medicine"],
-        ["hsn", "code", "qty", "rate", "amount"],
-    ),
-    "hsn": (["hsncode", "hsn"], []),
-    "product_code": (["productcode", "prdcode", "itemcode", "prodcode", "code"], ["hsn"]),
-    "manufacturer": (["mfgname", "manufacturername", "manufacturer", "mfgco", "company"], ["code", "date", "cd"]),
-    # Excludes "exp": Bharat heads one column "Exp.date / Mfg.date", and the
-    # expiry is the field a pharmacist actually needs, so it claims that column.
-    # Excludes "batch" too: Menarini stacks "Batch No" over "Mfg.Date" in ONE
-    # column, where the record line carries the BATCH and the wrapped line below
-    # carries the date. Letting mfg_date claim it left every batch number blank.
-    "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp", "batch"]),
-    # Not "Billed Qty / UoM" (Piramal): the quantity's column, its unit beside it.
-    "uom": (["uom", "unitofmeasure"], ["qty"]),
-    "batch_no": (["batchno", "batch", "lotno", "lot", "bno", "btno"], ["bill", "sr", "inv"]),
-    # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
-    # heads one column "Exp.date / Mfg.date" - excluding it lost every expiry.
-    "expiry": (["expdate", "expiry", "exp"], []),
-    # "PKG DETAIL" (Himalaya): "1 X 60".
-    "pack": (["packing", "pack", "pkgdetail", "pkg"], []),
-    # Free/scheme quantity is claimed BEFORE quantity so a "F.QTY" column can
-    # never be mistaken for the billed quantity.
-    # "Fr. Qty." (Kanchan) normalises to "frqty", which matched nothing before.
-    # "D.Qty" (IPCA): the deal quantity - goods given free on the scheme.
-    # Not "Bonus Disc." (Medley): a discount rate, not free goods.
-    "free_quantity": (["freeqty", "frqty", "schemeqty", "dealqty", "free", "fqty", "scheme", "bonus"],
-                      ["%", "value", "amount", "disc"]),
-    # "Billed Qty." before a bare "qty": Cipla prints "Loose Qty" (mostly empty)
-    # first, and its billed quantity is the one the stock and the amount follow.
-    "quantity": (["quantity", "billedqty", "billqty", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
-    "mrp": (["mrp"], ["%"]),
-    # Lupin heads "Trade Price/Unit | TP/ PTR Value": the price, then the
-    # line's value at it - never the PTR.
-    "ptr": (["pricetoretailer", "retailerprice", "ptr", "tradeprice/unit"], ["%", "value", "amount"]),
-    # Not a "Dist. Price" (Abbott): the distributor's price is not the PTS, and
-    # a bill that prints no PTS leaves it blank. It is kept under its own name.
-    "pts": (["pricetostockist", "stockistprice", "pts"], ["%"]),
-    # An explicit billed-rate column. "NIR" (Net Invoice Rate) is tried first
-    # because Bharat prints it beside a bare CGST "Rate" column that would
-    # otherwise win. GST rate columns are excluded outright.
-    "rate": (
-        ["nir", "netinvoicerate", "billrate", "netrate", "purchaserate", "salerate",
-         "unitprice", "prate", "rate"],
-        # ...and never a "Discount Rate" (Cipla Health): the discount's percentage.
-        ["%", "mrp", "ptr", "pts", "cgst", "sgst", "igst", "gst", "tax", "disc"],
-    ),
-    # Bare "DIS" (Marg): the line's discount rate.
-    # Never a price: "Dist.Price" (Abbott) starts with "dis" too.
-    "discount_percent": (["disc%", "discount%", "discount", "disc", "dis"],
-                         ["amt", "amount", "value", "rs", "price"]),
-    # "Spl.Dis. Amount" (Ajanta) - "Dis." as well as "Disc.".
-    "discount_amount": (["discamt", "discountamt", "discountamount", "discamount", "disamount", "disamt"], ["%"]),
-    "cd_percent": (["cd%", "cashdisc%", "cashdiscount%"], ["amt", "amount", "rs"]),
-    "cd_amount": (["cdamt", "cdamount", "cashdiscamt", "cashdiscountamt"], ["%"]),
-    "wp_percent": (["wp%", "wpdisc%"], ["amt", "amount"]),
-    "wp_amount": (["wpamt", "wpamount", "wpvalue"], ["%"]),
-    "scheme": (["schemedesc", "schemedescription", "schemename", "scheme"], ["%", "qty", "amt", "value"]),
-    "scheme_value": (["schemevalue", "schemeamt", "schemeamount"], ["%"]),
-    # "Sale Value" (Overseas) is the line BEFORE its discount - a gross figure.
-    # Left to `amount`, it overstated every line by the discount.
-    # ...and Dr. Reddy's "Total Amount (base price)", before its discount and tax.
-    "gross_amount": (["grossamount", "grossamt", "grossvalue", "grosstotal", "totalbasic", "gross",
-                      "salevalue", "baseprice", "basevalue", "ptrvalue"], ["%"]),
-    # "Total Amount" (Menarini) is the line INCLUDING tax - a net amount, not
-    # the taxable one. Excluded from anything taxable so the column the bill
-    # actually sums still goes to `amount`.
-    "net_amount": (["netamount", "netamt", "netvalue", "totalamount"], ["%", "taxable"]),
-    "utgst_percent": (["utgst%", "utgstrate"], ["amt", "amount"]),
-    "utgst_amount": (["utgstamt", "utgstamount"], ["%", "rate"]),
-    "scheme_percent": (["sch%", "scheme%", "schemediscount"], ["amt", "qty"]),
-    "total_quantity": (["totalqty", "totqty", "netqty"], ["%", "free"]),
-    # Tax columns are captured per head so the amounts reach the accounts, and so
-    # a zero-rated line can be told apart from an unreadable one.
-    "cgst_percent": (["cgst%", "cgstrate"], ["amt", "amount", "rs/"]),
-    "cgst_amount": (["cgstamt", "cgstamount"], ["%", "rate"]),
-    # Not "SGST % Rs. / %" (Piramal): the tax and its rate in one cell, split
-    # like every merged tax cell (_gst_columns).
-    "sgst_percent": (["sgst%", "sgstrate", "utgst%"], ["amt", "amount", "rs/"]),
-    "sgst_amount": (["sgstamt", "sgstamount", "utgstamt"], ["%", "rate"]),
-    "igst_percent": (["igst%", "igstrate"], ["amt", "amount", "rs/"]),
-    "igst_amount": (["igstamt", "igstamount"], ["%", "rate"]),
-    # The net/taxable column is what the bill actually sums; a plain "Amount"
-    # column (Kanchan) is the figure BEFORE the line discount.
-    # The taxable value - what GST is charged on, and what the lines are summed
-    # against. `net_amount` and `gross_amount` are separate columns above, so
-    # they are no longer allowed to stand in for this one.
-    "amount": (
-        # Bare "TAXABLE" (the Marg-style ERP layout: "AMOUNT | DISC | TAXABLE")
-        # names the taxable value; its "AMOUNT" is the figure before discount.
-        ["taxableamount", "taxablevalue", "taxableamt", "taxable", "assessablevalue", "assessable",
-         "amount", "value", "total"],
-        # A tax column is not the line's own amount, and neither is a discount
-        # column. Overseas prints "Disc Value" and "CGST Amount" beside its
-        # taxable "Trans. Value"; without these, the sum of the invoice was the
-        # sum of its discounts.
-        ["%", "gross", "net", "disc", "disamount", "disamt", "cgst", "sgst", "igst", "utgst"],
-    ),
-}
+# The column wordings live in field_dictionary.py (LINE_COLUMNS).
+_COLS = LINE_COLUMNS
 
 _COPY_MARKERS = (
     # East India prints "First Copy" / "Second Copy : Transporter" / ...: all

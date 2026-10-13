@@ -852,10 +852,42 @@ def approve_document(
             payload.setdefault("meta", {})["inventory_linked"] = linked
         doc.payload = payload
 
-    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.approved", target=doc.id))
+    confirmed = _learn_from_approval(db, user, doc) if doc.doc_type == "invoice" else []
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.approved", target=doc.id,
+                    detail={"learned": confirmed} if confirmed else None))
     db.commit()
     db.refresh(doc)
     return doc
+
+
+def _learn_from_approval(db: Session, user: User, doc: Document) -> list:
+    """An approval confirms the values the AI filled in from the bill's text
+    (meta.gap_filled) and the reviewer left as they were - as good as the
+    reviewer typing them. Where this supplier prints each is learned, so its
+    next bill is read there without asking the AI. Never fails an approval."""
+    import copy
+
+    try:
+        payload = doc.payload or {}
+        meta = payload.get("meta") or {}
+        fields = payload.get("fields") or {}
+        kept = []
+        for filled in meta.get("gap_filled") or []:
+            section, _, key = str(filled.get("path") or "").partition(".")
+            now = ((fields.get(section) or {}).get(key) or {}).get("value")
+            if now is not None and str(now).strip() == str(filled.get("value") or "").strip():
+                kept.append((section, key))
+        if not kept:
+            return []
+        # As if the reviewer had typed each one into an empty field.
+        before = copy.deepcopy(payload)
+        for section, key in kept:
+            before.setdefault("fields", {}).setdefault(section, {})[key] = {"value": None, "confidence": None}
+        with db.begin_nested():
+            return learn_from_edit(db, user.shop_id, before, fields, user.id)
+    except Exception:  # noqa: BLE001
+        log.exception("document %s: could not learn from its approval", doc.id)
+        return []
 
 
 class PushResult(DocumentOut):

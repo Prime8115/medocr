@@ -109,10 +109,13 @@ export default function Suppliers() {
                     <td style={{ padding: '12px 16px' }}><Counts items={r.corrected_fields} /></td>
                     <td style={{ padding: '12px 16px' }}><Counts items={r.missed_fields} /></td>
                     <td style={{ padding: '12px 16px', fontSize: 13 }}>
-                      {r.learned_labels > 0 || r.remembered_choices > 0 ? (
+                      {r.learned_labels > 0 || r.remembered_choices > 0 || (r.lessons_used_documents ?? 0) > 0 ? (
                         <>
                           {r.learned_labels > 0 && <div>{r.learned_labels} field location(s)</div>}
                           {r.remembered_choices > 0 && <div>{r.remembered_choices} choice(s)</div>}
+                          {(r.lessons_used_documents ?? 0) > 0 && (
+                            <div>{r.lessons_used_documents} bill(s) read with lessons</div>
+                          )}
                         </>
                       ) : (
                         <span className="text-muted">—</span>

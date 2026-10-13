@@ -408,6 +408,12 @@ class GeminiProvider(OCRProvider):
         model_cls = FIELDS_MODEL.get(doc_type)
         if prompt is None or model_cls is None:
             raise OCRError(f"Unsupported doc_type: {doc_type!r}")
+        if doc_type == "invoice":
+            # What the shop has taught us about this supplier's columns, when
+            # the free reader already knows who the supplier is (lessons.py).
+            from app.services.ocr import lessons
+
+            prompt = prompt + lessons.prompt_note()
 
         from google.genai import types
 
