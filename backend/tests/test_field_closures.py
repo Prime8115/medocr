@@ -80,3 +80,23 @@ def test_carrier_name_cut_where_the_next_thing_starts():
     assert _carrier_name("REDSUN 12386.90", "") == "REDSUN"
     assert _carrier_name("SIDDHI ROADWAYS LOCATION", "Transport : SIDDHI ROADWAYS LOCATION: PUNE") == "SIDDHI ROADWAYS"
     assert _carrier_name("BY HAND DELIVERY  LR No 5", "") == "BY HAND DELIVERY"
+
+
+def _item(header, row):
+    from app.services.ocr.invoice_parser import _build_item, _gst_columns, _map_columns
+
+    return _build_item(row, _map_columns(header), header, _gst_columns(header))
+
+
+def test_unit_printed_in_the_quantity_cell():
+    item = _item(["Product", "Batch", "Qty / UoM", "Rate", "Taxable Value"],
+                 ["MED 1", "B1", "10 BT", "100.00", "1000.00"])
+    assert item["uom"]["value"] == "BT"
+
+
+def test_free_goods_from_a_quantity_break_up():
+    # Troikaa: "Qty.Sale 11" with "Qty Break Up (10+1)" - ten billed, one free.
+    item = _item(["Product", "Batch", "Qty", "Qty Break Up", "Rate", "Taxable Value"],
+                 ["MED 1", "B1", "11", "(10+1)", "100.00", "1000.00"])
+    assert item["free_quantity"]["value"] == "1"
+    assert item["quantity"]["value"] == "10"
