@@ -88,7 +88,7 @@ describe('choices', () => {
 });
 
 describe('filledNotes - learned columns', () => {
-  it('names the columns read as the shop taught for this supplier', async () => {
+  test('names the columns read as the shop taught for this supplier', async () => {
     const { filledNotes } = await import('./verification');
     const notes = filledNotes({
       meta: { lessons_applied: [{ field: 'ptr', heading: 'RETAILER RATE', kind: 'is' }, { field: 'pts', heading: 'X', kind: 'not' }] },
