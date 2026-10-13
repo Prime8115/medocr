@@ -389,3 +389,54 @@ def test_a_group_rows_rate_reaches_its_lines():
     _rates_from_group_rows(items, text, interstate=False)
     assert [_v(i, "gst_percent") for i in items] == ["12", "18"]
     assert _v(items[0], "net_amount") is None    # its "Total Amount" was before the tax
+
+
+# --- PO, LR, due date, PAN and licences under their many labels ---------------------
+
+def test_the_shops_order_reference_under_its_many_labels():
+    from app.services.ocr.invoice_header import extract_references as refs
+    assert refs("State : Maharashtra Code : 27 Customer PO : 347")["po_no"] == "347"
+    assert refs("Food Licence No. : 1152 Order No : `3263` Order Date :")["po_no"] == "3263"
+    assert refs("Cust. PO Ref. : GN-3528-926-0744-EASTE")["po_no"] == "GN-3528-926-0744-EASTE"
+    # The shop's own order before the supplier's sales order.
+    assert refs("Party Order No. : 4779 Party Order Date : 26.08.2025\nOrder No : 6103134496")["po_no"] == "4779"
+
+
+def test_a_po_is_a_number_not_a_date_a_pin_or_words():
+    from app.services.ocr.invoice_header import extract_references as refs
+    assert refs("Cust Order Ref / Date: Sel-Disc-order-/12.08.2025\nOrder No : 1017143491")["po_no"] == "1017143491"
+    assert refs("ANDHERI EAST MUMBAI - 400056 Order No : 400056")["po_no"] is None
+    assert refs("Invoice No GDPL0000518 Order No.113030 Cases 0")["po_no"] == "113030"
+
+
+def test_lr_numbers_under_their_many_labels():
+    from app.services.ocr.invoice_header import extract_references as refs
+    assert refs("LR No / Dt : 49853 30.07.2025")["lr_no"] == "49853"
+    assert refs("L.R.No/Date/: 772463 Due Date: 06/09/2025")["lr_no"] == "772463"
+    assert refs("LR No./Vehicle No. : 2069083")["lr_no"] == "2069083"
+    assert refs("L.R.Number : LOCAL Division")["lr_no"] == "LOCAL"
+    assert refs("L.R. No. & Date : 5876-29.09.2025")["lr_no"] == "5876"
+    # ...never the next label, a date or an IRN run on after an empty one.
+    assert refs("LR No. & Date E-way Bill Number")["lr_no"] is None
+
+
+def test_due_dates_under_their_many_labels():
+    from app.services.ocr.invoice_header import extract_references as refs
+    assert refs("GOLDEN DUE DT 20-09-2025 LR.DT")["due_date"] == "20-09-2025"
+    assert refs("Payment Day : 08/09/2025")["due_date"] == "08/09/2025"
+    assert refs("Inv Dt : 19/06/2025 Due : 11/07/2025")["due_date"] == "11/07/2025"
+
+
+def test_a_printed_pan_is_read_for_its_party_and_only_where_printed():
+    from app.services.ocr.invoice_checks import refile_party_pans
+    fields = {"supplier": {"gstin": _leaf("27AAACM2303F1Z2")}, "bill_to": {"gstin": _leaf("27AAECD7847H1ZC")}}
+    refile_party_pans(fields, "GSTIN : 27AAACM2303F1Z2, PAN :AAA CM 2303 F\nGSTIN : 27AAECD7847H1ZC")
+    assert _v(fields["supplier"], "pan") == "AAACM2303F"     # printed (spaced)
+    assert _v(fields["bill_to"], "pan") is None               # only inside its GSTIN
+
+
+def test_licences_in_their_less_common_forms():
+    from app.services.ocr.invoice_header import drug_licences
+    found = [n for n, _ in drug_licences(
+        "20B:163903 DL NO. WB/HWH/NBO/W/666534 Drug Lic. No: 20B-MHTZ5-70859, MH-20B-312500")]
+    assert {"20B:163903", "WB/HWH/NBO/W/666534", "20B-MHTZ5-70859", "MH-20B-312500"} <= set(found)

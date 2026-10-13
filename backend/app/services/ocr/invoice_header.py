@@ -77,7 +77,14 @@ _EMAIL = re.compile(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b")
 _DL_SHAPE = re.compile(
     r"(?<![\w/\-])"
     r"((?:\d{2}[A-Z]?[-/])?[A-Z]{2,3}[-/][A-Z]{1,4}\d?[-/]?\d{4,8}"
-    r"|2[01][A-D][-/]\d{4,8})"
+    r"|2[01][A-D][-/]\d{4,8}"
+    r"|2[01][A-D]:\d{4,8}"
+    # ...the state and zone run together, "20B-MHTZ5-70859" (Corona), or the
+    # form split off by a space, "20B -TZ5-32174" (Bayer); the state first,
+    # "MH-20B-312500" (SS Lifevision); West Bengal's "WB/HWH/NBO/W/666534".
+    r"|2[01][A-D] ?-[A-Z]{2}[A-Z0-9]{1,5}-\d{4,8}"
+    r"|[A-Z]{2}-2[01][A-D]-\d{4,8}"
+    r"|[A-Z]{2}(?:/[A-Z]{1,4}){2,4}/\d{4,8})"
     # A following "/" is allowed: Kanchan writes "20B-MH-TZ2-521007/521025".
     r"(?!\w)"
 )
@@ -100,17 +107,31 @@ _REFERENCES: Dict[str, Tuple[List[str], str]] = {
     # stopped a bare "IRN" label reaching the value.
     "irn": (["IRN No", "IRN Number", "IRN"], r"([A-Fa-f0-9]{16,64})"),
     "eway_bill_no": (["E Way Bill No", "EwayBill No", "E Way Bill", "Eway Bill"], r"(\d{10,16})"),
-    "lr_no": (["LR No", "L R No", "LR RR No", "LR/RR No", "Lorry Receipt No"], _TOKEN),
+    # The number before its date or vehicle: "LR No / Dt : 49853" (Cipla Health),
+    # "L.R.No/Date/: 772463" (Micropark), "LR No./Vehicle No. : 2069083"
+    # (Zuventus); "L.R.Number : LOCAL" (Raptakos, Sanofi).
+    "lr_no": (["LR No Dt", "LR No Date", "L R No Date", "LR No Vehicle No", "LR Number", "L R Number", "LR No", "L R No", "LR RR No",
+               "LR/RR No", "Lorry Receipt No"], _TOKEN),
     # A transporter's name first; the mode only where no name is printed -
     # Overseas states just "Transportation Mode : BY HAND DELIVERY".
     "transport": (["Transport Name", "Transporter", "Name of Carrier", "Carrier",
                    "Transportation Mode", "Transport Mode", "Mode of Transport", "Transport"],
                   r"([A-Za-z][A-Za-z0-9 .,&\-']{2,48})"),
-    "po_no": (["PO No", "P O No", "Order No", "Purchase Order No", "Ord Ref No"], _ORDER_TOKEN),
+    # The shop's own order reference before the supplier's order number: "Customer
+    # PO : 347" (Eris), "Cust. PO Ref. :" (Lupin), "Cust. Order Ref :5105" (Mylan,
+    # Piramal), "Party Order No. : 4779" (Medley), "Order Reference No.: MAIL
+    # ORDER" (Cipla Health), "PO No / Ref no: WA" (Dr. Krich), "Order Ref. & Date
+    # 5336" (Centaur) - then the order number itself, "Order number & Date:"
+    # (Sun).
+    "po_no": (["Customer PO", "CustomerPO", "Cust PO Ref", "Cust Order Ref", "Customer Ord No",
+               "Party Order No", "Order Reference No", "PO No Ref no", "Order Ref Date", "PO No", "P O No",
+               "Order No", "Purchase Order No", "Ord Ref No", "Order number Date"],
+              _ORDER_TOKEN),
 }
 
 _DATES: Dict[str, List[str]] = {
-    "due_date": ["Due Date", "Payment Due", "Due On"],
+    # ...and the Marg "DUE DT 20-09-2025", Coxswain's "Payment Day :", Parshva's "Due :".
+    "due_date": ["Due Date", "Payment Due", "Due On", "Due Dt", "Payment Day", "Due"],
     # Kanchan prints "LR/RR No. : 2035873 Date : 11/07/2025" - the number sits
     # between the label and the date, so a plain "LR Date" never matches.
     # Menarini prints "L.R. No. : LOCAL Date : 22 Sep 25".
@@ -158,7 +179,7 @@ _LABEL_WORDS = frozenset({
     "date", "dt", "mode", "no", "number", "no.", "gstin", "gst", "pan", "tel",
     "tel no", "phone", "mobile", "transporter", "transport", "transport mode",
     "name", "weight", "vehicle", "cases", "state", "code", "address", "fssai",
-    "dl", "po number", "po no", "order no", "trn", "trn gstin",
+    "dl", "po number", "po no", "order no", "trn", "trn gstin", "e-way", "eway", "e way",
 })
 
 
@@ -244,11 +265,30 @@ def _is_address_not_carrier(found: str) -> bool:
     return bool(_ADDRESS_LIKE.search(found))
 
 
+def _reference_shaped(field: str, found: str, text: str) -> bool:
+    """A PO or LR number, not a date, a PIN code, an IRN's start or words.
+
+    A PO carries a digit ("Sel-Disc-order-" on Abbott is no order number) and
+    is not a date or a 6-digit PIN. An LR may be a word ("LOCAL", "BY HAND")
+    but never a date or a run of hex - an IRN printed after an empty label.
+    """
+    bare = found.strip(" .,-:/")
+    if re.fullmatch(r"[0-3]?\d[./\-][0-1]?\d[./\-]\d{2,4}|\d{1,2}-[A-Za-z]{3}-\d{2,4}", bare):
+        return False
+    if field == "po_no":
+        if re.fullmatch(r"[1-9]\d{5}", bare) and re.search(
+                r"(?:-|pin(?:\s*code)?\s*:?)\s*" + bare + r"\b", text or "", re.I):
+            return False   # "MUMBAI - 400056": the address's PIN code
+        return bool(re.search(r"\d", bare))
+    return not re.fullmatch(r"[0-9a-f]{16,}", bare, re.I)
+
+
 def _labelled_all(text: str, labels: List[str], value: str):
     """Every value following any of these labels, labels in order of preference."""
     for label in labels:
-        loose = r"[\s.:\-]*".join(re.escape(w) for w in label.split())
-        for m in re.finditer(loose + r"[\s.:#\-]*" + value, text or "", re.I):
+        loose = r"[\s.:\-&/]*".join(re.escape(w) for w in label.split())
+        # ...a value in backticks too: "Order No : `3263`" (Das, Glowderma).
+        for m in re.finditer(loose + r"(?:[\s.:#\-`]|/(?=\s*:))*" + value, text or "", re.I):
             yield m.group(1).strip()
 
 
@@ -277,6 +317,13 @@ def extract_references(text: str, exclude: Optional[str] = None) -> Dict[str, Op
                 continue
             if field == "transport" and _is_address_not_carrier(found):
                 continue
+            if field in ("po_no", "lr_no") and not _reference_shaped(field, found, text):
+                continue
+            if field == "lr_no":
+                # "L.R. No. & Date : 5876-29.09.2025" (Torrent): number, then date.
+                joined = re.match(r"(.+?)-[0-3]?\d$", found)
+                if joined and re.search(re.escape(found) + r"\.[0-1]?\d\.\d{2,4}", text):
+                    found = joined.group(1)
             if field == "irn":
                 found = _complete_irn(found, text)
             out[field] = found
@@ -929,6 +976,13 @@ _DL_DATE_FIRST = re.compile(
 )
 
 
+# The licence forms the reader learned last (above): trusted in the supplier's
+# own block, but away from it only when that block has no licence at all -
+# Meher prints the buyer's "20B:190671" beside its own "20B-512567".
+_DL_LESS_COMMON = re.compile(
+    r"^(?:2[01][A-D]:\d|2[01][A-D] ?-[A-Z]{2}[A-Z0-9]{1,5}-\d|2[01][A-D] -|[A-Z]{2}-2[01][A-D]-|[A-Z]{2}/)")
+
+
 def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
     """Up to three (licence number, validity date) pairs from a party's block."""
     out: List[Tuple[Optional[str], Optional[str]]] = []
@@ -1004,9 +1058,23 @@ def supplier_extras(text: str, exclude: Optional[str] = None,
     # printed away from it - Abbott prints its own in the page footer, and JB's
     # second sits on a line below where its block is cut. Anything a party
     # block carries is still the buyer's, and is still skipped.
+    # ...however it is written: the buyer's "MH-MZ5-190671" is the same licence
+    # as Meher's "20B:190671" beside it - its serial is what identifies it.
+    blocked_serials = {re.sub(r"\D", "", n)[-6:] for n in blocked if len(re.sub(r"\D", "", n)) >= 5}
     for source in (text, page_text or ""):
-        for number, date in drug_licences(source):
+        own_found = index > 0
+        found = drug_licences(source)
+        # The usual forms first; the others only where a source has none.
+        usual = [f for f in found if not _DL_LESS_COMMON.match(f[0])]
+        found = usual if (usual and source is text) else usual + [f for f in found if f not in usual]
+        for number, date in found:
             if number in blocked or number in taken:
+                continue
+            if source is not text and own_found and _DL_LESS_COMMON.match(number) \
+                    and not _DL_LESS_COMMON.match(out.get("dl_no_1") or ""):
+                continue
+            serial = re.sub(r"\D", "", number)[-6:]
+            if len(serial) >= 5 and serial in blocked_serials:
                 continue
             taken.add(number)
             index += 1

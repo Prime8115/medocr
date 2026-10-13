@@ -845,6 +845,17 @@ def refile_party_pans(fields: dict, page_text: str) -> List[str]:
         whose = owner.get(pan)
         gstin = _v(block.get("gstin")).upper().replace(" ", "")
         own = gstin[2:12] if len(gstin) == 15 else ""
+        if not pan and own:
+            # A blank PAN the page does print, apart from any GSTIN: "PAN No. :
+            # AAACD1504F" (Das), "Our PAN: AAACA4495N" (Aristo), "PAN :AAA CM
+            # 2303 F" (Modi-Mundipharma, spaced). Printed, so it is read.
+            spaced = r"\s?".join(re.escape(ch) for ch in own)
+            for m in re.finditer(r"(?<![A-Z0-9])" + spaced + r"(?![A-Z0-9])", text):
+                if not _GSTIN_SHAPE.search(text[max(0, m.start() - 2):m.end() + 3]):
+                    block["pan"] = {"value": own, "confidence": 1.0}
+                    changed.append(f"{party}.pan")
+                    break
+            continue
         if not pan or not own or pan == own:
             continue
         # Its own PAN, where the page prints it apart from a GSTIN - Centaur
