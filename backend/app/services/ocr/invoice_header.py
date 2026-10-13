@@ -126,7 +126,8 @@ _TOTALS = TOTAL_LABELS
 _NEXT_LABEL = re.compile(
     r"\s{2,}|\b(?:LR|L\.R|GSTIN|GST\s*NO|PAN|Invoice|Due|Cases|Date|Mode|Weight|"
     # "LR NO : Order No 3: 001061319" (Ajanta): an empty LR, then the order's label.
-    r"Vehicle|Transporter|Transport|TEL|Phone|Mobile|FSSAI|DL|State|PO|Order)\b",
+    # ...and "Total": "Transportation : SAKSHAM LOGISTICS Total Cases :" (Glowderma).
+    r"Vehicle|Transporter|Transport|TEL|Phone|Mobile|FSSAI|DL|State|PO|Order|Total)\b",
     re.I,
 )
 
@@ -225,6 +226,27 @@ def _is_address_not_carrier(found: str) -> bool:
     return bool(_ADDRESS_LIKE.search(found))
 
 
+# The next label, for a carrier's name - which may itself end in "TRANSPORT"
+# ("SHINDE TRANSPORT", "OM SAI TRANSPORT").
+_NEXT_LABEL_CARRIER = re.compile(
+    r"\s{2,}|\b(?:LR|L\.R|GSTIN|GST\s*NO|PAN|Invoice|Due|Cases|Date|Mode|Weight|Vehicle|TEL|Phone|"
+    r"Mobile|FSSAI|DL|State|PO|Order|Total)\b",
+    re.I,
+)
+
+
+def _carrier_name(found: str, text: str) -> Optional[str]:
+    """A carrier's name, cut where the next thing on the line starts: a label
+    ("Total Cases", "Ch/DD No"), a figure ("Trpt : REDSUN 12386.90"), or a
+    word the page follows with a colon ("SIDDHI ROADWAYS LOCATION:")."""
+    name = _NEXT_LABEL_CARRIER.split(found)[0]
+    name = re.split(r"\s+[\d,]+\.\d{2}\b|\s+\w{1,3}/", name)[0]
+    words = name.split()
+    while words and re.search(re.escape(" ".join(words)) + r"\s*:|" + re.escape(" ".join(words)) + "/", text or ""):
+        words = words[:-1]
+    return " ".join(words).strip(" .,-:") or None
+
+
 def _reference_shaped(field: str, found: str, text: str) -> bool:
     """A PO or LR number, not a date, a PIN code, an IRN's start or words.
 
@@ -246,7 +268,7 @@ def _reference_shaped(field: str, found: str, text: str) -> bool:
 def _labelled_all(text: str, labels: List[str], value: str):
     """Every value following any of these labels, labels in order of preference."""
     for label in labels:
-        loose = r"[\s.:\-&/]*".join(re.escape(w) for w in label.split())
+        loose = r"[\s.:\-&/]*".join(re.escape(w) for w in label.split()) + r"(?![A-Za-z])"
         # ...a value in backticks too: "Order No : `3263`" (Das, Glowderma).
         for m in re.finditer(loose + r"(?:[\s.:#\-`]|/(?=\s*:))*" + value, text or "", re.I):
             yield m.group(1).strip()
@@ -268,7 +290,10 @@ def extract_references(text: str, exclude: Optional[str] = None) -> Dict[str, Op
         for found in _labelled_all(text, labels, value):
             # Stop at the next label on the same line - for every reference,
             # not just the transporter.
-            found = _NEXT_LABEL.split(found)[0].strip(" .,-:") or None
+            if field == "transport":
+                found = _carrier_name(found, text)
+            else:
+                found = _NEXT_LABEL.split(found)[0].strip(" .,-:") or None
             if not found or _is_label_not_value(found, text):
                 continue
             # The first word of the next label, reached across a line break:

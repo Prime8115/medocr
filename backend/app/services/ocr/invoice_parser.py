@@ -1422,6 +1422,28 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     for field in _NUMERIC_FIELDS:
         if cols.get(field) is not None:
             item[field] = _f(_num(_unwrapped_number(cell(field))))
+    # The unit printed beside the quantity in one cell: "Billed Qty / UoM" over
+    # "120" and "ECH" (Piramal), "Qty. / UOM" over "252" and "BOT" (Lupin).
+    if cols.get("uom") is None and cols.get("quantity") is not None:
+        heading = _norm(header_row[cols["quantity"]]) if cols["quantity"] < len(header_row) else ""
+        unit = re.fullmatch(r"\s*[\d.,]+\s+([A-Za-z]{1,6})\s*", str(cell("quantity") or "").replace("\n", " "))
+        if unit and ("uom" in heading or "unit" in heading):
+            item["uom"] = _f(unit.group(1).upper())
+    # Free goods given as a break-up of the quantity: Troikaa's "Qty Break Up"
+    # prints "(10+1)" - ten billed, one free.
+    if not (item.get("free_quantity") or {}).get("value"):
+        for idx, heading in enumerate(header_row):
+            if "breakup" in _norm(heading) and idx < len(row):
+                split = re.fullmatch(r"\(?\s*(\d+)\s*\+\s*(\d+)\s*\)?", str(row[idx] or "").strip())
+                if split:
+                    billed, free = int(split.group(1)), int(split.group(2))
+                    item["free_quantity"] = _f(str(free))
+                    # "Qty.Sale 11" with "(10+1)": the 11 counts the free unit;
+                    # the bill charges for ten (its taxable value is 10 x rate).
+                    qty = _num((item.get("quantity") or {}).get("value"))
+                    if qty is not None and float(qty) == billed + free:
+                        item["quantity"] = _f(str(billed))
+                break
     # An HSN's last digit set against the MRP beside it: NSV prints "2106909
     # 9199.00" for HSN 21069099 and MRP 199.00. No HSN has seven digits, and
     # the MRP without it still sits above the trade prices.
@@ -2873,6 +2895,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     interstate: Optional[bool] = None
     local_head: Optional[str] = None
     header_number_below: Optional[str] = None
+    first_page_words = None
 
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -2919,6 +2942,9 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                         regions,
                     )
                     header_number_below = _number_under_label(page)
+                    from app.services.ocr.party_address import page_words
+
+                    first_page_words = (page_words(page), float(page.width))
                     lessons.choose(page_texts[page_no])
                     # Decided once, from the two GSTINs: an intra-state sale is
                     # CGST + SGST, an inter-state one is IGST. Suppliers head a
@@ -3058,6 +3084,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
         if number:
             invoice_meta["invoice_no"] = _f(number)
     fields["_hints"] = {
+        "first_page_words": first_page_words,
         "stream_text": stream,
         "copies_detected": copies,
         "stated_item_count": stated_count,

@@ -33,7 +33,9 @@ LINE_COLUMNS: Dict[str, Tuple[List[str], List[str]]] = {
     ),
     "hsn": (["hsncode", "hsn"], []),
     "product_code": (["productcode", "prdcode", "itemcode", "prodcode", "code"], ["hsn"]),
-    "manufacturer": (["mfgname", "manufacturername", "manufacturer", "mfgco", "company"], ["code", "date", "cd"]),
+    # ...and the short "MFR." / "MFGR" headings (NSV, Troikaa, Parshva).
+    "manufacturer": (["mfgname", "manufacturername", "manufacturer", "mfgco", "company", "mfgr", "mfr"],
+                     ["code", "date", "cd"]),
     # Excludes "exp": Bharat heads one column "Exp.date / Mfg.date", and the
     # expiry is the field a pharmacist actually needs, so it claims that column.
     # Excludes "batch" too: Menarini stacks "Batch No" over "Mfg.Date" in ONE
@@ -41,7 +43,8 @@ LINE_COLUMNS: Dict[str, Tuple[List[str], List[str]]] = {
     # carries the date. Letting mfg_date claim it left every batch number blank.
     "mfg_date": (["mfgdate", "mfgdt", "manufacturingdate", "mfd"], ["exp", "batch"]),
     # Not "Billed Qty / UoM" (Piramal): the quantity's column, its unit beside it.
-    "uom": (["uom", "unitofmeasure"], ["qty"]),
+    # "Unit & UQC" (Troikaa): the GST unit quantity code is the unit.
+    "uom": (["uom", "unitofmeasure", "uqc"], ["qty"]),
     "batch_no": (["batchno", "batch", "lotno", "lot", "bno", "btno"], ["bill", "sr", "inv"]),
     # No "mfg" exclusion: a Mfg-only column never contains "exp", while Bharat
     # heads one column "Exp.date / Mfg.date" - excluding it lost every expiry.
@@ -140,8 +143,13 @@ REFERENCE_LABELS: Dict[str, List[str]] = {
                "LR/RR No", "Lorry Receipt No"],
     # A transporter's name first; the mode only where no name is printed -
     # Overseas states just "Transportation Mode : BY HAND DELIVERY".
-    "transport": ["Transport Name", "Transporter", "Name of Carrier", "Carrier",
-                   "Transportation Mode", "Transport Mode", "Mode of Transport", "Transport"],
+    # "Transporter Name : SIDDHI ROADWAYS" (Dr. Reddy's, Parekh, Sanofi), "Dispatch
+    # Thru : HEERAL LOGISTICS" (Ajanta), "DESP. THRU:" (Blue Cross), "Transported
+    # by :" (Lupin), "Carrier Name:" (Cipla), "Trpt :" (Graciera), "Tpt-"
+    # (Micropark), "Through:" (Piramal).
+    "transport": ["Transporter Name", "Transport Name", "Transporter", "Name of Carrier", "Carrier Name",
+                  "Carrier", "Transportation Mode", "Transport Mode", "Mode of Transport", "Transportation",
+                  "Transported by", "Dispatch Thru", "Desp Thru", "Transport", "Trpt", "Tpt", "Through"],
     # The shop's own order reference before the supplier's order number: "Customer
     # PO : 347" (Eris), "Cust. PO Ref. :" (Lupin), "Cust. Order Ref :5105" (Mylan,
     # Piramal), "Party Order No. : 4779" (Medley), "Order Reference No.: MAIL

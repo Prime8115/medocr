@@ -331,6 +331,24 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         check_warnings.extend(parties.resolve(
             fields, hints.get("document_text") or hints.get("party_text") or "",
             hints.get("stream_text") or ""))
+        # The buyer's address under its name, where no "Bill To" block held it.
+        if hints.get("first_page_words"):
+            from app.services.ocr.party_address import address_below
+
+            buyer = fields.get("bill_to") or {}
+            if not (buyer.get("address") or {}).get("value") and (buyer.get("name") or {}).get("value"):
+                words, width = hints["first_page_words"]
+                seller = ((fields.get("supplier") or {}).get("name") or {}).get("value")
+                found = address_below(words, buyer["name"]["value"], width, seller)
+                if found:
+                    fields.setdefault("bill_to", {})["address"] = {"value": found, "confidence": 0.9}
+        # A reference printed beside an address ("Order No.: 1017143491") is not part of it.
+        from app.services.ocr.party_address import without_references
+
+        for party in ("supplier", "bill_to", "ship_to"):
+            address = ((fields.get(party) or {}).get("address") or {})
+            if isinstance(address, dict) and address.get("value"):
+                address["value"] = without_references(address["value"])
         # Facts the bill fixes without printing them - a zero head the sale
         # cannot carry - for either reader. A PAN is never one of them: what
         # the bill does not print stays blank.

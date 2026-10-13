@@ -40,6 +40,8 @@ export interface ShopProfile {
   /** Stated by the owner, then learned from approved bills. */
   gstins: string[];
   stated: string[];
+  /** The owner's consent for corrections to improve the reader for every shop. */
+  share_corrections?: boolean;
 }
 
 export async function getShop(): Promise<ShopProfile> {
@@ -50,4 +52,9 @@ export async function getShop(): Promise<ShopProfile> {
 export async function setShopGstins(gstins: string[]): Promise<string[]> {
   const res = await api.put('/v1/auth/shop/gstins', { gstins });
   return (res.data as { gstins: string[] }).gstins;
+}
+
+export async function setShareCorrections(share: boolean): Promise<boolean> {
+  const res = await api.put('/v1/auth/shop/share-corrections', { share });
+  return (res.data as { share_corrections: boolean }).share_corrections;
 }

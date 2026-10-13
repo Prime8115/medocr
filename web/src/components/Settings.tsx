@@ -12,6 +12,7 @@ import {
   type ConnectorType,
 } from '../api/connectors';
 import { changePassword } from '../api/auth';
+import ShareCorrections from './ShareCorrections';
 import ShopGstins from './ShopGstins';
 
 const TYPE_LABEL: Record<ConnectorType, string> = {
@@ -130,6 +131,7 @@ export default function Settings() {
       </div>
 
       <ShopGstins />
+      <ShareCorrections />
 
       {showForm && (
         <form onSubmit={add} className="glass-card" style={{ marginBottom: 24 }}>

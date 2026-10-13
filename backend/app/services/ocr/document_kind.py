@@ -139,9 +139,7 @@ def title_from_page(text: Optional[str]) -> Optional[str]:
     ("Invoice No.", "Invoice Date") and never a sentence in the footer.
     """
     kind = kind_from_page(text)
-    if not kind:
-        return None
-    for line in (text or "").splitlines()[:_HEADING_LINES]:
+    for line in (text or "").splitlines()[:_HEADING_LINES] if kind else []:
         for m in _TITLE_PHRASE.finditer(line):
             if _LABEL_AFTER.match(line, m.end()):
                 continue
@@ -156,6 +154,18 @@ def title_from_page(text: Optional[str]) -> Optional[str]:
         for part in re.split(r"\s{3,}|\t|\|", line):
             if kind_of_title(part):
                 return re.sub(r"\s+", " ", _COPY_WORDS.sub(" ", part)).strip(" .-()")
+    # A layout's text order can put the heading anywhere (AIMIL's "TAX-INVOICE"
+    # comes out on line 203): a line that is a title and nothing else, or one
+    # opening with "Tax Invoice" ("Tax Invoice DISTRIBUTOR OF P & G").
+    for line in (text or "").splitlines():
+        plain = re.sub(r"\bT\s+AX\b", "TAX", line, flags=re.I)   # "T AX INVOICE"
+        plain = re.sub(r"(?<=[A-Za-z])-(?=[A-Za-z])", " ", plain).strip()
+        m = re.match(r"((?:gst\s*|tax\s*)+invoice(?:\s+gst)?)\b(?!\s*(?:no\b|number|date|dt\b|ref|#|:|\.\s*no|value|amount|amt|total))",
+                     plain, re.I)
+        if m and m.group(1)[:1].isupper():
+            return re.sub(r"\s+", " ", m.group(1)).strip()
+        if kind_of_title(plain) and len(_squash(plain)) <= 25:
+            return re.sub(r"\s+", " ", _COPY_WORDS.sub(" ", plain)).strip(" .-()")
     return None
 
 

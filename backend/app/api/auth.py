@@ -83,7 +83,8 @@ def shop_profile(db: Session = Depends(get_db), user: User = Depends(get_current
 
     shop = db.get(Shop, user.shop_id)
     stated = list((shop.settings or {}).get("gstins") or []) if shop else []
-    return {"name": shop.name if shop else None, "gstins": own_gstins(db, user.shop_id), "stated": stated}
+    return {"name": shop.name if shop else None, "gstins": own_gstins(db, user.shop_id), "stated": stated,
+            "share_corrections": bool((shop.settings or {}).get("share_corrections")) if shop else False}
 
 
 class ShareCorrections(BaseModel):
