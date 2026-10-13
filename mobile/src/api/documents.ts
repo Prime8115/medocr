@@ -81,6 +81,25 @@ export async function chooseOption(id: string, choice: string, option: number, r
   return res.data as DocumentDto;
 }
 
+/** What the AI found when asked again about one field (services/recheck.py). */
+export interface RecheckResult {
+  path: string;
+  current: string | null;
+  found: string | null;
+  printed_label: string | null;
+  printed_text: string | null;
+  /** Whether the value is printed on the bill; null where it has no text (a scan). */
+  on_page: boolean | null;
+  agrees: boolean | null;
+  message: string;
+}
+
+/** Ask the AI again about one field. Changes nothing: a value is kept by saving it. */
+export async function recheckField(id: string, path: string): Promise<RecheckResult> {
+  const res = await api.post(`/v1/documents/${id}/recheck`, { path });
+  return res.data as RecheckResult;
+}
+
 export interface PushResult extends DocumentDto {
   deliveries: { id: string; connector_id: string; status: string; response_body?: string }[];
 }

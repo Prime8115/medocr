@@ -32,6 +32,12 @@ class ChooseRequest(BaseModel):
     remember: bool = True
 
 
+class RecheckRequest(BaseModel):
+    """One field the reviewer thinks was read wrong, by its path:
+    "invoice.po_no", "line_items[2].ptr"."""
+    path: str
+
+
 class ApproveRequest(BaseModel):
     """Approval, with the failed checks the reviewer has checked against the paper.
 

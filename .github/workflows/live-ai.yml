@@ -26,6 +26,7 @@ on:
     paths:
       - 'backend/app/services/ocr/**'
       - 'backend/app/schemas/extraction.py'
+      - 'backend/app/services/recheck.py'
       - 'backend/tests/live/**'
       - '.github/workflows/live-ai.yml'
   workflow_dispatch:

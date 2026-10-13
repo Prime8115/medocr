@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useLocalSearchParams, router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -29,6 +29,7 @@ import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
 import { addLineItem, buildSections, documentTitle, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
+import RecheckField from '@/src/components/RecheckField';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
 import { isRetryableFailure, isWaitingForAi } from '@/src/lib/failure';
@@ -159,6 +160,11 @@ export default function ReviewScreen() {
   }, [id, applyDoc]);
 
   const onChangeField = (path: string, value: string) => setFields((prev) => setLeafValue(prev, path, value));
+  // A field the reviewer doubts can be asked about again (RecheckField) - not
+  // the few that are not printed values (licence dates, how a rate was chosen).
+  const canRecheck = (path: string): boolean =>
+    !!doc && doc.doc_type === 'invoice' && ['needs_review', 'approved'].includes(doc.status)
+    && !/dl_date_|rate_source|free_supply/.test(path);
 
   // A line the reading missed - or every line, on a document sent for manual
   // entry - is typed in here, then saved with the rest.
@@ -434,15 +440,19 @@ export default function ReviewScreen() {
             const leaf = getLeaf(fields, spec.path);
             const conf = leaf?.confidence ?? null;
             return (
-              <Field
-                key={spec.path}
-                label={spec.label}
-                value={leaf?.value ?? ''}
-                editable={editable}
-                onChangeText={(v) => onChangeField(spec.path, v)}
-                accentColor={confidenceColor(conf)}
-                hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
-              />
+              <Fragment key={spec.path}>
+                <Field
+                  label={spec.label}
+                  value={leaf?.value ?? ''}
+                  editable={editable}
+                  onChangeText={(v) => onChangeField(spec.path, v)}
+                  accentColor={confidenceColor(conf)}
+                  hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                />
+                {canRecheck(spec.path) && (
+                  <RecheckField docId={id} path={spec.path} onUse={(v) => onChangeField(spec.path, v)} />
+                )}
+              </Fragment>
             );
           })}
         </Card>
@@ -824,15 +834,19 @@ export default function ReviewScreen() {
                   const leaf = getLeaf(fields, spec.path);
                   const conf = leaf?.confidence ?? null;
                   return (
-                    <Field
-                      key={spec.path}
-                      label={spec.label}
-                      value={leaf?.value ?? ''}
-                      editable={editable}
-                      onChangeText={(v) => onChangeField(spec.path, v)}
-                      accentColor={confidenceColor(conf)}
-                      hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
-                    />
+                    <Fragment key={spec.path}>
+                      <Field
+                        label={spec.label}
+                        value={leaf?.value ?? ''}
+                        editable={editable}
+                        onChangeText={(v) => onChangeField(spec.path, v)}
+                        accentColor={confidenceColor(conf)}
+                        hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                      />
+                      {canRecheck(spec.path) && (
+                        <RecheckField docId={id} path={spec.path} onUse={(v) => onChangeField(spec.path, v)} />
+                      )}
+                    </Fragment>
                   );
                 })}
               </View>
@@ -877,15 +891,19 @@ export default function ReviewScreen() {
                   const leaf = getLeaf(fields, spec.path);
                   const conf = leaf?.confidence ?? null;
                   return (
-                    <Field
-                      key={spec.path}
-                      label={spec.label}
-                      value={leaf?.value ?? ''}
-                      editable={editable}
-                      onChangeText={(v) => onChangeField(spec.path, v)}
-                      accentColor={confidenceColor(conf)}
-                      hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
-                    />
+                    <Fragment key={spec.path}>
+                      <Field
+                        label={spec.label}
+                        value={leaf?.value ?? ''}
+                        editable={editable}
+                        onChangeText={(v) => onChangeField(spec.path, v)}
+                        accentColor={confidenceColor(conf)}
+                        hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
+                      />
+                      {canRecheck(spec.path) && (
+                        <RecheckField docId={id} path={spec.path} onUse={(v) => onChangeField(spec.path, v)} />
+                      )}
+                    </Fragment>
                   );
                 })}
                 {editable && isInvoice && (

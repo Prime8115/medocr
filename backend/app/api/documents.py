@@ -38,6 +38,7 @@ from app.schemas.document import (
     DocumentUpdate,
     ApproveRequest,
     ChooseRequest,
+    RecheckRequest,
 )
 from app.schemas.extraction import validate_fields
 from app.services import corrections, intake, jobs, lifecycle, supplier_profile
@@ -786,6 +787,60 @@ def choose_option(
     db.commit()
     db.refresh(doc)
     return doc
+
+
+# A recheck is one AI call: enough for every field a reviewer doubts, never a loop.
+RECHECKS_PER_DOCUMENT = 30
+
+
+@router.post("/{document_id}/recheck")
+def recheck_field(
+    document_id: str,
+    body: RecheckRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Ask the AI again about ONE field the reviewer doubts (services/recheck.py).
+
+    Answers with what the bill prints for it, the label beside it, and whether
+    that value is on the page. Nothing is changed: an accepted value is saved
+    through PATCH like any correction, so it is recorded and learned from.
+    """
+    from app.services import recheck as rechecking
+    from app.services.ocr import get_provider
+
+    doc = _get_owned_document(document_id, db, user)
+    if doc.doc_type != "invoice":
+        raise HTTPException(status_code=422, detail="Only an invoice's fields can be rechecked.")
+    if doc.status not in (lifecycle.NEEDS_REVIEW, lifecycle.APPROVED):
+        raise HTTPException(status_code=409, detail=f"Cannot recheck a document in '{doc.status}' state.")
+    if not doc.image_ref:
+        raise HTTPException(status_code=400, detail="This document has no stored file to check against.")
+    done = (db.query(AuditLog)
+            .filter(AuditLog.action == "document.rechecked", AuditLog.target == doc.id).count())
+    if done >= RECHECKS_PER_DOCUMENT:
+        raise HTTPException(status_code=429, detail="This bill has been rechecked many times already. "
+                                                    "Please correct the field by hand.")
+    payload = doc.payload or {}
+    fields = payload.get("fields") or {}
+    try:
+        rechecking.question(fields, body.path)
+    except rechecking.RecheckError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        data = storage.load(doc.image_ref)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=410, detail="Stored file is no longer available.")
+    try:
+        result = rechecking.recheck(get_provider(), fields, (payload.get("meta") or {}).get("page_text"),
+                                    body.path, data, jobs.infer_content_type(doc.image_ref))
+    except OCRError as exc:
+        log.warning("recheck %s %s: %s", doc.id, body.path, str(exc)[:200])
+        raise HTTPException(status_code=503, detail=_public_message(exc))
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.rechecked", target=doc.id,
+                    detail={k: result.get(k) for k in ("path", "current", "found", "on_page", "agrees")}))
+    db.commit()
+    return result
 
 
 @router.post("/{document_id}/approve", response_model=DocumentOut)

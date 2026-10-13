@@ -15,6 +15,7 @@ import {
 import { addLineItem, buildSections, confidencePercent, documentTitle, extraColumns, getLeaf, isLowConfidence, removeLineItem, setLeafValue } from '../lib/payload';
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
+import RecheckField from './RecheckField';
 import { formatMoney } from '../lib/table';
 import {
   choicesOf,
@@ -200,6 +201,11 @@ export default function DocumentDetail() {
   const matchFor = (i: number): MatchItem | undefined => (inv?.connected ? inv.items[i] : undefined);
 
   const isInvoice = doc.doc_type === 'invoice';
+  // A field the reviewer doubts can be asked about again (RecheckField) - not
+  // the few that are not printed values (licence dates, how a rate was chosen).
+  const canRecheck = (path: string): boolean =>
+    isInvoice && ['needs_review', 'approved'].includes(doc.status)
+    && !/dl_date_|rate_source|free_supply/.test(path);
   // What the bill itself says is payable - the figure on the paper.
   const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
   const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
@@ -378,6 +384,10 @@ export default function DocumentDetail() {
                     onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
                   />
                   {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
+                  {canRecheck(spec.path) && (
+                    <RecheckField docId={id} path={spec.path}
+                      onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
+                  )}
                 </div>
               );
             })}
@@ -597,6 +607,10 @@ export default function DocumentDetail() {
                     <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>{spec.label}</label>
                     <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable}
                       onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
+                    {canRecheck(spec.path) && (
+                      <RecheckField key={spec.path} docId={id} path={spec.path}
+                        onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
+                    )}
                   </div>
                 );
               })}

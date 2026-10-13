@@ -197,3 +197,27 @@ def test_the_fallback_model_still_exists():
         assert "404" not in message and "not_found" not in message, (
             f"fallback model {fallback!r} no longer exists: {exc}"
         )
+
+
+def test_one_field_is_rechecked_against_the_page():
+    """The reviewer's "Recheck" (services/recheck.py): one narrow question about
+    one field, answered from the page and found printed there. The bill is the
+    synthetic one the self-learning tests use: its PTR is headed "RETAILER RATE",
+    which the reader does not know, so the reading leaves it blank."""
+    from app.services import recheck
+    from app.services.ocr.gemini import GeminiProvider
+    from app.services.ocr.pdf_utils import extract_text_pages
+    from tests.test_self_learning import _bill, _read, _row
+
+    data = _bill(1)
+    fields = _read(data)["fields"]
+    page = "\n".join(extract_text_pages(data))
+    ai = GeminiProvider()
+
+    out = recheck.recheck(ai, fields, page, "line_items[2].ptr", data, "application/pdf")
+    assert out["found"] is not None, out
+    assert float(out["found"].replace(",", "")) == float(_row(2, 1)[4]), out
+    assert out["on_page"] is True
+
+    out = recheck.recheck(ai, fields, page, "invoice.invoice_no", data, "application/pdf")
+    assert out["agrees"] is True and out["on_page"] is True, out
