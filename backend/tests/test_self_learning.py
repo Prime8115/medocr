@@ -9,6 +9,7 @@ from app.config import settings
 from app.models.supplier_column_lesson import SupplierColumnLesson
 from app.services import supplier_profile
 from app.services.ocr import process_document
+from app.services.ocr.layout import signature
 from tests.conftest import register_and_login
 
 SUPPLIER = "27AAGCL1995C1ZF"
@@ -99,7 +100,8 @@ def test_a_correction_teaches_the_column_and_the_next_bill_arrives_right(client,
     second = _read(_bill(2), lessons)
     assert _ptrs(second) == [row[4] for row in (_row(i, 2) for i in range(4))]
     assert second["meta"]["lessons_applied"] == [
-        {"supplier_gstin": SUPPLIER, "field": "ptr", "heading": "RETAILER RATE", "kind": "is"}]
+        {"supplier_gstin": SUPPLIER, "field": "ptr", "heading": "RETAILER RATE", "kind": "is",
+         "layout_signature": signature(HEADER)}]
     assert second["meta"]["total_reconciles"] is True
 
 
@@ -112,7 +114,7 @@ def test_another_suppliers_bill_is_untouched():
 def test_a_lesson_that_breaks_the_bill_is_dropped_for_it():
     # A wrong lesson: the quantity is the MRP column. The bill stops adding up,
     # so it is read again without lessons - and the lesson reported as failed.
-    lessons = {SUPPLIER: {"is": {"mrp": "quantity"}, "not": {}}}
+    lessons = {SUPPLIER: {"layouts": {signature(HEADER): {"is": {"mrp": "quantity"}, "not": {}}}}}
     result = _read(_bill(4), lessons)
     assert result["meta"]["total_reconciles"] is True
     assert result["meta"]["lessons_failed"][0]["field"] == "quantity"
@@ -171,11 +173,14 @@ def test_lessons_can_be_seen_and_forgotten(client, db_session):
 
 def test_the_ai_is_told_a_known_suppliers_columns():
     from app.services.ocr import lessons
-    tokens = lessons.start({SUPPLIER: {"is": {"retailerrate": "ptr"}, "not": {"tpptrvalue": ["ptr"]},
-                                       "printed": {"retailerrate": "RETAILER RATE", "tpptrvalue": "TP/ PTR Value"}}})
+    tokens = lessons.start({SUPPLIER: {"layouts": {signature(HEADER): {
+        "is": {"retailerrate": "ptr"}, "not": {"tpptrvalue": ["ptr"]},
+        "printed": {"retailerrate": "RETAILER RATE", "tpptrvalue": "TP/ PTR Value"}}}}})
     try:
         assert lessons.prompt_note() == ""            # supplier not known yet
         lessons.choose(f"GSTIN: {SUPPLIER}")
+        assert lessons.prompt_note() == ""  # supplier alone cannot identify a layout
+        lessons.column_lessons([lessons.norm(h) for h in HEADER])
         note = lessons.prompt_note()
         assert '"RETAILER RATE" is the ptr' in note and '"TP/ PTR Value" is NOT the ptr' in note
     finally:

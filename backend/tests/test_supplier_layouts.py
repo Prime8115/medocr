@@ -362,7 +362,8 @@ def test_menarini_specific_fields():
         assert item["sgst_amount"]["value"] is not None
 
     verif = res.get("meta", {}).get("verification", {})
-    assert verif.get("verdict") == "verified"
+    assert verif.get("verdict") == "incomplete"  # optional checks lack evidence
+    assert not verif.get("review_requirements")
     assert verif.get("failed") == 0
 
 

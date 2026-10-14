@@ -450,7 +450,7 @@ export default function ReviewScreen() {
                   hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                 />
                 {canRecheck(spec.path) && (
-                  <RecheckField docId={id} path={spec.path} onUse={(v) => onChangeField(spec.path, v)} />
+                  <RecheckField docId={id} path={spec.path} revision={fields} onUse={(v) => onChangeField(spec.path, v)} />
                 )}
               </Fragment>
             );
@@ -844,7 +844,7 @@ export default function ReviewScreen() {
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                       />
                       {canRecheck(spec.path) && (
-                        <RecheckField docId={id} path={spec.path} onUse={(v) => onChangeField(spec.path, v)} />
+                        <RecheckField docId={id} path={spec.path} revision={fields} onUse={(v) => onChangeField(spec.path, v)} />
                       )}
                     </Fragment>
                   );
@@ -901,7 +901,7 @@ export default function ReviewScreen() {
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                       />
                       {canRecheck(spec.path) && (
-                        <RecheckField docId={id} path={spec.path} onUse={(v) => onChangeField(spec.path, v)} />
+                        <RecheckField docId={id} path={spec.path} revision={fields} onUse={(v) => onChangeField(spec.path, v)} />
                       )}
                     </Fragment>
                   );

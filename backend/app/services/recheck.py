@@ -163,8 +163,8 @@ def question(fields: dict, path: str) -> Tuple[str, str, str]:
         item = items[i] or {}
         what = f"the {_LINE_MEANING[line_key]} of one line item"
         # The line is pointed out by what identifies it on the paper.
-        marks = [f"product {_leaf(item, 'description')!r}" if _leaf(item, "description") else "",
-                 f"batch {_leaf(item, 'batch_no')!r}" if _leaf(item, "batch_no") else "",
+        marks = [f"product {_leaf(item, 'description')!r}" if _leaf(item, "description") and line_key != "description" else "",
+                 f"batch {_leaf(item, 'batch_no')!r}" if _leaf(item, "batch_no") and line_key != "batch_no" else "",
                  f"HSN {_leaf(item, 'hsn')!r}" if _leaf(item, "hsn") and line_key != "hsn" else ""]
         marks = [x for x in marks if x and not x.startswith(f"{line_key} ")]
         where = (f"The line is item {i + 1} of {len(items)}"
@@ -186,20 +186,33 @@ def printed_on_page(value: str, kind: str, page_text: str) -> bool:
     or without its thousands commas and trailing zeros (1,234.50 = 1234.5)."""
     if not value or not page_text:
         return False
-    if _squash(value) and _squash(value) in _squash(page_text):
-        return True
     if kind in ("money", "number"):
+        from decimal import Decimal, InvalidOperation
+
         try:
-            want = float(str(value).replace(",", ""))
-        except ValueError:
+            want = Decimal(str(value).replace(",", ""))
+        except InvalidOperation:
             return False
-        for figure in re.findall(r"\d[\d,]*(?:\.\d+)?", page_text):
+        if not want.is_finite():
+            return False
+        for figure in re.findall(r"(?<![\w.])[+-]?\d[\d,]*(?:\.\d+)?(?![\w.])", page_text):
             try:
-                if abs(float(figure.replace(",", "")) - want) < 0.005:
+                if Decimal(figure.replace(",", "")) == want:
                     return True
-            except ValueError:
+            except InvalidOperation:
                 continue
-    return False
+        return False
+    if kind == "text":
+        # Reference punctuation is meaningful: AB-12 is not batch AB12.
+        pattern = r"(?<![A-Z0-9])" + r"\s+".join(
+            re.escape(part) for part in str(value).strip().upper().split()) + r"(?![A-Z0-9])"
+        return bool(re.search(pattern, page_text.upper()))
+    # Preserve token boundaries for names and dates too.
+    tokens = re.findall(r"[A-Z0-9]+", str(value).upper())
+    if not tokens:
+        return False
+    pattern = r"(?<![A-Z0-9])" + r"[^A-Z0-9]*".join(map(re.escape, tokens)) + r"(?![A-Z0-9])"
+    return bool(re.search(pattern, page_text.upper()))
 
 
 def _same(kind: str, a: str, b: str) -> bool:
@@ -207,13 +220,25 @@ def _same(kind: str, a: str, b: str) -> bool:
 
     if not a or not b:
         return not a and not b
-    return _squash(a) == _squash(b) or same(kind, a, b)
+    if kind in ("money", "number"):
+        from decimal import Decimal, InvalidOperation
+
+        try:
+            left, right = (Decimal(str(v).replace(",", "")) for v in (a, b))
+            return left.is_finite() and right.is_finite() and left == right
+        except InvalidOperation:
+            return False
+    if kind == "text":
+        return str(a).strip().upper() == str(b).strip().upper()
+    return same(kind, a, b)
 
 
 def _pages(file_bytes: bytes, content_type: str, fields: dict, path: str) -> Tuple[bytes, str]:
-    """What the AI is shown: the whole bill when short; on a long one, the page
-    the line is printed on (found by its batch or name in the bill's text), or
-    the first and last pages for a header value."""
+    """Show the whole short bill or a uniquely located line on a long bill.
+
+    If a long scan has no usable text, or repeated products point at several
+    pages, abstain instead of silently rechecking the first page.
+    """
     if content_type != "application/pdf":
         return file_bytes, content_type
     from app.config import settings
@@ -227,15 +252,20 @@ def _pages(file_bytes: bytes, content_type: str, fields: dict, path: str) -> Tup
         m = _PATH.match(path)
         if m and m.group(3) is not None:
             item = (fields.get("line_items") or [])[int(m.group(3))] or {}
-            marks = [_squash(_leaf(item, "batch_no")), _squash(_leaf(item, "description"))]
+            key = m.group(4)
+            marks = [_leaf(item, k) for k in ("batch_no", "description", "product_code") if k != key]
             texts = extract_text_pages(file_bytes)
-            for mark in [x for x in marks if len(x) >= 4]:
-                for n, text in enumerate(texts):
-                    if mark in _squash(text):
-                        return pages[n], content_type
-        return pages[0], content_type
-    except Exception:  # noqa: BLE001 - the whole bill is still a fair question
-        return file_bytes, content_type
+            marks = [mark for mark in marks if len(_squash(mark)) >= 4]
+            matches = [n for n, text in enumerate(texts)
+                       if marks and all(printed_on_page(mark, "text", text) for mark in marks)]
+            if len(matches) == 1:
+                return pages[matches[0]], content_type
+        raise RecheckError("Cannot safely locate this field on this long invoice. "
+                           "Check the original page manually; no first-page guess was made.")
+    except RecheckError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RecheckError("Could not locate the invoice page. Check the original manually.") from exc
 
 
 def recheck(provider, fields: dict, page_text: Optional[str], path: str,
@@ -244,6 +274,14 @@ def recheck(provider, fields: dict, page_text: Optional[str], path: str,
     RecheckError for a field that cannot be asked about; never changes `fields`."""
     prompt, current, kind = question(fields, path)
     shown, shown_type = _pages(file_bytes, content_type, fields, path)
+    if shown_type == "application/pdf":
+        from app.services.ocr.pdf_utils import extract_text_pages, is_scanned_pdf
+
+        source_text = "\n".join(extract_text_pages(shown))
+        if is_scanned_pdf(shown):
+            page_text = None  # A scan's hidden OCR text is not independent evidence.
+        elif source_text.strip():
+            page_text = source_text
     answer = provider.review_json(prompt, shown, shown_type)
     if not isinstance(answer, dict):
         return {"path": path, "current": current or None, "found": None, "printed_label": None,
@@ -263,5 +301,7 @@ def recheck(provider, fields: dict, page_text: Optional[str], path: str,
         message = f"The AI reads the same: {found!r}" + (f" (printed as '{label}')." if label else ".")
     else:
         message = f"The AI reads {found!r}" + (f", printed as '{label}'" if label else "") + "."
+    if found and on_page is not False:
+        message += " Confirm the field and row against the original; text presence alone does not verify them."
     return {"path": path, "current": current or None, "found": found, "printed_label": label,
             "printed_text": around, "on_page": on_page, "agrees": agrees, "message": message}

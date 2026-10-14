@@ -40,6 +40,7 @@ from app.services.ocr.invoice_checks import SUMMED_CONFIDENCE, line_arithmetic_h
 from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout, without_watermark
 from app.services.ocr import lessons
 from app.services.ocr.field_dictionary import LINE_COLUMNS
+from app.services.ocr.pdf_access import open_pdf
 
 log = logging.getLogger(__name__)
 
@@ -2127,6 +2128,12 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
                 cols = {**cols, "description": inferred}
         if "description" not in cols or ("quantity" not in cols and "batch_no" not in cols):
             continue  # not a line-item table we understand
+        from app.services.ocr.layout import signature
+
+        layout = {"signature": signature(header_row), "headings": [_clean(h) for h in header_row]}
+        layouts = labels.setdefault("table_layouts", [])
+        if layout not in layouts:
+            layouts.append(layout)
         gst_cols = _gst_columns(header_row)
         labels.update(price_labels(cols, header_row))
         # Every mapped column's own heading, for tracing a value back to the
@@ -2845,7 +2852,7 @@ def upright_pdf(data: bytes) -> bytes:
     import pdfplumber
 
     try:
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
+        with open_pdf(data) as pdf:
             if not pdf.pages or not _is_sideways(pdf.pages[0]):
                 return data
         return _turned(data)
@@ -2887,6 +2894,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     line_items: List[dict] = []
     party_text = ""
     page_items: Dict[int, List[dict]] = {}
+    page_layouts: Dict[int, list] = {}
     labels: dict = {}
     meta = None
     copies = 1
@@ -2898,7 +2906,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
     first_page_words = None
 
     try:
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
+        with open_pdf(data) as pdf:
             total_pages = len(pdf.pages)
             # Checked on the PDF already open - opening it a second time to look
             # cost a third of a second on every bill. A sideways page is turned
@@ -2995,9 +3003,11 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                     last_table_page = page_no
                 if _better_reading(word_items, ruled_items):
                     labels.update(word_labels)
+                    page_layouts[page_no] = word_labels.get("table_layouts") or []
                     page_items[page_no] = word_items
                 else:
                     labels.update(ruled_labels)
+                    page_layouts[page_no] = ruled_labels.get("table_layouts") or []
                     page_items[page_no] = ruled_items
 
             # Safety net for copies the period check cannot see - copies of
@@ -3011,6 +3021,11 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                     log.info("invoice_parser: %d printed copies found by marker", copies)
 
             line_items.extend(_join_page_lines([page_items.get(page_no, []) for page_no in wanted]))
+            # Keep every selected page's layout. dict.update previously kept
+            # only the last page, incorrectly teaching mixed-layout invoices.
+            labels["table_layouts"] = list({layout["signature"]: layout
+                                           for page_no in wanted
+                                           for layout in page_layouts.get(page_no, [])}.values())
             # A totals row printed on its own page (Cipla Pharma) is only
             # recognisable against the whole bill's lines.
             line_items = _without_totals_row(line_items)

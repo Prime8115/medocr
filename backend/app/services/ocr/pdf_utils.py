@@ -4,6 +4,7 @@ import io
 import threading
 from collections import OrderedDict
 from typing import List
+from app.services.ocr.pdf_access import open_pdf
 
 # One scan asks "is this a digital PDF? a scanned one?" several times over -
 # routing, the party check, the fallback, the parser - and each answer opened
@@ -105,7 +106,7 @@ def _is_scanned_pdf(data: bytes, sample_pages: int) -> bool:
     try:
         import pdfplumber
 
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
+        with open_pdf(data) as pdf:
             idx = _sample_indexes(len(pdf.pages), sample_pages)
             scanned = 0
             for i in idx:
@@ -183,7 +184,7 @@ def _words_drawn_as_shapes(data: bytes, sample_pages: int) -> bool:
     try:
         import pdfplumber
 
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
+        with open_pdf(data) as pdf:
             idx = _sample_indexes(len(pdf.pages), sample_pages)
             drawn = sum(1 for i in idx
                         if len(pdf.pages[i].curves) > 1000

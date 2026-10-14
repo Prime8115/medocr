@@ -44,6 +44,7 @@ def _clean_bill():
         "bill_to": {"gstin": _leaf("27AAECD7847H1ZC")},
         "ship_to": {},
         "invoice": {
+            "invoice_no": _leaf("TEST-123"),
             "invoice_date": _leaf("22-Sep-2025"), "total_amount": _leaf("2240.00"),
             "total_taxable_amount": _leaf("2000.00"), "total_gst_amount": _leaf("240.00"),
             "total_cgst_amount": _leaf("120.00"), "total_sgst_amount": _leaf("120.00"),
@@ -64,7 +65,7 @@ def test_a_clean_bill_is_verified():
     v = verify_invoice(_clean_bill(), REPORT, today=TODAY)
     failed = [c for c in v["checks"] if c["status"] == "fail"]
     assert failed == [], failed
-    assert v["verdict"] == "verified"
+    assert v["verdict"] == "incomplete"  # optional checks had no evidence
 
 
 def _break(mutate, check_id, field):
@@ -142,7 +143,7 @@ def test_what_the_bill_does_not_print_is_skipped_not_failed():
     v = verify_invoice(bill, {**REPORT, "stated_item_count": None}, today=TODAY)
     for check_id in ("line_net", "line_discount", "price_ladder", "item_count"):
         assert _check(v, check_id)["status"] == "skipped"
-    assert v["verdict"] == "verified"
+    assert v["verdict"] == "incomplete"
 
 
 def test_failed_fields_are_flagged_for_review():
@@ -187,7 +188,7 @@ def test_a_disputed_scan_value_corrected_in_review_counts_as_resolved():
     edited = copy.deepcopy(bill)
     edited["invoice"]["total_amount"] = _leaf("2240.01")
     resolved = reverify("invoice", old, edited)
-    assert _check(resolved["verification"], "cross_read")["status"] == "pass"
+    assert _check(resolved["verification"], "cross_read")["status"] == "skipped"
 
 
 def test_open_checks_are_the_unacknowledged_failures():

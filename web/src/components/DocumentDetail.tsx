@@ -290,9 +290,8 @@ export default function DocumentDetail() {
               {verdict.ok ? '✓ ' : '⚠ '}
               {verdict.title}
             </strong>
-            {verdict.ok ? (
-              <div className="text-muted" style={{ marginTop: 4 }}>{verdict.detail}</div>
-            ) : (
+            <div className="text-muted" style={{ marginTop: 4 }}>{verdict.detail}</div>
+            {failed.length > 0 && (
               <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
                 {failed.map((c) => (
                   <li key={c.id} style={{ marginBottom: 4 }}>
@@ -385,7 +384,7 @@ export default function DocumentDetail() {
                   />
                   {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
                   {canRecheck(spec.path) && (
-                    <RecheckField docId={id} path={spec.path}
+                    <RecheckField docId={id} path={spec.path} revision={fields}
                       onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
                   )}
                 </div>
@@ -608,7 +607,7 @@ export default function DocumentDetail() {
                     <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable}
                       onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
                     {canRecheck(spec.path) && (
-                      <RecheckField key={spec.path} docId={id} path={spec.path}
+                      <RecheckField key={spec.path} docId={id} path={spec.path} revision={fields}
                         onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
                     )}
                   </div>

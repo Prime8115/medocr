@@ -31,8 +31,10 @@ describe('RecheckField', () => {
     const onUse = vi.fn();
     render(<RecheckField docId="d1" path="line_items[2].ptr" onUse={onUse} />);
     fireEvent.click(screen.getByText('Recheck'));
-    await screen.findByText('Use anyway');
-    fireEvent.click(screen.getByText('Keep mine'));
+    await screen.findByText('not printed on the bill');
+    expect(screen.queryByText('Use anyway')).toBeNull();
+    expect(screen.queryByText('Use this')).toBeNull();
+    fireEvent.click(screen.getByText('Close'));
     expect(onUse).not.toHaveBeenCalled();
     expect(screen.getByText('Recheck')).toBeTruthy();
   });
@@ -48,5 +50,18 @@ describe('RecheckField', () => {
     vi.mocked(docsApi.recheckField).mockRejectedValueOnce({ response: { data: { detail: 'AI is busy' } } });
     fireEvent.click(screen.getByText('Recheck'));
     await waitFor(() => expect(screen.getByText('AI is busy')).toBeTruthy());
+  });
+
+  test('an edit discards an in-flight answer instead of overwriting the new value', async () => {
+    let resolve!: (value: typeof found) => void;
+    vi.mocked(docsApi.recheckField).mockReturnValue(new Promise((done) => { resolve = done; }));
+    const onUse = vi.fn();
+    const view = render(<RecheckField docId="d1" path="line_items[2].ptr" revision={1} onUse={onUse} />);
+    fireEvent.click(screen.getByText('Recheck'));
+    view.rerender(<RecheckField docId="d1" path="line_items[2].ptr" revision={2} onUse={onUse} />);
+    resolve(found);
+    await waitFor(() => expect(screen.getByText('Recheck')).toBeTruthy());
+    expect(screen.queryByText('Use this')).toBeNull();
+    expect(onUse).not.toHaveBeenCalled();
   });
 });

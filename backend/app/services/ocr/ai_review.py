@@ -8,7 +8,7 @@ read, and answers, for each, whether the page shows exactly that.
     pass     the reviewer saw every value it was shown, as read;
     fail     it sees some values differently - each is flagged on its field,
              with what the reviewer saw, for the pharmacist to settle;
-    skipped  it could not run (no quota, timeout, unreadable answer).
+    skipped  it could not run or did not confirm every requested value.
 
 It never changes a value: a second reader can misread too, so a disagreement
 sends the pharmacist to that field rather than overruling either reader. And
@@ -119,6 +119,16 @@ def _same(kind: str, read: str, seen: str) -> bool:
     """Whether the reviewer's "differs" is only a difference of formatting."""
     from app.services.ocr.cross_read import _norm, _same as same_norm
 
+    if kind in ("money", "number"):
+        from decimal import Decimal, InvalidOperation
+
+        try:
+            a, b = (Decimal(str(v).replace(",", "")) for v in (read, seen))
+            return a.is_finite() and b.is_finite() and a == b
+        except InvalidOperation:
+            return False
+    if kind == "text":
+        return read.strip().upper() == seen.strip().upper()
     if kind == "name":
         squash = lambda s: "".join(ch for ch in s.upper() if ch.isalnum())  # noqa: E731
         return squash(read) == squash(seen)
@@ -133,23 +143,33 @@ def judge(values: Dict[str, Tuple[str, str, str, str]], answer: Optional[dict], 
     matched = {str(x).strip() for x in answer.get("match") or [] if isinstance(x, (str, int))}
     differs: List[str] = []
     implicated: List[str] = []
-    confirmed = 0
+    confirmed_ids = set()
     disputed_ids = set()
+    different_ids = set()
+    unclear = {str(x).strip() for x in answer.get("unclear") or [] if isinstance(x, (str, int))}
     for entry in answer.get("differs") or []:
         if not isinstance(entry, dict):
             continue
         vid = str(entry.get("id") or "").strip()
-        seen = str(entry.get("seen") or "").strip()
+        seen = str(entry.get("seen") if entry.get("seen") is not None else "").strip()
         if vid not in values:
             continue
         path, label, kind, read = values[vid]
         disputed_ids.add(vid)
-        if not seen or _same(kind, read, seen):
-            confirmed += 1          # formatting only: the reviewer agrees
+        if not seen:
+            unclear.add(vid)
             continue
+        if _same(kind, read, seen):
+            confirmed_ids.add(vid)  # formatting only: the reviewer agrees
+            continue
+        if vid in different_ids:
+            continue
+        different_ids.add(vid)
         differs.append(f"{label}: read {read!r}, reviewer sees {seen!r}")
         implicated.append(path)
-    confirmed += len(matched & set(values))
+    confirmed_ids |= (matched & set(values)) - disputed_ids
+    confirmed_ids -= different_ids | unclear
+    confirmed = len(confirmed_ids)
     unreviewed = len(values) - confirmed - len(differs)
     tail = []
     if unreviewed > 0:
@@ -164,7 +184,8 @@ def judge(values: Dict[str, Tuple[str, str, str, str]], answer: Optional[dict], 
                 "fields": sorted(set(implicated))}
     if not confirmed:
         return skipped("The reviewer confirmed no values.")
-    return {"id": "ai_review", "label": LABEL, "status": "pass",
+    return {"id": "ai_review", "label": LABEL,
+            "status": "skipped" if unreviewed or lines_left_out else "pass",
             "message": f"{confirmed} value(s) confirmed against the scan{note}.", "fields": []}
 
 
@@ -192,6 +213,12 @@ def review(provider, fields: dict, file_bytes: bytes, content_type: str) -> dict
     if not values:
         return skipped("There were no values to review.")
     try:
+        if content_type == "application/pdf":
+            from app.services.ocr.pdf_utils import page_count
+
+            if page_count(file_bytes) > settings.ocr_ai_review_max_pages:
+                return skipped("This invoice exceeds the review page limit. Its fields were not "
+                               "confirmed from a partial set of pages; review them against the original.")
         image, ct = _page_image(file_bytes, content_type)
         answer = provider.review_json(build_prompt(values), image, ct)
     except Exception as exc:  # noqa: BLE001 - a reviewer that fails is no review

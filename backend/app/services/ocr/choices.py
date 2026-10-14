@@ -219,10 +219,9 @@ def settle_checks(meta: dict) -> None:
                               "via": f"choice_{choice['id']}"})
                 acked_ids.add(check_id)
     verification["checks"] = checks
-    failed = [c for c in checks if c["status"] == "fail" and c["id"] not in acked_ids]
-    verification["failed"] = len([c for c in checks if c["status"] == "fail"])
-    verification["passed"] = len([c for c in checks if c["status"] == "pass"])
-    verification["verdict"] = "verified" if not failed else "needs_check"
+    from app.services.ocr.coverage import summarize
+
+    summarize(verification)
 
 
 def options_by_label(choice: dict) -> Dict[str, int]:

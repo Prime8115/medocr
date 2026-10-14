@@ -82,7 +82,7 @@ def test_unanswered_values_are_reported_not_confirmed():
     values, _ = ai_review.values_to_review(_fields(), 60)
     some = list(values)[:3]
     check = ai_review.judge(values, {"match": some})
-    assert check["status"] == "pass"
+    assert check["status"] == "skipped"
     assert "3 value(s) confirmed" in check["message"]
     assert f"{len(values) - 3} value(s) it could not confirm" in check["message"]
 
@@ -94,6 +94,49 @@ def test_a_value_both_matched_and_disputed_counts_as_disputed():
     assert check["status"] == "fail"
     assert check["message"].startswith("1 value(s) the reviewer sees differently")
     assert check["fields"] == ["invoice.invoice_no"]
+
+
+def test_blank_difference_or_unclear_never_confirms_a_value():
+    values = {"H1": ("invoice.invoice_no", "invoice number", "text", "A-1")}
+    for answer in (
+        {"match": ["H1"], "differs": [{"id": "H1", "seen": None}]},
+        {"match": ["H1"], "unclear": ["H1"]},
+    ):
+        assert ai_review.judge(values, answer)["status"] == "skipped"
+
+
+def test_duplicate_answers_cannot_hide_an_unanswered_field():
+    values = {"H1": ("invoice.total_amount", "total", "money", "1.00"),
+              "H2": ("invoice.invoice_no", "invoice number", "text", "A-1")}
+    answer = {"match": ["H1"], "differs": [{"id": "H1", "seen": "1"}] * 2}
+    check = ai_review.judge(values, answer)
+    assert check["status"] == "skipped"
+    assert "1 value(s) confirmed" in check["message"]
+    assert "1 value(s) it could not confirm" in check["message"]
+
+
+def test_numeric_precision_and_reference_punctuation_are_real_differences():
+    assert not ai_review._same("money", "12.304", "12.30")
+    assert not ai_review._same("text", "AB-12", "AB12")
+    assert not ai_review._same("money", "NaN", "NaN")
+
+
+def test_lines_outside_review_limit_keep_the_review_incomplete():
+    values, _ = ai_review.values_to_review(_fields(), 1)
+    check = ai_review.judge(values, {"match": list(values)}, lines_left_out=1)
+    assert check["status"] == "skipped"
+
+
+def test_long_document_is_not_confirmed_from_only_its_first_pages(monkeypatch):
+    from app.services.ocr import pdf_utils
+    from app.config import settings
+
+    monkeypatch.setattr(pdf_utils, "page_count", lambda _: settings.ocr_ai_review_max_pages + 1)
+    provider = _Provider(answer={"match": []})
+    check = ai_review.review(provider, _fields(), b"pdf", "application/pdf")
+    assert check["status"] == "skipped"
+    assert "page limit" in check["message"]
+    assert provider.seen is None
 
 
 class _Provider:
@@ -141,7 +184,7 @@ def test_review_survives_an_edit_and_an_edit_resolves_it():
     edited = _fields()
     edited["line_items"][0]["batch_no"] = _f("OVT-25321")
     after = reverify("invoice", old, edited)
-    assert any(c["id"] == "ai_review" and c["status"] == "pass" for c in after["verification"]["checks"])
+    assert any(c["id"] == "ai_review" and c["status"] == "skipped" for c in after["verification"]["checks"])
 
 
 # --- in the pipeline ------------------------------------------------------------------

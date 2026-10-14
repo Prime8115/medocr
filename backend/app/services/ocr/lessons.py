@@ -16,11 +16,13 @@ corrections; this module applies them while a bill is read:
 import re
 from contextvars import ContextVar
 from typing import Dict, List, Optional, Set, Tuple
+from app.services.ocr.layout import signature
 
-# {supplier GSTIN: {"is": {heading: field}, "not": {heading: [field, ...]}}}
+# {supplier GSTIN: {"layouts": {signature: {"is": {...}, "not": {...}}}}}
 LESSONS: ContextVar[dict] = ContextVar("supplier_lessons", default={})
 _CURRENT: ContextVar[Optional[str]] = ContextVar("lesson_supplier", default=None)
 _APPLIED: ContextVar[Optional[list]] = ContextVar("lessons_applied", default=None)
+_LAYOUT: ContextVar[str] = ContextVar("lesson_layout", default="")
 # Set when a bill is re-read without lessons (the safety net).
 DISABLED: ContextVar[bool] = ContextVar("lessons_disabled", default=False)
 
@@ -33,13 +35,14 @@ def norm(heading) -> str:
 
 def start(lessons: Optional[dict]) -> Tuple:
     """Begin a reading with these lessons. Returns tokens for finish()."""
-    return (LESSONS.set(lessons or {}), _CURRENT.set(None), _APPLIED.set([]))
+    return (LESSONS.set(lessons or {}), _CURRENT.set(None), _APPLIED.set([]), _LAYOUT.set(""))
 
 
 def finish(tokens: Tuple) -> None:
     LESSONS.reset(tokens[0])
     _CURRENT.reset(tokens[1])
     _APPLIED.reset(tokens[2])
+    _LAYOUT.reset(tokens[3])
 
 
 def choose(page_text: Optional[str]) -> Optional[str]:
@@ -48,10 +51,10 @@ def choose(page_text: Optional[str]) -> Optional[str]:
     if _CURRENT.get() or not LESSONS.get():
         return _CURRENT.get()
     text = (page_text or "").upper()
-    for gstin in LESSONS.get():
-        if gstin and gstin.upper() in text:
-            _CURRENT.set(gstin)
-            return gstin
+    matches = [gstin for gstin in LESSONS.get() if gstin and gstin.upper() in text]
+    if len(matches) == 1:
+        _CURRENT.set(matches[0])
+        return matches[0]
     return None
 
 
@@ -59,9 +62,10 @@ def column_lessons(norms: List[str]) -> Tuple[Dict[int, str], Dict[int, Set[str]
     """For a table's headings: {column index: the field it is} and {column
     index: fields it is not}, from the current supplier's lessons."""
     gstin = _CURRENT.get()
+    _LAYOUT.set(signature(norms))
     if not gstin or DISABLED.get():
         return {}, {}
-    lessons = LESSONS.get().get(gstin) or {}
+    lessons = ((LESSONS.get().get(gstin) or {}).get("layouts") or {}).get(_LAYOUT.get()) or {}
     is_, not_ = lessons.get("is") or {}, lessons.get("not") or {}
     forced: Dict[int, str] = {}
     forbidden: Dict[int, Set[str]] = {}
@@ -78,7 +82,8 @@ def used(field: str, heading: str, kind: str) -> None:
     applied = _APPLIED.get()
     if applied is None:
         return
-    entry = {"supplier_gstin": _CURRENT.get(), "field": field, "heading": heading, "kind": kind}
+    entry = {"supplier_gstin": _CURRENT.get(), "field": field, "heading": heading, "kind": kind,
+             "layout_signature": _LAYOUT.get()}
     if entry not in applied:
         applied.append(entry)
 
@@ -94,7 +99,7 @@ def prompt_note() -> str:
     gstin = _CURRENT.get()
     if not gstin or DISABLED.get():
         return ""
-    lessons = LESSONS.get().get(gstin) or {}
+    lessons = ((LESSONS.get().get(gstin) or {}).get("layouts") or {}).get(_LAYOUT.get()) or {}
     printed = lessons.get("printed") or {}
     said = [f'the column headed "{printed.get(h, h)}" is the {field.replace("_", " ")}'
             for h, field in (lessons.get("is") or {}).items()]

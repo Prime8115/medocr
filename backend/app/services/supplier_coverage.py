@@ -44,11 +44,12 @@ def arrival(meta: Optional[dict]) -> dict:
     """What the reading looked like before anyone touched it."""
     meta = meta or {}
     verification = meta.get("verification") or {}
-    checks = verification.get("checks") or []
+    checks = (verification.get("checks") or []) + (verification.get("review_requirements") or [])
     failed = [c for c in checks if c.get("status") == "fail"]
     missed = [p for c in failed if c.get("id") == "printed_not_read" for p in c.get("fields") or []]
     return {
         "verdict": verification.get("verdict"),
+        "checks_clear": bool(checks) and not failed and any(c.get("status") == "pass" for c in checks),
         "failed": [c.get("id") for c in failed],
         "missed": missed,
         "gap_filled": [f.get("path") for f in meta.get("gap_filled") or []],
@@ -93,7 +94,8 @@ def coverage(documents: Iterable, edits: Iterable, labels: Iterable, choices: It
             first = arrival(meta)
             if doc.id in edited_ids:
                 first["verdict"] = "needs_check"
-        if first.get("verdict") == "verified":
+                first["checks_clear"] = False
+        if first.get("checks_clear", first.get("verdict") == "verified"):
             row["verified_on_arrival"] += 1
         row["_missed"].update(first.get("missed") or [])
         row["_failed"].update(c for c in first.get("failed") or [] if not str(c).startswith("choice_"))
