@@ -31,6 +31,7 @@ def _fields(**invoice):
                     "total_amount": _leaf("1000.00"),
                     **{k: _leaf(v) for k, v in invoice.items()}},
         "line_items": [{"description": _leaf("MED"), "quantity": _leaf("10"),
+                        "batch_no": _leaf("B-1"), "expiry": _leaf("09/2028"),
                         "rate": _leaf("100.00"), "amount": _leaf("1000.00")}],
     }
 
@@ -205,7 +206,8 @@ def test_the_supplier_report_shows_who_needs_attention(client, db_session):
     good = _payload()
     good["fields"]["supplier"] = {"name": _leaf("ZYDUS HEALTHCARE LIMITED"),
                                   "gstin": _leaf("27AAACG1895Q1ZY")}
-    good["meta"]["verification"] = {"verdict": "verified", "checks": []}
+    good["meta"]["verification"] = {"verdict": "checks_passed", "checks": [
+        {"id": "total_reconciles", "status": "pass"}]}
     good["meta"]["arrival"] = arrival(good["meta"])
     _seed(db_session, shop_id, good)
 

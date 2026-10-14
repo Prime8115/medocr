@@ -3,7 +3,7 @@
  *
  * Every supplier prints its bill its own way, and a new one is where reading
  * breaks. This lists them with the ones needing attention first: how many of
- * their bills arrived verified (every check passed before anyone touched them),
+ * their bills arrived without detected issues,
  * which fields reviewers keep correcting, which printed fields we miss, and
  * what we have learned for them so far.
  */
@@ -78,7 +78,7 @@ export default function Suppliers() {
               <tr className="text-muted" style={{ textAlign: 'left', fontSize: 12, textTransform: 'uppercase' }}>
                 <th style={{ padding: '12px 16px' }}><Truck size={14} /> Supplier</th>
                 <th style={{ padding: '12px 16px' }}>Bills</th>
-                <th style={{ padding: '12px 16px' }}>Verified on arrival</th>
+                <th style={{ padding: '12px 16px' }}>No issues detected on arrival</th>
                 <th style={{ padding: '12px 16px' }}>Corrected most</th>
                 <th style={{ padding: '12px 16px' }}>Printed but missed</th>
                 <th style={{ padding: '12px 16px' }}>Learned</th>

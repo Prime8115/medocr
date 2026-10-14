@@ -893,6 +893,14 @@ def approve_document(
                             action="document.check_acknowledged",
                             target=doc.id, detail={"check": check["id"], "label": check["label"]}))
         doc.payload = payload
+    if doc.doc_type == "invoice" and doc.payload:
+        import copy
+        from app.services.ocr.coverage import summarize
+
+        payload = copy.deepcopy(doc.payload)
+        if (payload.get("meta") or {}).get("verification"):
+            summarize(payload["meta"]["verification"])
+        doc.payload = payload
     doc.status = lifecycle.APPROVED
 
     # Link line items to the shop's inventory (attach matched SKUs) so the pushed
@@ -926,6 +934,12 @@ def _learn_from_approval(db: Session, user: User, doc: Document) -> list:
         payload = doc.payload or {}
         meta = payload.get("meta") or {}
         fields = payload.get("fields") or {}
+        verification = meta.get("verification") or {}
+        if any(c.get("status") == "fail" for c in
+               (verification.get("checks") or []) + (verification.get("review_requirements") or [])):
+            # An exception acknowledgement approves this document; it does not
+            # prove that its values are safe training examples for future bills.
+            return []
         kept = []
         for filled in meta.get("gap_filled") or []:
             section, _, key = str(filled.get("path") or "").partition(".")

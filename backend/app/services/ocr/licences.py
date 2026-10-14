@@ -65,7 +65,9 @@ def licences_beside(data: bytes, gstin: str, max_pages: int = 3) -> List[Tuple[s
     gstin = (gstin or "").upper()
     if len(gstin) != 15:
         return []
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
+    from app.services.ocr.pdf_access import open_pdf
+
+    with open_pdf(data) as pdf:
         for page in pdf.pages[:max_pages]:
             lines = _lines(page.extract_words(x_tolerance=1.5))
             for i, line in enumerate(lines):

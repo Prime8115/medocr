@@ -33,7 +33,7 @@ describe('verification', () => {
     expect(verdict.detail).toContain('Dates are possible');
   });
 
-  test('a clean bill is verified, counting only checks that ran', () => {
+  test('passing checks do not hide skipped checks', () => {
     const clean = v({
       checks: [
         { id: 'a', label: 'A', status: 'pass' },
@@ -41,7 +41,20 @@ describe('verification', () => {
         { id: 'c', label: 'C', status: 'skipped' },
       ],
     });
-    expect(verdictOf(clean)).toMatchObject({ ok: true, title: 'Verified - 2 of 2 checks passed' });
+    expect(verdictOf(clean)).toMatchObject({ ok: false, title: '2 checks passed · 1 not checked' });
+  });
+
+  test('required fields remain approval checks even if arithmetic passed', () => {
+    const result = verificationOf({ meta: { verification: v({
+      checks: [{ id: 'total', label: 'Total', status: 'pass' }],
+      review_requirements: [{ id: 'extraction_coverage', label: 'Missing batch', status: 'fail' }],
+    }) } });
+    expect(openChecks(result).map((c) => c.id)).toEqual(['extraction_coverage']);
+    expect(verdictOf(result)?.ok).toBe(false);
+  });
+
+  test('zero checks cannot show success', () => {
+    expect(verdictOf(v({ checks: [] }))).toMatchObject({ ok: false, title: 'Not automatically checked' });
   });
 
   test('a scan confirmed by its second reading says so', () => {

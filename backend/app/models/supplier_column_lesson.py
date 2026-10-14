@@ -19,6 +19,7 @@ class SupplierColumnLesson(Base, TimestampMixin):
     id = Column(String(32), primary_key=True, default=gen_uuid)
     shop_id = Column(String(32), ForeignKey("shops.id"), nullable=False, index=True)
     supplier_gstin = Column(String(15), nullable=False)
+    layout_signature = Column(String(64), nullable=False, default="", server_default="")
     heading = Column(String(128), nullable=False)       # as compared (lessons.norm)
     heading_printed = Column(String(128), nullable=True)  # as printed, for showing
     field = Column(String(32), nullable=False)          # "ptr"
@@ -30,5 +31,6 @@ class SupplierColumnLesson(Base, TimestampMixin):
     active = Column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
-        UniqueConstraint("shop_id", "supplier_gstin", "heading", "field", "kind", name="uq_supplier_column_lesson"),
+        UniqueConstraint("shop_id", "supplier_gstin", "layout_signature", "heading", "field", "kind",
+                         name="uq_supplier_column_lesson_layout"),
     )

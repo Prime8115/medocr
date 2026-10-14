@@ -2,9 +2,9 @@
  * The verification layer's result, as the server stores it in
  * `payload.meta.verification` (backend/app/services/ocr/verify.py).
  *
- * Every check is pass, fail or skipped. A document is "verified" only with no
- * failures; otherwise each failed check must be confirmed against the paper
- * before it can be approved - the server refuses approval until it is.
+ * Every check is pass, fail or skipped. Passing checks do not verify all fields.
+ * Failed checks and required-field gaps need confirmation against the paper
+ * before approval; the server enforces the same requirements.
  */
 export type CheckStatus = 'pass' | 'fail' | 'skipped';
 
@@ -21,14 +21,20 @@ export interface Verification {
   passed: number;
   failed: number;
   skipped?: number;
-  verdict: 'verified' | 'needs_check';
+  verdict: 'verified' | 'needs_check' | 'checks_passed' | 'incomplete' | 'reviewed';
+  review_requirements?: Check[];
   acknowledged?: { id: string; by?: string; at?: string }[];
 }
 
 export function verificationOf(payload: unknown): Verification | null {
   const meta = (payload as { meta?: { verification?: Verification } } | null)?.meta;
   const v = meta?.verification;
-  return v && Array.isArray(v.checks) ? v : null;
+  if (!v || !Array.isArray(v.checks)) return null;
+  const checks = [...v.checks];
+  for (const requirement of v.review_requirements ?? []) {
+    if (!checks.some((c) => c.id === requirement.id)) checks.push(requirement);
+  }
+  return { ...v, checks };
 }
 
 /** Failed checks not yet confirmed - what stands between review and approval. */
@@ -55,13 +61,14 @@ export function verdictOf(v: Verification | null): Verdict | null {
   if (!v) return null;
   const tested = v.checks.filter((c) => c.status !== 'skipped').length;
   const failed = v.checks.filter((c) => c.status === 'fail');
+  const skipped = v.checks.filter((c) => c.status === 'skipped').length;
   if (failed.length === 0) {
     return {
-      ok: true,
-      title: `Verified - ${tested} of ${tested} checks passed`,
+      ok: tested > 0 && skipped === 0,
+      title: tested === 0 ? 'Not automatically checked' : `${tested} checks passed${skipped ? ` · ${skipped} not checked` : ''}`,
       detail: confirmedBySecondReading(v)
-        ? 'Every figure agrees with the rest of the bill, and a second reading of the scan confirms it.'
-        : 'Every figure agrees with the rest of the bill.',
+        ? 'A second reading agreed on the fields it checked. Confirm remaining fields against the invoice.'
+        : 'Passing checks do not confirm every field. Review the invoice before approving.',
     };
   }
   return {

@@ -31,6 +31,7 @@ from app.services.ocr.invoice_checks import (
     validate_line_arithmetic,
 )
 from app.services.ocr.postprocess import postprocess_fields
+from app.services.ocr.pdf_access import pdf_session
 from app.services.ocr.choices import apply_default, reference_choices, settle_checks, total_choice
 from app.services.ocr.verify import flag_failed_fields, verify_invoice
 from app.services.ocr.pdf_utils import (
@@ -428,6 +429,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
                    if k.startswith("column:")}
         if columns:
             integrity["columns"] = columns
+        integrity["table_layouts"] = (hints.get("price_labels") or {}).get("table_layouts") or []
         billed = resolve_billed_rate(fields.get("line_items") or [], hints.get("price_labels"))
         if billed:
             integrity["billed_rate_column"] = billed
@@ -488,6 +490,7 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
         integrity["document_kind"] = document_kind.detect(
             title.get("value") if isinstance(title, dict) else None,
             hints.get("document_text") or hints.get("party_text") or "")
+        integrity["pages_failed"] = failed_pages
         verification = verify_invoice(fields, integrity, extra=hints.get("cross_read"))
         flag_failed_fields(fields, verification)
         integrity["verification"] = verification
@@ -574,6 +577,7 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
     return False
 
 
+@pdf_session()
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None,
                      own_gstins=None, lessons=None) -> dict:
     """Read one document. `own_gstins` are the shop's own GSTINs, when known:

@@ -14,9 +14,9 @@ those identities. This module runs all of them and reports, per check:
 column must not be flagged for it, or the verdict would cry wolf and stop
 being read.
 
-The result is stored as `meta.verification`. Its `verdict` is "verified" only
-with zero failures; anything else is "needs_check", and approval then requires
-each failed check to be acknowledged against the paper.
+The result is stored as `meta.verification`. Passing arithmetic is distinct
+from complete extraction. Failed checks and required-field gaps must be
+acknowledged against the paper before approval; skipped checks remain visible.
 
 This wraps the integrity checks in invoice_checks - it does not re-implement
 them - and adds the identities those did not cover.
@@ -560,16 +560,13 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
     for check in extra or []:
         c.items.append(check)
 
-    passed = sum(1 for x in c.items if x["status"] == "pass")
-    failed = [x for x in c.items if x["status"] == "fail"]
-    return {
+    from app.services.ocr.coverage import requirements, summarize
+
+    return summarize({
         "checks": c.items,
-        "passed": passed,
-        "failed": len(failed),
-        "skipped": sum(1 for x in c.items if x["status"] == "skipped"),
-        "verdict": "verified" if not failed else "needs_check",
+        "review_requirements": requirements(fields, report),
         "acknowledged": [],
-    }
+    })
 
 
 def flag_failed_fields(fields: dict, verification: dict) -> None:
@@ -603,7 +600,7 @@ def open_checks(verification: Optional[dict]) -> List[Dict[str, str]]:
     done = {a.get("id") for a in verification.get("acknowledged") or []}
     return [
         {"id": x["id"], "label": x["label"], "message": x.get("message", "")}
-        for x in verification.get("checks") or []
+        for x in (verification.get("checks") or []) + (verification.get("review_requirements") or [])
         if x["status"] == "fail" and x["id"] not in done
     ]
 
@@ -639,12 +636,20 @@ def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     for check in ((meta.get("verification") or {}).get("checks") or []):
         if check.get("id") not in _CARRIED_CHECKS:
             continue
+        if check["status"] == "pass" and old_fields != fields:
+            # These checks do not retain the complete list of values they
+            # confirmed. After any edit, their old pass cannot vouch for the
+            # replacement data (including row additions or reordering).
+            check = {**check, "status": "skipped",
+                     "message": "The fields were edited after the second reading. "
+                                "Confirm the current values against the paper."}
         if check["status"] == "fail":
             changed = [p for p in check.get("fields") or []
                        if _v(_resolve(old_fields, p)) != _v(_resolve(fields, p))]
             if check.get("fields") and len(changed) == len(check["fields"]):
-                check = {**check, "status": "pass",
-                         "message": "Every value the second reading disputed was corrected in review."}
+                check = {**check, "status": "skipped",
+                         "message": "The disputed values were edited. The second reading has not "
+                                    "checked the replacement values; confirm them against the paper."}
         carried.append(check)
 
     verification = verify_invoice(fields, meta, extra=carried)

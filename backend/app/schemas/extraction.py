@@ -310,6 +310,9 @@ class ExtractionMeta(BaseModel):
     # The supplier's printed heading for each line field the reader mapped
     # ({"ptr": "Trade Price/Unit"}) - where a correction's value came from.
     columns: Optional[dict] = None
+    # Ordered printed headings, independent of values and learned mappings.
+    table_layouts: Optional[list] = None
+    pages_failed: int = 0
     # The reading as it arrived, before any review (services/corrections.py).
     original_fields: Optional[dict] = None
     # Supplier lessons that shaped this reading, and ones dropped because the

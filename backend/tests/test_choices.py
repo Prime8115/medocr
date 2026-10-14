@@ -19,8 +19,10 @@ def _fields(po="100178296", date="30.06.2025"):
         "supplier": {"name": _leaf("Zydus Healthcare Limited"), "gstin": _leaf(ZYDUS_GSTIN)},
         "bill_to": {}, "ship_to": {},
         "invoice": {"invoice_no": _leaf("2299707688"), "po_no": _leaf(po), "po_date": _leaf(date),
+                    "invoice_date": _leaf("30.06.2025"),
                     "total_amount": _leaf("1000.00")},
         "line_items": [{"description": _leaf("MED"), "quantity": _leaf("10"),
+                        "batch_no": _leaf("B-1"), "expiry": _leaf("06/2028"),
                         "rate": _leaf("100.00"), "amount": _leaf("1000.00")}],
     }
 
@@ -111,7 +113,7 @@ def test_the_shops_own_po_is_taken_and_holds_nothing_up():
     payload = _payload()
     assert payload["fields"]["invoice"]["po_no"]["value"] == "GN-15912-1068-SHREE"
     v = payload["meta"]["verification"]
-    assert v["verdict"] == "verified"
+    assert v["verdict"] == "incomplete"
     assert not any(c["id"] == "choice_po" for c in v["checks"])
 
 
@@ -131,7 +133,7 @@ def test_choosing_fills_the_fields_and_settles_the_verdict():
     inv = payload["fields"]["invoice"]
     assert inv["po_no"]["value"] == "GN-15912-1068-SHREE"
     assert inv["po_date"]["value"] is None
-    assert payload["meta"]["verification"]["verdict"] == "verified"
+    assert payload["meta"]["verification"]["verdict"] == "incomplete"
     assert payload["meta"]["choices"][0]["chosen"] == 0
 
 
@@ -144,7 +146,7 @@ def test_choosing_the_total_settles_the_words_check():
     ch.choose(payload, "total", 1, "u1")
     ch.settle_checks(meta)
     assert payload["fields"]["invoice"]["total_amount"]["value"] == "144144.00"
-    assert meta["verification"]["verdict"] == "verified"
+    assert meta["verification"]["verdict"] == "reviewed"
 
 
 # --- through the API, and remembered per supplier ------------------------------------
@@ -188,7 +190,7 @@ def test_a_shops_own_pick_for_the_supplier_beats_the_automatic_po(client, db_ses
     assert nxt["fields"]["invoice"]["po_no"]["value"] == "100178296"
     choice = nxt["meta"]["choices"][0]
     assert choice["chosen"] == 1 and choice["remembered"] is True and choice["auto"] is False
-    assert nxt["meta"]["verification"]["verdict"] == "verified"
+    assert nxt["meta"]["verification"]["verdict"] == "incomplete"
 
 
 def test_another_shop_does_not_inherit_the_decision(client, db_session):
