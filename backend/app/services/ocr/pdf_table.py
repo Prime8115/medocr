@@ -34,10 +34,10 @@ _MIN_HEADER_HITS = 4
 
 # A line that ends the line-item table.
 _CARRIED_TOTAL = re.compile(
-    r"\b(balance\s*b\s*/?\s*f|balance\s*c\s*/?\s*f|brought\s*forward|carried\s*forward|"
+    r"\b(balance\s*b\s*/?\s*f|balance\s*c\s*/?\s*f|brought\s*forward|carr(?:ied|y)\s*forward|"
     r"carried\s*over|b\s*/\s*f\b|c\s*/\s*f\b)", re.I)
 # A wrapped line that labels the product above it: its maker or marketer.
-_DETAIL_LINE = re.compile(r"\s*(?:mfg|mfr|mkt|mfd|marketed\s+by|manufactured\s+by)\s*[.:]", re.I)
+_DETAIL_LINE = re.compile(r"\s*(?:mfg|mfr|mkt|mfd|marketed\s+by|manufactured\s+by)(?:\s*name)?\s*[.:]", re.I)
 _FOOTER = re.compile(
     # "GST Summary (15621.50 @ 6.00% SGST=937.29,CGST=937.29)" - Overseas sets
     # its summary block in the table's own columns, so every figure on that line
@@ -724,23 +724,29 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 # A stacked heading names up to three values, one per line.
                 record[col] = f"{record[col]}\n{val}"
 
-    # The line's own amount: every product line prints one. Akumentis stacks
-    # "Qty / Free Qty" and "MRP New / Old", so the line under a product holds
-    # a free quantity and an old MRP - two figures, but no amount: the rest of
-    # the line above, not a product of its own.
+    batch_cols = [i for i, col in enumerate(columns) if re.search(r"batch|\blot\b", col["label"], re.I)]
+    # The line's amount: "Total Qty" is a quantity, Alkem's "Taxa ble" an amount.
     amount_cols = [i for i, col in enumerate(columns)
-                   if re.search(r"amount|value|\btotal\b|\bamt\b", col["label"], re.I)
-                   and not re.search(r"gst|tax\b|disc|rate", col["label"], re.I)]
+                   if re.search(r"amount|value|\btotal\b|\bamt\b|taxa\s*ble", col["label"], re.I)
+                   and not re.search(r"gst|tax\b|disc|rate|qty|quantity", col["label"], re.I)]
 
     def starts_record(cells: List[str]) -> bool:
+        """A record line - not the second line of a product's stacked values.
+        Akumentis stacks "Mfg / Exp", "Qty / Free Qty" and "MRP New / Old":
+        under each product a line "Apr-27  8  260.10" - two figures, but no
+        name, batch or amount of its own - and then "MFG Name : ...". Both are
+        the product above. (Alkem's line of prices under a name does carry
+        the amount, and is joined to its row further on.)"""
         if not _is_record_start(cells, numeric_columns):
             return False
-        products = [r for r in rows if r[description_col].strip() or any(r[i].strip() for i in amount_cols)]
-        with_amount = [r for r in products if any(r[i].strip() for i in amount_cols)]
-        if amount_cols and products and len(with_amount) >= 0.8 * len(products):
-            return any(cells[i].strip() for i in amount_cols)
-        return True
+        if any(cells[i].strip() for i in batch_cols):
+            return True
+        name = cells[description_col].strip()
+        if _DETAIL_LINE.match(name):
+            return False
+        return bool(name or not amount_cols or any(cells[i].strip() for i in amount_cols))
 
+    sealed = False   # after a page's carried-forward total
     for line in lines[end + 1:]:
         text = _line_text(line)
         if _FOOTER.search(text):
@@ -749,10 +755,18 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             # A page's running total brought forward or carried over (Eris
             # prints "Balance B/F 2,359,633.25" above a page's first item,
             # which then took that as its amount). Never a product, never part
-            # of one.
+            # of one - and a "Carry Forward" closes the page's lines: Torrent's
+            # registered-office footer under it is no product's.
+            if rows:
+                for _otop, otext, ovals in orphans:
+                    give(rows[-1], otext, ovals, before=False)
+                orphans = []
+                sealed = True
             continue
         cells = _assign(line, edges, n)
         if not any(cells):
+            continue
+        if sealed and not starts_record(cells):
             continue
         if carried and not rows and not starts_record(cells):
             continue  # the continuation page's letterhead, above its first row
@@ -767,6 +781,7 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                     rows[-1][i] = c
             continue
         if starts_record(cells):
+            sealed = False
             top = line[0]
             # Decide where the orphans between the last record and this one go.
             for otop, otext, ovals in orphans:

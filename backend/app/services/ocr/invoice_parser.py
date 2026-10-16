@@ -1235,7 +1235,10 @@ _MONEY_TOKEN = re.compile(r"(?:^|\s)(?:\d[\d,]*\.\d{2}|\.\d{2})(?:\s|$)")
 _NOT_A_PRODUCT = re.compile(
     r"(\brupees\b|\bpaisa\b|\bonly\s*$|terms\s*(and|&)\s*conditions|\ba\s*/\s*c\b|\bifsc\b|"
     r"\bgstin\s*:|\bpan\s*no\b|\bstate\s*code\b|\bcredit\s*note\b|\bdebit\s*note\b|\bvalue\s*:|"
-    r"^(cn|dn)\s*no|=====)",
+    r"^(cn|dn)\s*no|=====|"
+    # A party's details read off the grid: Prabodhan's "GSTN No : Phone No :
+    # Fax No" line, with the buyer's GSTIN under HSN and its PIN as an amount.
+    r"\bgstn\s*no\b|\bphone\s*no\b|\bfax\s*no\b|\bmobile\s*no\b)",
     re.I,
 )
 _PAGE_FURNITURE = re.compile(
