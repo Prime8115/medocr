@@ -704,10 +704,19 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
     # (top, description text, {stacked column: value}).
     orphans: List[Tuple[float, str, Dict[int, str]]] = []
 
+    # "Product Name / Manufacturer Name" (Bharat Serums), "Product Description
+    # / Manufacturer" (Sanofi): the line under the name is the maker, kept on
+    # a line of its own for the reader to tell apart.
+    maker_below = bool(re.search(r"/\s*(?:manufacturer|mfr|mfg|maker)",
+                                 columns[description_col]["label"] if columns else "", re.I))
+
     def give(record: List[str], otext: str, ovals: Dict[int, str], before: bool) -> None:
         if otext:
-            record[description_col] = (f"{otext} {record[description_col]}" if before
-                                       else f"{record[description_col]} {otext}").strip()
+            if maker_below and not before and record[description_col] and "\n" not in record[description_col]:
+                record[description_col] = f"{record[description_col]}\n{otext}"
+            else:
+                record[description_col] = (f"{otext} {record[description_col]}" if before
+                                           else f"{record[description_col]} {otext}").strip()
         for col, val in ovals.items():
             if col in pack_cols:
                 # Only a pack the row's own line leaves empty, and only a short
@@ -798,7 +807,12 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 # "Mfg : JAIN LIFECARE" (Cosmin) is a detail printed UNDER its
                 # product, however close it sits to the next one - as a prefix
                 # it became part of the next product's name.
-                if rows and (abs(otop - row_tops[-1]) <= abs(otop - top) or _DETAIL_LINE.match(otext)):
+                # ...and the rest of a bracket the line above left open: Sun
+                # wraps "(Old MRP:98.00, Old" / "GST:12.00%)" - the tail sat
+                # nearer the next product and became the start of its name.
+                above = rows[-1][description_col] if rows else ""
+                if rows and (abs(otop - row_tops[-1]) <= abs(otop - top) or _DETAIL_LINE.match(otext)
+                             or above.count("(") > above.count(")")):
                     give(rows[-1], otext, ovals, before=False)
                 elif not rows and ovals and not carried:
                     # Figures above a page's first line are the end of the

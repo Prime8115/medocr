@@ -1249,7 +1249,8 @@ _NOT_A_PRODUCT = re.compile(
 _PAGE_FURNITURE = re.compile(
     r"\s(?:printed\s+(?:date|on|by)\s*:|page\s+\d+\s+of\s+\d+|\d[\d.]*\s*\*\s*\d+(?:\.\d+)?\s*\+\s*\d+(?:\.\d+)?\s*%\s*=)",
     re.I)
-_MAKER_IN_DESC = re.compile(r"\s(?:mfg|mfr|mkt|marketed\s+by|manufactured\s+by)\s*[.:]\s*(?!(?:date|dt)\b)(\S.*)$", re.I)
+_MAKER_IN_DESC = re.compile(r"\s(?:mfg|mfr|mkt|marketed\s+by|manufactured\s+by)(?:\s*name)?\s*[.:]\s*(?!(?:date|dt)\b)(\S.*)$",
+                            re.I)
 # Where footer text starts when it runs onto the last product's description.
 _FOOTER_IN_DESC = re.compile(r"\s(?:scheme\s+discount|discount\s+sgst|rupees|=====|value\s*:|"
                              r"credit\s+note|debit\s+note|terms\s*(?:and|&)\s*conditions|"
@@ -1363,6 +1364,25 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             row[disc_at] = ""
 
     desc = _clean(cell("description"))
+    # The maker on the line under the name, where the heading says it is there:
+    # "Product Name / Manufacturer Name" (Bharat Serums) prints "LONOPIN 20 MG
+    # PFS **" over "BHARAT SERUMS AND VACCINESS LTD.".
+    lines = [ln.strip() for ln in str(cell("description") or "").split("\n") if ln.strip()]
+    at = cols.get("description")
+    maker_below = None
+    if len(lines) >= 2 and at is not None and at < len(header_row) and \
+            re.search(r"/\s*(?:manufacturer|mfr|mfg|maker)", str(header_row[at] or ""), re.I):
+        # The maker is the lines at the end with no figure in them, when they
+        # name a company - the name may wrap too: Sanofi prints "BUSCOGAST
+        # 10MG" / "TABSC BL 10 IN" / "RECIPHARM" / "PHARMA-BANGALORE".
+        start = len(lines)
+        while start > 1 and not re.search(r"\d", lines[start - 1]):
+            start -= 1
+        block = " ".join(lines[start:])
+        if block and re.search(r"pharma|\bltd\b|limited|\blab|health|biotech|remed|drugs|industries|"
+                               r"\bcorp|\binc\b|[A-Z]{3,}-[A-Z]{3,}", block, re.I):
+            maker_below = _clean(block)
+            desc = _clean(" ".join(lines[:start]))
     # The end of a long heading wrapped onto the first item: Torrent's
     # "Description (... as per | Pre GST reform 2.0 rates)" left "Pre GST
     # reform 2.0 rates) AMIFRU 40 TAB" as its first product.
@@ -1390,6 +1410,8 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         return None
 
     item = {"description": _f(desc)}
+    if maker_below:
+        item["manufacturer"] = _f(maker_below)
     # The pack at the end of the name, where the name's column says it holds
     # both: "Product & Pack" (Micropark "...(CHOCOLATE)200GM CARTON"),
     # "Product Description & Packs" (Hetero "...TABLETS 10'S"), "Product/Pack /
@@ -1997,6 +2019,19 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         item["batch_no"] = _f(batch_words[-1])
         batch = batch_words[-1]
         real_batch = _is_batch(batch)
+    # "Retelex Kit Sales Case qty: 0 Box qty: 10 Loose qty: 0" (Abbott): the
+    # pack break-up printed under the name is not part of it.
+    breakup = re.search(r"\s+case\s*qty\s*:\s*\d.*$", desc, re.I)
+    if breakup and breakup.start() > 0:
+        desc = desc[:breakup.start()].strip()
+        item["description"] = _f(desc)
+    # "APTIMUST SYRUP(HSN- 30049099)" (Mankind): the code is the HSN.
+    in_name = re.search(r"\s*\(\s*HSN\s*[-:]?\s*(\d{4}(?:\d{2}){0,2})\s*\)\s*$", desc, re.I)
+    if in_name and in_name.start() > 0:
+        if not (item.get("hsn") or {}).get("value"):
+            item["hsn"] = _f(in_name.group(1))
+        desc = desc[:in_name.start()].strip()
+        item["description"] = _f(desc)
     maker = _MAKER_IN_DESC.search(desc)
     if maker and maker.start() > 0:
         # "NIGRILOW CREAM 50GM Mfg : MAXNOVA HEALTHCARE" (Cosmin): the maker,
@@ -2183,6 +2218,29 @@ def _merge_stacked_header(table, hi: int):
     return merged, hi + 2
 
 
+_SERIAL_AND_CODE = re.compile(r"(\d{1,3})\s+(\d{3,6})\s+(?=[A-Za-z])")
+
+
+def _strip_serial_and_code(rows: List[dict]) -> None:
+    """East India runs its serial number and product code into the name:
+    "1 0454 PYRIGESIC 1000", "2 0569 TONOFERON SF". Taken off only when
+    every line of the table starts so and the serial numbers count up one by
+    one - then they are the bill's numbering, not part of any name."""
+    if len(rows) < 3:
+        return
+    found = [_SERIAL_AND_CODE.match(str((r.get("description") or {}).get("value") or "")) for r in rows]
+    if not all(found):
+        return
+    serials = [int(m.group(1)) for m in found]
+    if any(b != a + 1 for a, b in zip(serials, serials[1:])):
+        return
+    for row, m in zip(rows, found):
+        name = str(row["description"]["value"])
+        row["description"] = dict(row["description"], value=name[m.end():].strip())
+        if not (row.get("product_code") or {}).get("value"):
+            row["product_code"] = _f(m.group(2))
+
+
 def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
                       local: Optional[str] = None) -> List[dict]:
     """Line items from whichever of these tables is the line-item table."""
@@ -2230,7 +2288,9 @@ def _rows_from_tables(tables, labels: dict, interstate: Optional[bool] = None,
         # The rest of the previous page's last line, at the top of this one.
         lead = _continued_from_last_page(table[data_from] if data_from < len(table) else None,
                                          cols, header_row)
-        out.extend(([{"_continues": lead}] if lead else []) + _without_totals_row(rows))
+        rows = _without_totals_row(rows)
+        _strip_serial_and_code(rows)
+        out.extend(([{"_continues": lead}] if lead else []) + rows)
     return out
 
 

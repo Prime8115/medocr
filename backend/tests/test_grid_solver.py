@@ -164,3 +164,63 @@ def test_a_remark_far_below_the_last_product_is_not_part_of_it():
         (120, [("CREAM", 40, 70), ("AB123", 176, 205), ("10", 245, 252), ("120.00", 280, 300), ("1000.00", 322, 350)]),
     ], extra=[_w("Adj", 40, 55, 330), _w("No", 57, 66, 330), _w("CN-00007", 70, 110, 330)])
     assert table[1][0] == "CREAM"
+
+
+# --- the product name, and what is printed with it ----------------------------------------
+
+def _named(desc, header=("Description", "Batch", "Qty", "Rate", "Amount")):
+    from app.services.ocr.invoice_parser import _build_item
+
+    cols = {"description": 0, "batch_no": 1, "quantity": 2, "rate": 3, "amount": 4}
+    return _build_item([desc, "AB1234", "10", "12.50", "125.00"], cols, list(header), [], None, None)
+
+
+def test_the_maker_after_mfg_name_is_the_manufacturer():
+    item = _named("CUTILITE 20GM MFG Name :GNOSIS PHARMACEUTICALS")
+    assert item["description"]["value"] == "CUTILITE 20GM"
+    assert item["manufacturer"]["value"] == "GNOSIS PHARMACEUTICALS"
+
+
+def test_an_hsn_in_brackets_after_the_name_is_the_hsn():
+    item = _named("APTIMUST SYRUP(HSN- 30049099)")
+    assert (item["description"]["value"], item["hsn"]["value"]) == ("APTIMUST SYRUP", "30049099")
+
+
+def test_a_pack_break_up_after_the_name_is_not_part_of_it():
+    assert _named("Retelex Kit Sales Case qty: 0 Box qty: 10 Loose qty: 0")["description"]["value"] \
+        == "Retelex Kit Sales"
+
+
+def test_the_maker_under_the_name_where_the_heading_says_so():
+    header = ("Product Description / Manufacturer", "Batch", "Qty", "Rate", "Amount")
+    item = _named("BUSCOGAST 10MG\nTABSC BL 10 IN\nRECIPHARM\nPHARMA-BANGALORE", header)
+    assert item["description"]["value"] == "BUSCOGAST 10MG TABSC BL 10 IN"
+    assert item["manufacturer"]["value"] == "RECIPHARM PHARMA-BANGALORE"
+    # ...but a wrapped name with no company under it stays one name.
+    item = _named("PARACETAMOL 500MG\nTABLETS 10S", header)
+    assert item["description"]["value"] == "PARACETAMOL 500MG TABLETS 10S"
+
+
+def test_serial_numbers_and_codes_run_into_the_names_are_taken_off():
+    from app.services.ocr.invoice_parser import _strip_serial_and_code
+
+    rows = [{"description": _f(d)} for d in ("1 0454 PYRIGESIC 1000", "2 0569 TONOFERON SF", "3 0638 VITAZYME")]
+    _strip_serial_and_code(rows)
+    assert [r["description"]["value"] for r in rows] == ["PYRIGESIC 1000", "TONOFERON SF", "VITAZYME"]
+    assert rows[0]["product_code"]["value"] == "0454"
+    # Not a count: "10 1000 ..." names are left as printed.
+    rows = [{"description": _f(d)} for d in ("10 1000 IU CREAM", "2 0569 TONOFERON SF", "3 0638 VITAZYME")]
+    _strip_serial_and_code(rows)
+    assert rows[0]["description"]["value"] == "10 1000 IU CREAM"
+
+
+def test_the_rest_of_an_open_bracket_belongs_to_the_line_above():
+    """Sun wraps "(Old MRP:98.00, Old" over "GST:12.00%)", nearer the next line."""
+    rows = [
+        (120, [("ABZORB", 40, 70), ("(Old", 72, 90), ("MRP:98.00,", 92, 140), ("AB123", 176, 205), ("10", 245, 252),
+               ("120.00", 280, 300), ("1000.00", 322, 350)]),
+        (131, [("GST:12.00%)", 40, 90)]),
+        (136, [("VOLINI", 40, 70), ("CD456", 176, 205), ("5", 247, 252), ("90.00", 282, 300), ("400.00", 324, 350)]),
+    ]
+    table = _simple(rows)
+    assert table[1][0].endswith("GST:12.00%)") and table[2][0] == "VOLINI"
