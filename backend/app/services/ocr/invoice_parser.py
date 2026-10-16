@@ -1542,6 +1542,24 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         if spill and name:
             item["description"] = _f(f"{name} {spill}")
 
+    # The pack cell holding what is not the pack: a bracketed tail of the name
+    # ("[EIPW] 10 Tabs.", "SYRUP [EIPW] 100 ml" at East India, "(SL) 10'S" at
+    # Aristo) goes back to
+    # the name; a lone "0" - the free quantity beside it, or nothing at all
+    # (Piramal, Kanchan's "1X10 0") - is not a pack.
+    pack = str((item.get("pack") or {}).get("value") or "").strip()
+    if pack:
+        lead = re.match(r"((?:[A-Z][A-Z.]*\s+)*(?:[\[(][A-Z ]{1,12}[\])]\s*)+)(\S.*)$", pack)
+        if lead:
+            name = str((item.get("description") or {}).get("value") or "").strip()
+            item["description"] = _f(f"{name} {lead.group(1).strip()}".strip())
+            pack = lead.group(2).strip()
+        pack = re.sub(r"(?<=[A-Za-z0-9'])\s+0$", "", pack)
+        if re.fullmatch(r"0+(?:\.0+)?", pack):
+            item.pop("pack", None)
+        else:
+            item["pack"] = dict(item["pack"], value=pack)
+
     # One column heading several fields side by side, on ONE line: the
     # Marg-style ERP heads "MFGR EXP. BATCH NO. DATE" and prints "ABLT 12/26
     # CH-2501" - maker, expiry, batch. Read as one value the batch was "ABLT
