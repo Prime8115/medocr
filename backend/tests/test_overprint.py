@@ -145,3 +145,19 @@ def test_a_name_wider_than_its_heading_stays_in_its_column():
     for row in body:
         assert any((c or "").endswith("Tablets") for c in row), row
         assert any((c or "").strip() in ("AB123", "CD456") for c in row), row
+
+
+def test_a_block_drawn_twice_a_little_apart_is_not_overprint():
+    """Overseas draws its party block twice, the second copy shifted by a few
+    letters: the two copies are one value."""
+    import pdfplumber
+
+    from app.services.ocr.pdf_table import without_overprint
+
+    def twice(c):
+        for n in range(3):
+            c.drawString(120, 300 - 12 * n, "Name : EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED")
+            c.drawString(131, 300 - 12 * n, "Name : EASTERN AGENCIES HEALTHCARE PRIVATE LIMITED")
+
+    with pdfplumber.open(BytesIO(_page_pdf(twice))) as pdf:
+        assert without_overprint(pdf.pages[0]) is pdf.pages[0]

@@ -434,12 +434,17 @@ def without_overprint(page):
     the one running on; from where the other run starts its letters are
     dropped. Each cell keeps
     its own text, and the run-on keeps what it printed in its own cell. Bold
-    faked by drawing a letter twice is not this: those letters are the same.
+    faked by drawing a letter twice, or a block drawn twice a little apart,
+    is not this: the two carry the same text.
     """
     try:
         chars = list(page.chars)
         starts = _run_starts(chars)
         order = {id(c): i for i, c in enumerate(chars)}
+        texts: Dict[Tuple[float, int], str] = {}
+        for c, start in zip(chars, starts):
+            texts[start] = texts.get(start, "") + (c.get("text") or "")
+        texts = {k: re.sub(r"\s+", "", v).upper() for k, v in texts.items()}
         lines: List[list] = []
         for c in sorted((c for c in chars if (c.get("text") or "").strip()), key=lambda c: float(c["top"])):
             if lines and float(c["top"]) - float(lines[-1][0]["top"]) <= 1.0:
@@ -456,6 +461,10 @@ def without_overprint(page):
                 width = min(float(a["x1"]) - float(a["x0"]), float(b["x1"]) - float(b["x0"]))
                 sa, sb = starts[order[id(a)]], starts[order[id(b)]]
                 if width <= 0 or float(a["x1"]) - float(b["x0"]) <= 0.5 * width or abs(sa[0] - sb[0]) <= 1.0:
+                    continue
+                # The same text drawn twice a little apart (Overseas draws its
+                # party block so) is one value, not one cell over another.
+                if texts[sa] in texts[sb] or texts[sb] in texts[sa]:
                     continue
                 pairs += 1
                 run, other = (sa, sb) if sa[0] < sb[0] else (sb, sa)
