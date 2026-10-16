@@ -725,6 +725,8 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 record[col] = f"{record[col]}\n{val}"
 
     batch_cols = [i for i, col in enumerate(columns) if re.search(r"batch|\blot\b", col["label"], re.I)]
+    serial_col = 0 if columns and re.fullmatch(r"s\.?\s*r\.?(?:\s*no\.?)?|s\.?\s*no\.?|sl\.?\s*no\.?|#",
+                                              columns[0]["label"].strip(), re.I) else None
     # The line's amount: "Total Qty" is a quantity, Alkem's "Taxa ble" an amount.
     amount_cols = [i for i, col in enumerate(columns)
                    if re.search(r"amount|value|\btotal\b|\bamt\b|taxa\s*ble", col["label"], re.I)
@@ -736,15 +738,23 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
         under each product a line "Apr-27  8  260.10" - two figures, but no
         name, batch or amount of its own - and then "MFG Name : ...". Both are
         the product above. (Alkem's line of prices under a name does carry
-        the amount, and is joined to its row further on.)"""
+        the amount, and is joined to its row further on; a free-supply line
+        has its own batch.)"""
         if not _is_record_start(cells, numeric_columns):
             return False
-        if any(cells[i].strip() for i in batch_cols):
+        # Its own serial number (Alkem's "54", whose batch sits under HSN), or
+        # its own batch - never a size like "200ml".
+        if serial_col is not None and re.fullmatch(r"\d{1,4}\.?", cells[serial_col].strip()):
             return True
-        name = cells[description_col].strip()
-        if _DETAIL_LINE.match(name):
+        if any(re.fullmatch(r"(?=\S*\d)[A-Za-z0-9][A-Za-z0-9/-]{3,}", token)
+               and not re.fullmatch(r"\d+(?:\.\d+)?\s*(?:ml|mg|mcg|gm?|kg|ltr?|s)", token, re.I)
+               for i in batch_cols for token in cells[i].split()):
+            return True
+        if _DETAIL_LINE.match(cells[description_col].strip()):
             return False
-        return bool(name or not amount_cols or any(cells[i].strip() for i in amount_cols))
+        # Neither a batch nor an amount: Cipla Health's note under its table,
+        # "Prolyte ORS Pineapple Tetra 200ml 40, Clocip KZ Soap 75g 12, ...".
+        return not amount_cols or any(cells[i].strip() for i in amount_cols)
 
     sealed = False   # after a page's carried-forward total
     for line in lines[end + 1:]:
