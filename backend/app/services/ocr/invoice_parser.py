@@ -18,6 +18,7 @@ Two things this parser is careful about, because both burned real users:
    billed `rate` came from, instead of picking whichever price column happens to
    sit furthest left.
 """
+import functools
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
@@ -1012,15 +1013,19 @@ _STACKABLE = (("batch_no", r"batch|lot"), ("mfg_date", r"mfg|mfd"), ("expiry", r
               ("ptr", r"p\.?\s*t\.?\s*r\b"), ("mrp", r"m\.?\s*r\.?\s*p\b"), ("pts", r"p\.?\s*t\.?\s*s\b"))
 
 
-def _stacked_fields(heading) -> List[str]:
-    """The fields a stacked heading names, in the order it names them."""
-    text = str(heading or "").lower()
+@functools.lru_cache(maxsize=1024)
+def _stacked_fields_of(text: str) -> Tuple[str, ...]:
     found = []
     for field, pattern in _STACKABLE:
         m = re.search(pattern, text)
         if m:
             found.append((m.start(), field))
-    return [field for _, field in sorted(found)]
+    return tuple(field for _, field in sorted(found))
+
+
+def _stacked_fields(heading) -> List[str]:
+    """The fields a stacked heading names, in the order it names them."""
+    return list(_stacked_fields_of(str(heading or "").lower()))
 
 
 def _strip_stray(text: str) -> str:
