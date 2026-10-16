@@ -564,6 +564,7 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
     reconciles: Optional[bool] = None
     reconciled_by: Optional[str] = None
     built_from_lines: Optional[float] = None
+    invoice_value: Optional[float] = None   # before the bill's own adjustment
 
     if line_total is not None and printed_total:
         candidates = _expected_totals(line_total, gross_total, invoice)
@@ -628,6 +629,7 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                     # After the bill's own adjustment, the lines build up to
                     # what it asks for - which is what its words spell out.
                     built_from_lines = printed_total + (hit[1] - figure)
+                    invoice_value = figure
                     warnings.append(
                         f"The bill's lines and tax come to {_fmt(figure)}, which it prints as its "
                         f"invoice value; the amount payable is {_fmt(printed_total)} - "
@@ -693,6 +695,10 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
     words_disagrees = bool(
         spelled and built_from_lines
         and abs(spelled - built_from_lines) > _WORDS_TOLERANCE
+        # ...or the words spell the invoice value BEFORE the adjustment the
+        # bill makes: MAX RELIEF spells out 11,767 - its lines and tax - and
+        # asks 3,984 after two credit notes. Both are the bill's own figures.
+        and not (invoice_value and abs(spelled - invoice_value) <= _WORDS_TOLERANCE)
     )
     if words_disagrees and page_text:
         # The bill may spell out what is left after the TDS the BUYER deducts:

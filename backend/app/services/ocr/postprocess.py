@@ -98,6 +98,13 @@ def tidy_line(item: dict) -> None:
     batch = item.get("batch_no")
     if isinstance(batch, dict) and isinstance(batch.get("value"), str) and _DASHES.search(batch["value"]):
         batch["value"] = _DASHES.sub("-", batch["value"])
+    # An HSN code wrapped in its cell: Sanofi prints "300490" over "69", read as
+    # "300490 69". The code is the digits run together - 4, 6 or 8 of them.
+    hsn = item.get("hsn")
+    if isinstance(hsn, dict) and isinstance(hsn.get("value"), str) \
+            and re.fullmatch(r"\d{4,6}(?: \d{2}){1,2}", hsn["value"].strip()) \
+            and len(hsn["value"].replace(" ", "")) in (6, 8):
+        hsn["value"] = hsn["value"].replace(" ", "")
     # Two dates in the expiry cell, side by side: IPCA heads the column "MFG.
     # Expiry" and prints "03/25 08/26". A medicine expires after it is made, so
     # the later date is the expiry and the earlier the manufacturing date.
@@ -107,6 +114,48 @@ def tidy_line(item: dict) -> None:
         expiry["value"] = pair[1]
         if not (item.get("mfg_date") or {}).get("value"):
             item["mfg_date"] = {"value": pair[0], "confidence": expiry.get("confidence")}
+
+
+_SLABS = (5.0, 12.0, 18.0, 28.0)
+
+
+def _money(field) -> Optional[float]:
+    try:
+        return float(str((field or {}).get("value")).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def fill_single_slab(fields: dict) -> None:
+    """GST % on lines that print none, when the bill's own totals show every
+    line is at one slab.
+
+    Win Medicare prints no rate on its lines, only the bill's CGST and SGST
+    totals: 34,219.22 on 1,90,106.70 taxable is 18% exactly. When the tax over
+    the taxable total is one slab, the lines add up to that taxable total and
+    no line shows another rate, every line is at that slab. Filled below full
+    confidence: it is worked out, not read.
+    """
+    inv = fields.get("invoice") or {}
+    items = [i for i in fields.get("line_items") or [] if isinstance(i, dict)]
+    taxable = _money(inv.get("total_taxable_amount"))
+    heads = [_money(inv.get(f"total_{h}_amount")) for h in ("cgst", "sgst", "utgst", "igst")]
+    tax = sum(h for h in heads if h) or _money(inv.get("total_gst_amount"))
+    if not items or not taxable or not tax:
+        return
+    lines = [_money(i.get("amount")) for i in items]
+    if None in lines or abs(sum(lines) - taxable) > max(1.0, 0.001 * taxable):
+        return
+    rate = 100.0 * tax / taxable
+    slab = next((s for s in _SLABS if abs(rate - s) <= 0.02), None)
+    if slab is None:
+        return
+    read = {_money(i.get("gst_percent")) for i in items} - {None}
+    if read - {slab}:
+        return
+    for item in items:
+        if _money(item.get("gst_percent")) is None:
+            item["gst_percent"] = {"value": f"{slab:.2f}", "confidence": 0.7}
 
 
 def postprocess_fields(doc_type: str, fields: dict) -> dict:
@@ -130,4 +179,5 @@ def postprocess_fields(doc_type: str, fields: dict) -> dict:
                 tidy_line(item)
             _set_norm(item.get("expiry"), normalize_date((item.get("expiry") or {}).get("value")))
             _set_norm(item.get("quantity"), normalize_quantity((item.get("quantity") or {}).get("value")))
+        fill_single_slab(fields)
     return fields
