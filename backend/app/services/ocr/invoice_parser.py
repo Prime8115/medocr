@@ -37,7 +37,7 @@ from app.services.ocr.invoice_header import (
     _has_doubled_glyphs,
 )
 from app.services.ocr.invoice_checks import SUMMED_CONFIDENCE, line_arithmetic_holds
-from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout, without_watermark
+from app.services.ocr.pdf_table import WORD_TOLERANCE, extract_word_tables, page_layout, without_overprint, without_watermark
 from app.services.ocr import lessons
 from app.services.ocr.field_dictionary import LINE_COLUMNS
 from app.services.ocr.pdf_access import open_pdf
@@ -88,6 +88,8 @@ def _is_gst_rate(n: float) -> bool:
 # quantity column means we picked up an invoice or IRN number from a footer.
 _MAX_LINE_QUANTITY = 1_000_000
 
+# "Group - 1 30976.89": the subtotal a supplier prints after each group of lines.
+_GROUP_ROW = re.compile(r"\s*group\s*-?\s*\d+\b", re.I)
 _SUMMARY_ROW = re.compile(r"\b(total|grand|net\s*amount|sub\s*total|subtotal|carried|c/f|b/f)\b", re.I)
 
 
@@ -1913,8 +1915,8 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     # date are hard evidence of a real purchase line, and they outweigh any
     # guess made from wording: "Nano Leo Total Sachets Sale" is a real product
     # that reads exactly like a totals row, and was being thrown away.
-    if not any((item.get(f) or {}).get("value") for f in ("batch_no", "hsn", "expiry")):
-        if _SUMMARY_ROW.search(desc) or _looks_like_prose(desc):
+    if not _product_evidence(item):
+        if _SUMMARY_ROW.search(desc) or _GROUP_ROW.match(desc) or _looks_like_prose(desc):
             return None
 
     # Only keep rows that have at least a quantity or a batch. A quantity of
@@ -2248,6 +2250,23 @@ def _join_page_lines(pages: List[List[dict]]) -> List[dict]:
     return lines
 
 
+_HSN_SHAPE = re.compile(r"\d{4}(?:\d{2}){0,2}|\d{4}\.\d{2}(?:\.\d{2})?")
+
+
+def _product_evidence(item: dict) -> bool:
+    """Whether a row carries a value only a real product line has, in that
+    value's own shape. A cell is not evidence just for being filled: East
+    India's "Group - 1" subtotal rows put "0.00 0.50" under HSN, which kept
+    them - and with them the bill's own total row - as products."""
+    def val(key):
+        return str((item.get(key) or {}).get("value") or "").strip()
+    return bool(
+        _is_batch(val("batch_no"))
+        or _HSN_SHAPE.fullmatch(val("hsn").replace(" ", ""))
+        or re.search(r"\d", val("expiry")) and not _MONEY_TOKEN.search(val("expiry"))
+    )
+
+
 def _without_totals_row(items: List[dict]) -> List[dict]:
     """Drop the table's own totals row, read as if it were a product.
 
@@ -2266,7 +2285,7 @@ def _without_totals_row(items: List[dict]) -> List[dict]:
 
     kept = []
     for n, item in enumerate(items):
-        if any(has(item, k) for k in ("batch_no", "hsn", "rate", "expiry")):
+        if _product_evidence(item) or has(item, "rate"):
             kept.append(item)
             continue
         amount = _num((item.get("amount") or {}).get("value"))
@@ -2937,7 +2956,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
             last_table_page = None
 
             for page_no in wanted:
-                page = without_watermark(pdf.pages[page_no])
+                page = without_overprint(without_watermark(pdf.pages[page_no]))
                 # Same tolerance as the table reader, so header fields do not
                 # arrive run together on PDFs that carry no space characters.
                 page_texts[page_no] = page.extract_text(x_tolerance=WORD_TOLERANCE) or ""
@@ -2993,7 +3012,7 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                     # through the columns of the last page that had one -
                     # worked out only now, when a page needs it.
                     if carried_layout is None:
-                        carried_layout = page_layout(without_watermark(pdf.pages[last_table_page])) or False
+                        carried_layout = page_layout(without_overprint(without_watermark(pdf.pages[last_table_page]))) or False
                     if carried_layout:
                         word_items = _rows_from_tables(extract_word_tables(page, carried_layout),
                                                        word_labels, interstate, local_head)

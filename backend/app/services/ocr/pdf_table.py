@@ -269,6 +269,95 @@ def _boundaries(columns: List[dict]) -> List[float]:
     return edges
 
 
+# Resolution, in points, at which the empty channels between columns are found.
+_CHANNEL_STEP = 0.5
+
+
+_TEXT_HEADING = re.compile(r"batch|lot|exp|pack|pkg|hsn|desc|product|item|mfg|mfd|mfr|code|name|"
+                           r"particular|goods|uom|unit|make|company", re.I)
+
+
+def _figures_only(column: dict) -> bool:
+    """A column whose heading names a figure (rate, amount, tax) and no text field."""
+    return not _TEXT_HEADING.search(column.get("label") or "")
+
+
+def _channel_edges(columns: List[dict], body: List[Line], edges: List[float]) -> List[float]:
+    """Move a boundary that cuts through printed words into the empty channel
+    the rows themselves leave between two columns.
+
+    A boundary at the midpoint between two headings is right only when each
+    column's values sit under its heading. They often do not: JB prints
+    "Product Description" over x 36-89 and "Batch Number" from x 175, so the
+    midpoint fell at 132 - while its product names run on to x 147. Every
+    name's last words ("TABLET", "()", "1x10'S") were filed as the batch:
+    "1x10'S XTAG25003". Down the whole table, though, no word is printed
+    anywhere between x 148 and 172: that empty channel is where one column ends
+    and the next begins, drawn line or not.
+
+    Which channel: a word printed under a heading belongs to that heading. So
+    the boundary must lie right of every word that overlaps the left heading
+    and left of every word that overlaps the right one (Akumentis prints its
+    batch "ANAT2503" from under "Batch" to x 241 and "May-25" under the next
+    heading from x 245: the boundary goes in 241-245, not in the wider gap
+    after May-25). Among the clear channels in that range, the one nearest the
+    old boundary.
+
+    Conservative by design: a boundary already clear of every word is kept, and
+    so is one with no clear channel that respects both headings.
+    """
+    words = [w for _, row in body for w in row]
+    if len(body) < 2 or not words:
+        return edges
+    spans = [(float(w["x0"]), float(w["x1"])) for w in words]
+
+    def clear(x: float) -> bool:
+        return not any(x0 < x < x1 for x0, x1 in spans)
+
+    def under(col: dict, x0: float, x1: float) -> bool:
+        return x1 > col["x0"] and x0 < col["x1"]
+
+    out = list(edges)
+    for i in range(1, len(edges) - 1):
+        if clear(edges[i]):
+            continue
+        left, right = columns[i - 1], columns[i]
+        if _figures_only(left) and _figures_only(right):
+            # Between two columns of figures the cells are split by their own
+            # rules downstream (merged "CGST AMOUNT %" headings, rate and
+            # amount 1 pt apart); words running into the next column is a
+            # text column's problem.
+            continue
+        # The range the boundary may take: past the left heading's own words,
+        # short of the right heading's.
+        lo = max([x1 for x0, x1 in spans if under(left, x0, x1) and not under(right, x0, x1)]
+                 + [(left["x0"] + left["x1"]) / 2.0])
+        hi = min([x0 for x0, x1 in spans if under(right, x0, x1) and not under(left, x0, x1)]
+                 + [(right["x0"] + right["x1"]) / 2.0])
+        if hi <= lo:
+            continue
+        runs: List[Tuple[float, float]] = []
+        start: Optional[float] = None
+        steps = int((hi - lo) / _CHANNEL_STEP)
+        for k in range(steps + 1):
+            x = lo + k * _CHANNEL_STEP
+            if clear(x):
+                start = x if start is None else start
+            elif start is not None:
+                runs.append((start, x - _CHANNEL_STEP))
+                start = None
+        if start is not None:
+            runs.append((start, hi))
+        if not runs:
+            continue
+        a, b = min(runs, key=lambda r: abs((r[0] + r[1]) / 2.0 - edges[i]))
+        moved = (a + b) / 2.0
+        # Boundaries stay in order: never past a neighbour already placed.
+        if out[i - 1] < moved < out[i + 1]:
+            out[i] = moved
+    return out
+
+
 def _assign(line: Line, edges: List[float], n: int) -> List[str]:
     cells: List[List[str]] = [[] for _ in range(n)]
     for word in line[1]:
@@ -308,6 +397,75 @@ def without_watermark(page):
         if not any(_oblique(c) for c in page.chars):
             return page
         return page.filter(lambda o: not _oblique(o))
+    except Exception:  # noqa: BLE001 - never fatal; read the page as it is
+        return page
+
+
+# Overlapping pairs of letters, from two different strings, that make a page
+# one drawn over itself (see without_overprint).
+_OVERPRINT_PAIRS = 3
+
+
+def _run_starts(chars: list) -> List[Tuple[float, int]]:
+    """Each character's run, as (where it starts, its first letter's place in
+    the drawing order): letters drawn one after another along one line, each
+    starting where the last ended (spaces are drawn too)."""
+    out: List[Tuple[float, int]] = []
+    prev = None
+    for i, c in enumerate(chars):
+        size = float(c.get("size") or 0) or float(c["bottom"]) - float(c["top"])
+        if (prev is None or abs(float(c["top"]) - float(prev["top"])) > 1.0
+                or not -0.2 * size <= float(c["x0"]) - float(prev["x1"]) <= 0.6 * size):
+            start = (float(c["x0"]), i)
+        out.append(start)
+        prev = c
+    return out
+
+
+def without_overprint(page):
+    """The page without the text one cell runs on over the next cells.
+
+    Some billing software prints a cell's whole text even where it is wider
+    than the cell, straight over its neighbours': IPCA's maker "PURE & CURE
+    HEALTHCARE PVT. LTD." runs from its Mfr column over the batch "AGV01AHA"
+    and the dates; Sol Derma's "SOL DERMA PHARM" over the batch "AP5056". Read
+    by position the letters interleave - "GCVU0R1EA". Of two letters drawn
+    over each other by different runs, the run that started further left is
+    the one running on; from where the other run starts its letters are
+    dropped. Each cell keeps
+    its own text, and the run-on keeps what it printed in its own cell. Bold
+    faked by drawing a letter twice is not this: those letters are the same.
+    """
+    try:
+        chars = list(page.chars)
+        starts = _run_starts(chars)
+        order = {id(c): i for i, c in enumerate(chars)}
+        lines: List[list] = []
+        for c in sorted((c for c in chars if (c.get("text") or "").strip()), key=lambda c: float(c["top"])):
+            if lines and float(c["top"]) - float(lines[-1][0]["top"]) <= 1.0:
+                lines[-1].append(c)
+            else:
+                lines.append([c])
+        edge: Dict[Tuple[float, int], float] = {}     # run -> where it first runs over other text
+        pairs = 0
+        for line in lines:
+            line.sort(key=lambda c: float(c["x0"]))
+            for a, b in zip(line, line[1:]):
+                if a["text"] == b["text"]:
+                    continue
+                width = min(float(a["x1"]) - float(a["x0"]), float(b["x1"]) - float(b["x0"]))
+                sa, sb = starts[order[id(a)]], starts[order[id(b)]]
+                if width <= 0 or float(a["x1"]) - float(b["x0"]) <= 0.5 * width or abs(sa[0] - sb[0]) <= 1.0:
+                    continue
+                pairs += 1
+                run, other = (sa, sb) if sa[0] < sb[0] else (sb, sa)
+                edge[run] = min(edge.get(run, float("inf")), other[0])
+        if pairs < _OVERPRINT_PAIRS:
+            return page
+        # Cut where the other text starts, leaving a word's gap before it.
+        drop = {id(c) for c, start in zip(chars, starts)
+                if start in edge and float(c["x1"]) > edge[start] - 0.25 * float(c.get("size") or 8)}
+        return page.filter(lambda o: id(o) not in drop)
     except Exception:  # noqa: BLE001 - never fatal; read the page as it is
         return page
 
@@ -381,6 +539,14 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)
+    # The rows themselves say where each column ends (_channel_edges): only the
+    # item rows vote, not the footer prose under them.
+    rows_below = lines[end + 1:]
+    for i, line in enumerate(rows_below):
+        if _FOOTER.search(_line_text(line)):
+            rows_below = rows_below[:i]
+            break
+    edges = _channel_edges(columns, rows_below, edges)
     n = len(columns)
     header = [col["label"] for col in columns]
 
