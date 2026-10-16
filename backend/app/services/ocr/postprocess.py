@@ -105,6 +105,13 @@ def tidy_line(item: dict) -> None:
             and re.fullmatch(r"\d{4,6}(?: \d{2}){1,2}", hsn["value"].strip()) \
             and len(hsn["value"].replace(" ", "")) in (6, 8):
         hsn["value"] = hsn["value"].replace(" ", "")
+    # A pack printed under "Uom": Health N U heads it so and prints "10's".
+    # A unit that is a count or a size is the pack too; the unit stays as read.
+    uom = item.get("uom")
+    if isinstance(uom, dict) and isinstance(uom.get("value"), str) and not (item.get("pack") or {}).get("value") \
+            and re.fullmatch(r"\d+\s*(?:'?s|[x*]\s*\d+\S*|\s*(?:ml|gm?|kg|mg|tabs?|caps?|nos?)\.?)",
+                             uom["value"].strip(), re.I):
+        item["pack"] = {"value": uom["value"].strip(), "confidence": uom.get("confidence")}
     # Two dates in the expiry cell, side by side: IPCA heads the column "MFG.
     # Expiry" and prints "03/25 08/26". A medicine expires after it is made, so
     # the later date is the expiry and the earlier the manufacturing date.

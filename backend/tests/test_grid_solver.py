@@ -224,3 +224,37 @@ def test_the_rest_of_an_open_bracket_belongs_to_the_line_above():
     ]
     table = _simple(rows)
     assert table[1][0].endswith("GST:12.00%)") and table[2][0] == "VOLINI"
+
+
+# --- the pack -----------------------------------------------------------------------------
+
+def _packed(pack, desc="PYRIGESIC 1000"):
+    from app.services.ocr.invoice_parser import _build_item
+
+    header = ["Description", "Pack", "Batch", "Qty", "Rate", "Amount"]
+    cols = {"description": 0, "pack": 1, "batch_no": 2, "quantity": 3, "rate": 4, "amount": 5}
+    return _build_item([desc, pack, "AB1234", "10", "12.50", "125.00"], cols, header, [], None, None)
+
+
+def test_a_bracketed_end_of_the_name_in_the_pack_goes_back_to_the_name():
+    item = _packed("[EIPW] 10 Tabs.")
+    assert (item["description"]["value"], item["pack"]["value"]) == ("PYRIGESIC 1000 [EIPW]", "10 Tabs.")
+    item = _packed("SYRUP [EIPW] 100 ml", "TONOFERON PAED.")
+    assert (item["description"]["value"], item["pack"]["value"]) == ("TONOFERON PAED. SYRUP [EIPW]", "100 ml")
+    assert _packed("(10x10) STRIP")["pack"]["value"] == "(10x10) STRIP"
+
+
+def test_a_lone_zero_is_not_a_pack():
+    assert _packed("1X10 0")["pack"]["value"] == "1X10"
+    assert "pack" not in _packed("0")
+
+
+def test_a_unit_that_is_a_count_is_the_pack_too():
+    from app.services.ocr.postprocess import tidy_line
+
+    item = {"uom": _f("10's")}
+    tidy_line(item)
+    assert item["pack"]["value"] == "10's" and item["uom"]["value"] == "10's"
+    item = {"uom": _f("NOS")}
+    tidy_line(item)
+    assert "pack" not in item
