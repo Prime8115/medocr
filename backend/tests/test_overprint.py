@@ -161,3 +161,35 @@ def test_a_block_drawn_twice_a_little_apart_is_not_overprint():
 
     with pdfplumber.open(BytesIO(_page_pdf(twice))) as pdf:
         assert without_overprint(pdf.pages[0]) is pdf.pages[0]
+
+
+def test_an_hsn_wrapped_in_its_cell_is_run_together():
+    for value, want in (("300490 69", "30049069"), ("3004 50 10", "30045010"), ("30049099", "30049099"),
+                        ("3004 5", "3004 5"), ("3004 90", "300490")):
+        item = {"hsn": _f(value)}
+        tidy_line(item)
+        assert item["hsn"]["value"] == want, value
+
+
+def _bill(lines, taxable, cgst, sgst, rates=None):
+    rates = rates or [None] * len(lines)
+    return {"invoice": {"total_taxable_amount": _f(taxable), "total_cgst_amount": _f(cgst),
+                        "total_sgst_amount": _f(sgst)},
+            "line_items": [{"amount": _f(a), **({"gst_percent": _f(r)} if r else {})} for a, r in zip(lines, rates)]}
+
+
+def test_lines_with_no_rate_take_the_one_slab_the_totals_show():
+    fields = _bill(["1000.00", "500.00"], "1500.00", "135.00", "135.00")
+    postprocess_fields("invoice", fields)
+    assert [i["gst_percent"]["value"] for i in fields["line_items"]] == ["18.00", "18.00"]
+    assert fields["line_items"][0]["gst_percent"]["confidence"] < 1
+
+
+def test_no_slab_is_guessed_from_mixed_or_unsupported_totals():
+    mixed = _bill(["1000.00", "500.00"], "1500.00", "102.50", "102.50")    # 18% and 5% lines
+    other_rate = _bill(["1000.00", "500.00"], "1500.00", "135.00", "135.00", [None, "12"])
+    short = _bill(["1000.00"], "1500.00", "135.00", "135.00")              # a line is missing
+    for fields in (mixed, other_rate, short):
+        before = [i.get("gst_percent") for i in fields["line_items"]]
+        postprocess_fields("invoice", fields)
+        assert [i.get("gst_percent") for i in fields["line_items"]] == before

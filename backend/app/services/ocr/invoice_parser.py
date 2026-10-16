@@ -18,6 +18,7 @@ Two things this parser is careful about, because both burned real users:
    billed `rate` came from, instead of picking whichever price column happens to
    sit furthest left.
 """
+import functools
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
@@ -164,8 +165,10 @@ def _keyword_columns(header_row, forbidden: Optional[dict] = None) -> dict:
                 excluded = any(e in h for e in excludes) and not (
                     field == "amount" and keyword.startswith("taxable")) and not (
                     # "PRODUCT NAME (HSN CODE)" (Mankind) is the product's
-                    # name, whatever else the heading mentions.
-                    field == "description" and h.startswith(keyword) and len(keyword) >= 7)
+                    # name, whatever else the heading mentions - and so is
+                    # "Desc.of Goods/ HSN of Goods/" (Dr. Reddy's).
+                    field == "description" and h.startswith(keyword)
+                    and (len(keyword) >= 7 or keyword == "desc"))
                 if keyword in h and not excluded:
                     hit = idx
                     break
@@ -1005,25 +1008,37 @@ _NUMERIC_FIELDS = ("quantity", "free_quantity", "total_quantity", "mrp", "ptr", 
 # Piramal stacks "Product Code/ HSN": "400016002" over "30045090". Never a bare
 # "HSN Code" - Sanofi wraps its HSN "300490" over "69" in that one field.
 _STACKABLE = (("batch_no", r"batch|lot"), ("mfg_date", r"mfg|mfd"), ("expiry", r"exp"),
-              ("product_code", r"(?:prod(?:uct)?|item)\.?\s*code"), ("hsn", r"hsn"))
+              ("product_code", r"(?:prod(?:uct)?|item)\.?\s*code"), ("hsn", r"hsn"),
+              # Bayer: "P.T.R. / M.R.P. / P.T.S" over "1,067.86 / 1,495.00 / 961.07".
+              ("ptr", r"p\.?\s*t\.?\s*r\b"), ("mrp", r"m\.?\s*r\.?\s*p\b"), ("pts", r"p\.?\s*t\.?\s*s\b"))
 
 
-def _stacked_fields(heading) -> List[str]:
-    """The fields a stacked heading names, in the order it names them."""
-    text = str(heading or "").lower()
+@functools.lru_cache(maxsize=1024)
+def _stacked_fields_of(text: str) -> Tuple[str, ...]:
     found = []
     for field, pattern in _STACKABLE:
         m = re.search(pattern, text)
         if m:
             found.append((m.start(), field))
-    return [field for _, field in sorted(found)]
+    return tuple(field for _, field in sorted(found))
+
+
+def _stacked_fields(heading) -> List[str]:
+    """The fields a stacked heading names, in the order it names them."""
+    return list(_stacked_fields_of(str(heading or "").lower()))
 
 
 def _strip_stray(text: str) -> str:
     """Drop tokens carrying no characters, e.g. the "()" that trails a product
     name into the batch column and turned "TMET6" into "() TMET6"."""
-    tokens = [t for t in (text or "").split() if re.search(r"[A-Za-z0-9]", t)]
-    return " ".join(tokens)
+    tokens = (text or "").split()
+    kept = [t for i, t in enumerate(tokens)
+            if re.search(r"[A-Za-z0-9]", t)
+            # ...but a dash between two parts of one value is part of it:
+            # MAX RELIEF's batch "TPG - 928".
+            or (re.fullmatch(r"[-\u2010-\u2015]", t) and 0 < i < len(tokens) - 1
+                and re.search(r"[A-Za-z0-9]", tokens[i - 1]) and re.search(r"[A-Za-z0-9]", tokens[i + 1]))]
+    return " ".join(kept)
 
 
 def _looks_like_prose(text: str) -> bool:
@@ -1225,7 +1240,10 @@ _MONEY_TOKEN = re.compile(r"(?:^|\s)(?:\d[\d,]*\.\d{2}|\.\d{2})(?:\s|$)")
 _NOT_A_PRODUCT = re.compile(
     r"(\brupees\b|\bpaisa\b|\bonly\s*$|terms\s*(and|&)\s*conditions|\ba\s*/\s*c\b|\bifsc\b|"
     r"\bgstin\s*:|\bpan\s*no\b|\bstate\s*code\b|\bcredit\s*note\b|\bdebit\s*note\b|\bvalue\s*:|"
-    r"^(cn|dn)\s*no|=====)",
+    r"^(cn|dn)\s*no|=====|"
+    # A party's details read off the grid: Prabodhan's "GSTN No : Phone No :
+    # Fax No" line, with the buyer's GSTIN under HSN and its PIN as an amount.
+    r"\bgstn\s*no\b|\bphone\s*no\b|\bfax\s*no\b|\bmobile\s*no\b)",
     re.I,
 )
 _PAGE_FURNITURE = re.compile(
@@ -1473,7 +1491,34 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         if len(parts) < 2 or not (len(order) == 2 or len(order) == len(parts) == 3):
             continue
         for field, value in zip(order, parts):
-            item[field] = _f(_strip_stray(_clean(value)))
+            # Bayer marks each stacked value with the heading's slash: "/10-2027".
+            item[field] = _f(_strip_stray(_clean(value)).lstrip("/ ").strip())
+
+    # A name column that names the HSN too: Bayer heads it "DESCRIPTION / HSN"
+    # and prints the code on the line under the name, so it ends the name.
+    at = cols.get("description")
+    desc_now = str((item.get("description") or {}).get("value") or "")
+    if at is not None and at < len(header_row) and re.search(r"hsn", str(header_row[at] or ""), re.I) \
+            and not (item.get("hsn") or {}).get("value"):
+        m = re.search(r"\s(\d{4}(?:\d{2}){0,2})$", desc_now)
+        if m:
+            item["hsn"] = _f(m.group(1))
+            item["description"] = _f(desc_now[:m.start()].strip())
+
+    # The end of a long name run into the batch cell: Bayer's "GLUCOBAY M 50
+    # TABL 1X10'S IN" left "1X10'S IN PB25413" there, AANAV's "...Met 50" left
+    # "50 SIBP24472". When the cell ends in a clear batch code, short words and
+    # packs before it go back to the name; a lone letter (another cell's
+    # spill) is dropped.
+    tokens = str((item.get("batch_no") or {}).get("value") or "").split()
+    if len(tokens) >= 2 and len(tokens[-1]) >= 5 and re.search(r"[A-Za-z]", tokens[-1]) \
+            and re.search(r"\d", tokens[-1]) and all(
+                re.fullmatch(r"\d+\s*[xX*]\s*\d+\S*|\d{1,3}|[A-Za-z]{1,3}", t) for t in tokens[:-1]):
+        spill = " ".join(t for t in tokens[:-1] if len(t) > 1)
+        item["batch_no"] = _f(tokens[-1])
+        name = str((item.get("description") or {}).get("value") or "").strip()
+        if spill and name:
+            item["description"] = _f(f"{name} {spill}")
 
     # One column heading several fields side by side, on ONE line: the
     # Marg-style ERP heads "MFGR EXP. BATCH NO. DATE" and prints "ABLT 12/26
@@ -1943,7 +1988,8 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         item["description"] = _f(desc)
     batch_words = str((item.get("batch_no") or {}).get("value") or "").split()
     if len(batch_words) > 1 and all(w.isalpha() and len(w) >= 3 for w in batch_words[:-1]) \
-            and any(ch.isdigit() for ch in batch_words[-1]):
+            and any(ch.isdigit() for ch in batch_words[-1]) \
+            and not re.search(r"[A-Za-z]\s*[-\u2010-\u2015]\s*\d", str(item["batch_no"]["value"])):
         # "KLINPRO PROTEIN | POWDER NHPR25109" (Klingen): the name's last
         # word spilled into the batch column. A batch is one code.
         desc = f"{desc} {' '.join(batch_words[:-1])}".strip()
@@ -2062,6 +2108,35 @@ def _better_reading(word_items: List[dict], ruled_items: List[dict]) -> bool:
     # Neither is more self-consistent: fall back to the old rule, which keeps
     # the ruled path on Kanchan and Zydus where it has always been right.
     return len(word_items) > len(ruled_items)
+
+
+def _fill_from_other_reading(chosen: List[dict], other: List[dict]) -> None:
+    """Values the chosen reading of a page left blank, taken from the other
+    reading when the two read the very same lines.
+
+    A page is read twice - by its ruled grid and by the words' positions - and
+    one reading is kept whole. Each can miss a field the other has: Glowderma's
+    grid holds "Mfg.Dt / Exp.Dt" in one cell and kept only the mfg date, while
+    the rebuild read both. Only when every line agrees on its amount and on its
+    batch where both read one are they the same lines; then a blank in the
+    kept reading is filled from the other, and nothing it read is changed.
+    """
+    if not chosen or len(chosen) != len(other):
+        return
+
+    def val(item, key):
+        return str((item.get(key) or {}).get("value") or "").strip()
+
+    for a, b in zip(chosen, other):
+        if not val(a, "amount") or _num(val(a, "amount")) != _num(val(b, "amount")):
+            return
+        if val(a, "batch_no") and val(b, "batch_no") and \
+                re.sub(r"\W", "", val(a, "batch_no")) != re.sub(r"\W", "", val(b, "batch_no")):
+            return
+    for a, b in zip(chosen, other):
+        for key, field in b.items():
+            if isinstance(field, dict) and str(field.get("value") or "").strip() and not val(a, key):
+                a[key] = dict(field)
 
 
 # Words that only ever appear as a SUB-heading under another one, never as a
@@ -3024,10 +3099,12 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                     labels.update(word_labels)
                     page_layouts[page_no] = word_labels.get("table_layouts") or []
                     page_items[page_no] = word_items
+                    _fill_from_other_reading(word_items, ruled_items)
                 else:
                     labels.update(ruled_labels)
                     page_layouts[page_no] = ruled_labels.get("table_layouts") or []
                     page_items[page_no] = ruled_items
+                    _fill_from_other_reading(ruled_items, word_items)
 
             # Safety net for copies the period check cannot see - copies of
             # unequal length, or a page count that is not an exact multiple.

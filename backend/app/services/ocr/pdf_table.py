@@ -34,10 +34,10 @@ _MIN_HEADER_HITS = 4
 
 # A line that ends the line-item table.
 _CARRIED_TOTAL = re.compile(
-    r"\b(balance\s*b\s*/?\s*f|balance\s*c\s*/?\s*f|brought\s*forward|carried\s*forward|"
+    r"\b(balance\s*b\s*/?\s*f|balance\s*c\s*/?\s*f|brought\s*forward|carr(?:ied|y)\s*forward|"
     r"carried\s*over|b\s*/\s*f\b|c\s*/\s*f\b)", re.I)
 # A wrapped line that labels the product above it: its maker or marketer.
-_DETAIL_LINE = re.compile(r"\s*(?:mfg|mfr|mkt|mfd|marketed\s+by|manufactured\s+by)\s*[.:]", re.I)
+_DETAIL_LINE = re.compile(r"\s*(?:mfg|mfr|mkt|mfd|marketed\s+by|manufactured\s+by)(?:\s*name)?\s*[.:]", re.I)
 _FOOTER = re.compile(
     # "GST Summary (15621.50 @ 6.00% SGST=937.29,CGST=937.29)" - Overseas sets
     # its summary block in the table's own columns, so every figure on that line
@@ -163,7 +163,9 @@ def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
 
     start = best[0]
     end = start
-    for j in range(start + 1, min(start + 3, len(lines))):
+    # Up to four lines below: Bayer stacks "BATCH / Mfg. Date / EXPIRY" and
+    # "P.T.R. / M.R.P. / P.T.S" three deep, under a line of tax heads.
+    for j in range(start + 1, min(start + 5, len(lines))):
         if _looks_like_header_continuation(lines[j]) and _contributes_to_header(lines[j]):
             end = j
         else:
@@ -185,6 +187,18 @@ def _find_header_band(lines: List[Line]) -> Optional[Tuple[int, int]]:
 
 
 _NAME_HEADING = re.compile(r"description|particulars|details", re.I)
+
+
+def _label(words: list) -> str:
+    """A heading's words in reading order. Pieces of one word that touch are
+    joined: Glowderma letter-spaces "E xp.Dt" and "R ate"."""
+    out, prev = "", None
+    for w in sorted(words, key=lambda w: (round(float(w["top"])), float(w["x0"]))):
+        touching = (prev is not None and round(float(w["top"])) == round(float(prev["top"]))
+                    and -0.5 <= float(w["x0"]) - float(prev["x1"]) < 0.8)
+        out += ("" if touching or not out else " ") + str(w["text"])
+        prev = w
+    return out
 
 
 def _cluster_columns(band: List[Line]) -> List[dict]:
@@ -217,9 +231,82 @@ def _cluster_columns(band: List[Line]) -> List[dict]:
             columns.append({"x0": x0, "x1": x1, "words": [word]})
 
     for col in columns:
-        ordered = sorted(col["words"], key=lambda w: (float(w["top"]), float(w["x0"])))
-        col["label"] = " ".join(str(w["text"]) for w in ordered)
+        col["label"] = _label(col["words"])
     return columns
+
+
+# Kinds of field a heading names, for telling two columns run together from
+# one heading with parts (see _split_by_channels).
+_FIELD_KINDS = {
+    "date": r"\bmfg\b|mfg\.|\bmfd|\bexp|date|\bdt\b",
+    "quantity": r"qty|quantity|\bfree\b",
+    "price": r"\bmrp\b|\bptr\b|\bpts\b|\brate\b|price",
+    "amount": r"amount|\bamt\b|value",
+    "tax": r"g5?st|\btax\b",
+    "name": r"descr|product|\bitem|particular|brand|\bname\b",
+    "code": r"\bhsn|\bsac\b",
+    "batch": r"batch|\blot\b",
+    "pack": r"pack|\buom\b",
+}
+
+
+def _kinds(label: str) -> set:
+    return {k for k, p in _FIELD_KINDS.items() if re.search(p, label, re.I)}
+
+
+def _split_by_channels(columns: List[dict], body: List[Line]) -> List[dict]:
+    """Split a heading cluster that is really two columns side by side.
+
+    Glowderma prints "Mfg.Dt / Exp.Dt" and "Qty / Free Qty" so close together
+    that their headings read as one column, "Mfg.Dt Qty . Free Qty Exp.Dt",
+    and the quantity was lost in the dates' cell. The rows show the two
+    columns: dates end at 271, quantities start at 289. A cluster is split
+    where the rows leave an empty channel (a stray line may cross it) and its
+    heading words do too; only when its top heading line has a heading on each
+    side, and half its rows a value on each side.
+    """
+    out: List[dict] = []
+    for col in columns:
+        heads = col["words"]
+        cells = [[w for w in row if col["x0"] - 2 <= (float(w["x0"]) + float(w["x1"])) / 2 <= col["x1"] + 2]
+                 for _, row in body]
+        cells = [c for c in cells if c]
+        head_spans = [(float(w["x0"]), float(w["x1"])) for w in heads]
+        # A stray line may cross the channel - "Page 1 of 1" at the foot.
+        stray = max(1, len(cells) // 20)
+        cut = None
+        x = col["x0"] + _CHANNEL_STEP
+        while x < col["x1"] and len(heads) > 1 and len(cells) >= 2:
+            crossing = sum(1 for c in cells if any(float(w["x0"]) < x < float(w["x1"]) for w in c))
+            if crossing <= stray and not any(a < x < b for a, b in head_spans):
+                left = sum(1 for c in cells if any(float(w["x1"]) <= x for w in c))
+                right = sum(1 for c in cells if any(float(w["x0"]) >= x for w in c))
+                # The top heading line itself is two headings: one title over
+                # both ("CGST" over "Rate | Amount") is a heading with
+                # sub-columns, which the cell readers handle as it is.
+                top = min(round(float(w["top"])) for w in heads)
+                first = [w for w in heads if round(float(w["top"])) - top <= 2]
+                if min(left, right) >= max(2, len(cells) // 2) \
+                        and any(float(w["x1"]) <= x for w in first) and any(float(w["x0"]) >= x for w in first):
+                    cut = x
+                    break
+            x += _CHANNEL_STEP
+        if cut is not None:
+            # Two different kinds of field side by side - dates beside
+            # quantities - never two taxes, two prices or the halves of a word.
+            left = _kinds(_label([w for w in heads if float(w["x1"]) <= cut]))
+            right = _kinds(_label([w for w in heads if float(w["x0"]) >= cut]))
+            # A tax head's own rate and amount are parts of it, not columns.
+            if not left or not right or left & right or ("tax" in left | right
+                                                        and {"amount", "price"} & (left | right)):
+                cut = None
+        if cut is None:
+            out.append(col)
+            continue
+        for part in ([w for w in heads if float(w["x1"]) <= cut], [w for w in heads if float(w["x0"]) >= cut]):
+            out.append({"x0": min(float(w["x0"]) for w in part), "x1": max(float(w["x1"]) for w in part),
+                        "words": part, "label": _label(part)})
+    return out
 
 
 def _add_unheaded_leading_column(columns: List[dict], data: List[Line]) -> List[dict]:
@@ -241,16 +328,22 @@ def _add_unheaded_leading_column(columns: List[dict], data: List[Line]) -> List[
     # A gap big enough that the words cannot belong to the first heading.
     margin = max(6.0, _COLUMN_GAP)
 
-    rows_with, left_x0, left_x1 = 0, [], []
+    rows_with, left_x0, left_x1, run_on = 0, [], [], 0
     for _, row in data:
         outside = [w for w in row if float(w["x1"]) <= first_x - margin]
         if outside:
             rows_with += 1
             left_x0.append(min(float(w["x0"]) for w in outside))
             left_x1.append(max(float(w["x1"]) for w in outside))
+            # ...unless they run straight on into the first column's text, a
+            # word space apart: Dr. Reddy's starts "CELEVIDA EN-Vanilla Powder"
+            # left of its "Desc.of Goods" heading. That is one name.
+            after = [float(w["x0"]) for w in row if float(w["x0"]) >= left_x1[-1]]
+            if after and min(after) - left_x1[-1] <= 4.5:
+                run_on += 1
 
     # Needs to be the rule, not one stray word: most rows must show it.
-    if rows_with < 2 or rows_with * 2 <= len(data):
+    if rows_with < 2 or rows_with * 2 <= len(data) or (run_on >= 2 and run_on * 3 >= rows_with):
         return columns
     return [{"x0": min(left_x0), "x1": max(left_x1), "words": [], "label": ""}] + columns
 
@@ -545,6 +638,7 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 body = body[:i]
                 break
         columns = _add_unheaded_leading_column(columns, body)
+        columns = _split_by_channels(columns, body)
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)
@@ -570,10 +664,14 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
 
     rows: List[List[str]] = []
     row_tops: List[float] = []
+    # The name column. A heading that says so wins over one merely starting
+    # "Product": Bayer heads its code column "PRODUCT / MFR" and its names
+    # "DESCRIPTION / HSN", and the names' wrapped lines went to the codes.
     description_col = next(
         (i for i, col in enumerate(columns)
-         if re.search(r"product|description|item|particular|goods", col["label"], re.I)),
-        0,
+         if re.search(r"descr|particular|goods|(?:product|item)\s*name", col["label"], re.I)),
+        next((i for i, col in enumerate(columns)
+              if re.search(r"product|description|item|particular|goods", col["label"], re.I)), 0),
     )
 
     # Columns whose heading stacks two fields - "Mfg.Dt / Exp.Dt" (Overseas),
@@ -587,6 +685,9 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
         i for i, col in enumerate(columns)
         if sum(bool(re.search(p, col["label"], re.I))
                for p in (r"batch|lot", r"mfg|mfd", r"exp")) >= 2
+        # ...or prices, one per line: Bayer heads "P.T.R. / M.R.P. / P.T.S".
+        or sum(bool(re.search(p, col["label"], re.I))
+               for p in (r"p\.?\s*t\.?\s*r", r"m\.?\s*r\.?\s*p", r"p\.?\s*t\.?\s*s")) >= 2
     }
     # A pack printed over two lines, centred on its row: Troikaa sets "10X10"
     # just above the item's line and "CAP" just below it. Each piece goes to
@@ -619,9 +720,43 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                     # ...a word the cell broke, joined back: "10X10TA" over "B".
                     glue = "" if len(val) <= 2 and re.search(r"\d[A-Za-z]+$", record[col]) else " "
                     record[col] = f"{record[col]}{glue}{val}"
-            elif not before and record[col] and "\n" not in record[col]:
+            elif not before and record[col] and record[col].count("\n") < (2 if col in stacked else 1):
+                # A stacked heading names up to three values, one per line.
                 record[col] = f"{record[col]}\n{val}"
 
+    batch_cols = [i for i, col in enumerate(columns) if re.search(r"batch|\blot\b", col["label"], re.I)]
+    serial_col = 0 if columns and re.fullmatch(r"s\.?\s*r\.?(?:\s*no\.?)?|s\.?\s*no\.?|sl\.?\s*no\.?|#",
+                                              columns[0]["label"].strip(), re.I) else None
+    # The line's amount: "Total Qty" is a quantity, Alkem's "Taxa ble" an amount.
+    amount_cols = [i for i, col in enumerate(columns)
+                   if re.search(r"amount|value|\btotal\b|\bamt\b|taxa\s*ble", col["label"], re.I)
+                   and not re.search(r"gst|tax\b|disc|rate|qty|quantity", col["label"], re.I)]
+
+    def starts_record(cells: List[str]) -> bool:
+        """A record line - not the second line of a product's stacked values.
+        Akumentis stacks "Mfg / Exp", "Qty / Free Qty" and "MRP New / Old":
+        under each product a line "Apr-27  8  260.10" - two figures, but no
+        name, batch or amount of its own - and then "MFG Name : ...". Both are
+        the product above. (Alkem's line of prices under a name does carry
+        the amount, and is joined to its row further on; a free-supply line
+        has its own batch.)"""
+        if not _is_record_start(cells, numeric_columns):
+            return False
+        # Its own serial number (Alkem's "54", whose batch sits under HSN), or
+        # its own batch - never a size like "200ml".
+        if serial_col is not None and re.fullmatch(r"\d{1,4}\.?", cells[serial_col].strip()):
+            return True
+        if any(re.fullmatch(r"(?=\S*\d)[A-Za-z0-9][A-Za-z0-9/-]{3,}", token)
+               and not re.fullmatch(r"\d+(?:\.\d+)?\s*(?:ml|mg|mcg|gm?|kg|ltr?|s)", token, re.I)
+               for i in batch_cols for token in cells[i].split()):
+            return True
+        if _DETAIL_LINE.match(cells[description_col].strip()):
+            return False
+        # Neither a batch nor an amount: Cipla Health's note under its table,
+        # "Prolyte ORS Pineapple Tetra 200ml 40, Clocip KZ Soap 75g 12, ...".
+        return not amount_cols or any(cells[i].strip() for i in amount_cols)
+
+    sealed = False   # after a page's carried-forward total
     for line in lines[end + 1:]:
         text = _line_text(line)
         if _FOOTER.search(text):
@@ -630,14 +765,22 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             # A page's running total brought forward or carried over (Eris
             # prints "Balance B/F 2,359,633.25" above a page's first item,
             # which then took that as its amount). Never a product, never part
-            # of one.
+            # of one - and a "Carry Forward" closes the page's lines: Torrent's
+            # registered-office footer under it is no product's.
+            if rows:
+                for _otop, otext, ovals in orphans:
+                    give(rows[-1], otext, ovals, before=False)
+                orphans = []
+                sealed = True
             continue
         cells = _assign(line, edges, n)
         if not any(cells):
             continue
-        if carried and not rows and not _is_record_start(cells, numeric_columns):
+        if sealed and not starts_record(cells):
+            continue
+        if carried and not rows and not starts_record(cells):
             continue  # the continuation page's letterhead, above its first row
-        if (_is_record_start(cells, numeric_columns) and rows and not cells[description_col].strip()
+        if (starts_record(cells) and rows and not cells[description_col].strip()
                 and all(not rows[-1][i].strip() for i, c in enumerate(cells) if c.strip())):
             # The rest of the row above, printed on the line beneath it: Alkem
             # prints a long item's prices and amount under its name and
@@ -647,7 +790,8 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 if c.strip():
                     rows[-1][i] = c
             continue
-        if _is_record_start(cells, numeric_columns):
+        if starts_record(cells):
+            sealed = False
             top = line[0]
             # Decide where the orphans between the last record and this one go.
             for otop, otext, ovals in orphans:
@@ -677,9 +821,11 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             if extra or values:
                 orphans.append((line[0], extra, values))
 
-    # Anything left over belongs to the last record.
-    for _, otext, ovals in orphans:
-        if rows:
+    # Anything left over belongs to the last record - when it is printed with
+    # it: MAX RELIEF's "Adj No : CN-00007 -3713.00", far below the last line,
+    # is the bill's credit adjustment, not the end of a product's name.
+    for otop, otext, ovals in orphans:
+        if rows and otop - row_tops[-1] <= 40:
             give(rows[-1], otext, ovals, before=False)
 
     if not rows:
