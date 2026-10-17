@@ -230,7 +230,40 @@ def _matching_price_field(item: dict, unit: float) -> Optional[str]:
 
 
 _EXTRA = "extra:"
-_PRICE_HEADING = re.compile(r"price|rate", re.I)
+# ...Mylan's "NSP/ Unit" (net selling price) and East India's "PTW" (price to
+# wholesaler) are the prices they charge, under names of their own.
+_PRICE_HEADING = re.compile(r"price|rate|\bn\.?\s*s\.?\s*p\b|\bptw\b", re.I)
+_PRICE_WORD = re.compile(r"\b(PTW|PTR|PTS|NSP|NIR)\b|\b(rate)\b", re.I)
+
+
+def _unmerge_billed_price(item: dict) -> None:
+    """The price a line is charged at, out of a merged cell, when it is exactly
+    amount / quantity: East India runs "25.71 6427.50 0.00 0.00" under one
+    long heading "Total Value(PTW) Product Discount* Rate Amount ...", and
+    250 x 25.71 is its 6,427.50. Only a figure at most a cash discount (5%)
+    above amount / quantity is taken - a merged run otherwise says nothing
+    about which number is which."""
+    unit = _billed_unit(item)
+    if not unit:
+        return
+    for extra in list(item.get("extras") or []):
+        if not isinstance(extra, dict) or _ONE_FIGURE.fullmatch(str(extra.get("value") or "").strip()):
+            continue
+        label = str(extra.get("label") or "")
+        word = _PRICE_WORD.search(label)
+        if not word:
+            continue
+        for figure in str(extra.get("value") or "").split():
+            price = _num({"value": figure})
+            # ...or a cash discount of a few percent below it: the other East
+            # India bill charges PTW 27.64 less 1% (500 x 27.64 = 13,820.00,
+            # billed 13,681.80).
+            if price and 0.95 <= unit / price <= 1.0 + 0.006 / price:
+                name = (word.group(1) or word.group(2)).upper()
+                if not any(str(e.get("label")) == name for e in item.get("extras") or [] if isinstance(e, dict)):
+                    item.setdefault("extras", []).append(
+                        {"label": name, "value": figure, "confidence": extra.get("confidence", 1.0)})
+                return
 _ONE_FIGURE = re.compile(r"[\d,]+(?:\.\d+)?")
 
 
@@ -263,6 +296,8 @@ def resolve_billed_rate(items: List[dict], labels: Optional[dict] = None) -> Opt
     """
     labels = {**_DEFAULT_LABELS, **(labels or {})}
     votes: dict = {}
+    for item in items:
+        _unmerge_billed_price(item)
     for item in items:
         unit = _billed_unit(item)
         if unit is None:
@@ -831,7 +866,7 @@ def refile_party_pans(fields: dict, page_text: str) -> List[str]:
     """A PAN filed under the wrong party, put back where its GSTIN says.
 
     A PAN is the middle of its owner's GSTIN. Adroit and Troikaa print the
-    buyer's "PAN : AASCA3306L" where the header reader looked for the
+    buyer's "PAN : <PAN>" where the header reader looked for the
     supplier's, and the supplier was given its customer's PAN. A party's PAN
     that is another party's is moved to that party when it has none; the
     party keeps its own only when the page prints it. Returns the paths changed.

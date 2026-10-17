@@ -4,7 +4,7 @@ A tax invoice names two businesses, each with its GSTIN: the supplier and the
 buyer. Suppliers print them every way there is - the buyer under "Bill To",
 "Sold to Party", "Payer", "M/s", or under no heading at all (Adroit prints the
 pharmacy's block straight after its own) - and a reader keyed on headings files
-a purchase under the wrong party: Pfizer's "Bill To: ... GSTIN: 27AAECD..." sits
+a purchase under the wrong party: Pfizer's "Bill To: ... GSTIN: 27..." sits
 ABOVE Pfizer's own GSTIN, so the first GSTIN on the page, which we took as the
 supplier's, was the pharmacy's.
 
@@ -33,7 +33,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from app.services.ocr.invoice_header import gstin_is_valid
 
-# Not \b-anchored: Adroit prints "GSTIN27AASCA3306L1ZE", label and number run
+# Not \b-anchored: Adroit prints "GSTIN<number>", label and number run
 # together. The check character keeps a stray match out.
 _GSTIN_ANY = re.compile(r"(?<![0-9])([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z])(?![A-Z0-9])")
 _BUYER_LABEL = re.compile(
@@ -151,7 +151,7 @@ def _nearest_below_label(text: str, found: List[Tuple[int, str]]) -> Optional[st
 
     A label printed mid-line heads the column it starts: side-by-side blocks
     interleave line by line in the text ("GSTIN 27AABCM... GOLDEN TOBACCO ...
-    / PAN ... GSTIN 27AAECD..."), so a GSTIN to the LEFT of the label's column
+    / PAN ... GSTIN 27..."), so a GSTIN to the LEFT of the label's column
     belongs to the block beside it - Mylan's own GSTIN sat a line nearer its
     "Bill To:" than the buyer's did.
     """
@@ -337,6 +337,35 @@ def _complete_own_name(fields: dict) -> None:
         ck, kk = _key(current), _key(known)
         if not ck or (len(ck) < len(kk) and kk.startswith(ck)):
             _set(fields, party, "name", known, confidence=0.9)
+        # The same shop under another spelling - "EASTERN AGENCIES HEALTHCARE
+        # PRIVATE LIMITED", "M/s EASTERN AGENCIES HEALTHCARE" - or a name the
+        # bill runs its GSTIN into: one buyer, one name, the one its GSTIN
+        # goes by.
+        elif ck != kk and (_first_word(current) == _first_word(known) or gstin in ck
+                           or _same_shop(current, known)):
+            _set(fields, party, "name", known, confidence=0.95)
+
+
+_NOT_DISTINCT = {"PVT", "PRIVATE", "LTD", "LIMITED", "LLP", "AND", "THE", "OF", "CO", "UNIT"}
+
+
+def _distinct_words(name: str) -> set:
+    return {w.upper() for w in re.split(r"[^A-Za-z0-9]+", name or "")
+            if len(w) > 1 and not any(ch.isdigit() for ch in w) and w.upper() not in _NOT_DISTINCT}
+
+
+def _same_shop(current: str, known: str) -> bool:
+    """The shop's name with a code or a label around it - "MUM025 EASTERN",
+    "[7381] EASTERN AGENCIES HEALTHCARE PVT. LTD", "S. EASTERN AGENCIES": two
+    of its words, or nothing but its words."""
+    mine, theirs = _distinct_words(current), _distinct_words(known)
+    shared = mine & theirs
+    return len(shared) >= 2 or (bool(shared) and mine <= theirs)
+
+
+def _first_word(name: str) -> str:
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", re.sub(r"^\s*m\s*/\s*s\.?\s*", "", name or "", flags=re.I)) if w]
+    return words[0].upper() if words else ""
 
 
 def _tidy_names(fields: dict) -> None:
@@ -347,10 +376,14 @@ def _tidy_names(fields: dict) -> None:
         name = _value(fields, party, "name")
         if not name:
             continue
+        # A label and GSTIN printed in front: "GST NO : <GSTIN> SHREE SIMBA
+        # CHEMIST (... D L No : ..." (Shree Simba's own bills).
+        name = re.sub(r"^\s*(?:gst(?:in)?\s*(?:no)?\.?\s*[:.]?\s*)?\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\s+",
+                      "", name, flags=re.I)
         cut = _NAME_RUN_ON.split(name)[0].strip(" ,.:-")
         if party == "supplier":
             cut = _cut_at_buyer(cut, fields)
-        if cut and cut != name and len(_key(cut)) >= 4:
+        if cut and cut != _value(fields, party, "name") and len(_key(cut)) >= 4:
             leaf = (fields.get(party) or {}).get("name") or {}
             _set(fields, party, "name", cut, confidence=leaf.get("confidence") or RESOLVED_CONFIDENCE)
 
