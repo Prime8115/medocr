@@ -30,6 +30,7 @@ _LINE = 3.5          # points: words this close vertically share a line
 _BELOW = 40.0        # points: how far under the GSTIN the licence line may sit
 _SAME_COLUMN = 20.0  # points: how far its label may start from the GSTIN label
 _CELL_GAP = 40.0     # points: a gap this wide ends the supplier's cell
+_SAME_LINE_GAP = 60.0  # points: a licence label this close after the GSTIN, on its line
 
 
 def parse_licences(text: str) -> List[Tuple[str, Optional[str]]]:
@@ -79,8 +80,12 @@ def licences_beside(data: bytes, gstin: str, max_pages: int = 3) -> List[Tuple[s
                 for below in lines[i:i + 4]:
                     if below[0]["top"] - hit["top"] > _BELOW:
                         break
+                    # ...or right after the GSTIN on its own line: Agresco prints
+                    # "GST : <GSTIN> D.L.No. : MH-MZ5-xxxxxx/...".
                     start = next((j for j, w in enumerate(below)
-                                  if _LABEL.match(w["text"]) and abs(w["x0"] - label["x0"]) <= _SAME_COLUMN), None)
+                                  if _LABEL.match(w["text"]) and (
+                                      abs(w["x0"] - label["x0"]) <= _SAME_COLUMN
+                                      or (below is line and 0 <= w["x0"] - hit["x1"] <= _SAME_LINE_GAP))), None)
                     if start is None:
                         continue
                     cell = [below[start]]
@@ -94,15 +99,71 @@ def licences_beside(data: bytes, gstin: str, max_pages: int = 3) -> List[Tuple[s
     return []
 
 
+def _serial(number: str) -> str:
+    digits = re.sub(r"\D", "", number or "")
+    return digits[-6:] if len(digits) >= 5 else ""
+
+
+def _buyer_serials(fields: dict, data: bytes) -> set:
+    """Serials of the licences printed beside the buyer's (or consignee's, or
+    the shop's own) GSTIN."""
+    from app.services.ocr.parties import OWN_GSTINS
+
+    supplier = fields.get("supplier") if isinstance(fields.get("supplier"), dict) else {}
+    own = {str(g).upper() for g in OWN_GSTINS.get() or ()}
+    buyers = {str(((fields.get(party) or {}).get("gstin") or {}).get("value") or "").strip().upper()
+              for party in ("bill_to", "ship_to")} | own
+    # The shop's own GSTIN is never the supplier's, even where - before the
+    # parties are settled - the reading still files it as the supplier's.
+    supplier_gstin = str((supplier.get("gstin") or {}).get("value") or "").strip().upper()
+    theirs = set()
+    for gstin in buyers - ({"", supplier_gstin} - own):
+        # Every serial in it: Agresco prints "MH-MZ5-xxxxx1/MH-MZ5-xxxxx2" as one.
+        for number, _d in licences_beside(data, gstin):
+            theirs |= {run[-6:] for run in re.findall(r"\d{5,}", number)}
+    return theirs
+
+
+def _without_buyer_licences(fields: dict, data: bytes, theirs: Optional[set] = None) -> None:
+    """Drop from the supplier's licences any the bill prints beside the BUYER's
+    (or consignee's) GSTIN. The shop's own licence was being filed as
+    the supplier's on bill after bill where the supplier's block carries none
+    of its own: another party's licence is worse than a blank."""
+    supplier = fields.get("supplier")
+    theirs = _buyer_serials(fields, data) if theirs is None else theirs
+    if not theirs or not isinstance(supplier, dict):
+        return
+    kept = [(supplier.get(f"dl_no_{n}"), supplier.get(f"dl_date_{n}")) for n in (1, 2, 3)
+            if str((supplier.get(f"dl_no_{n}") or {}).get("value") or "").strip()
+            and _serial(str(supplier[f"dl_no_{n}"]["value"])) not in theirs]
+    for n in (1, 2, 3):
+        number, date = kept[n - 1] if n <= len(kept) else ({"value": None, "confidence": None},
+                                                            {"value": None, "confidence": None})
+        supplier[f"dl_no_{n}"] = number
+        supplier[f"dl_date_{n}"] = date or {"value": None, "confidence": None}
+
+
 def apply_supplier_licences(fields: dict, data: bytes) -> List[str]:
     """Put the supplier's own licences, with their dates, into dl_no_n /
-    dl_date_n when the PDF prints them beside its GSTIN. Returns warnings."""
+    dl_date_n when the PDF prints them beside its GSTIN, and never one the
+    bill prints beside the buyer's. Returns warnings."""
+    from app.services.ocr.parties import OWN_GSTINS
+
     supplier = fields.get("supplier")
     if not isinstance(supplier, dict):
         return []
     gstin = str((supplier.get("gstin") or {}).get("value") or "").strip()
-    found = licences_beside(data, gstin)[:3]
+    # Never beside the shop's own GSTIN or the buyer's: before the parties are
+    # settled the "supplier" GSTIN can still be the buyer's (Zuventus), and its
+    # licences then replaced the supplier's correct ones.
+    buyers = {str(g).upper() for g in OWN_GSTINS.get() or ()} | {
+        str(((fields.get(p) or {}).get("gstin") or {}).get("value") or "").strip().upper()
+        for p in ("bill_to", "ship_to")}
+    theirs = _buyer_serials(fields, data)
+    found = [] if gstin.upper() in buyers else [
+        (n, d) for n, d in licences_beside(data, gstin) if _serial(n) not in theirs][:3]
     if not found:
+        _without_buyer_licences(fields, data, theirs)
         return []
     read = [str((supplier.get(f"dl_no_{n}") or {}).get("value") or "").strip() for n in (1, 2, 3)]
     for n in (1, 2, 3):
