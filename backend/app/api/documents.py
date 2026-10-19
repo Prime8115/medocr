@@ -25,6 +25,7 @@ from app.core.deps import get_current_user, require_owner
 from app.database import SessionLocal, get_db
 from app.models.audit_log import AuditLog
 from app.models.connector import Connector
+from app.models.base import gen_uuid
 from app.models.document import Document
 from app.models.inventory import InventoryItem
 from app.models.job import OcrJob
@@ -32,6 +33,7 @@ from app.models.user import User
 from app.schemas.connector import DeliveryOut
 from app.schemas.document import (
     DocumentOut,
+    DocumentPart,
     DocumentReport,
     DocumentReportAck,
     DocumentResponse,
@@ -417,12 +419,19 @@ async def submit_document(
     if not allow_duplicate:
         earlier = _earlier_scan(db, user.shop_id, prepared.sha256)
         if earlier is not None:
+            # Every bill the file held, not only the first: the rest are as
+            # much "the earlier scan" as it is.
+            ids = [p.id for p in _parts_of(db, earlier)] or [earlier.id]
+            message = "This file was already scanned - opening the earlier scan."
+            if len(ids) > 1:
+                message = (f"This file was already scanned. It held {len(ids)} bills - "
+                           f"opening the first; the others are linked from it.")
             return DocumentResponse(
-                document_id=earlier.id, status=earlier.status, duplicate=True, document_ids=[earlier.id],
-                message="This file was already scanned - opening the earlier scan.",
+                document_id=ids[0], status=earlier.status, duplicate=True, document_ids=ids, message=message,
             )
 
     parts = [prepared.data]
+    groups: list = []
     if prepared.content_type == intake.PDF and settings.upload_split_invoices:
         groups = await run_in_threadpool(intake.invoice_groups, prepared.data)
         if len(groups) > 1:
@@ -430,6 +439,7 @@ async def submit_document(
                 lambda: [intake.pdf_pages(prepared.data, pages) for pages in groups])
             log.info("upload %s: %d invoices in one PDF, one document each", file.filename, len(parts))
 
+    upload_id = "up_" + gen_uuid()[:12] if len(parts) > 1 else None
     docs = []
     for i, part in enumerate(parts):
         name = prepared.filename if len(parts) == 1 else prepared.filename.replace(".pdf", f"_{i + 1}.pdf")
@@ -442,6 +452,9 @@ async def submit_document(
             content_hash=prepared.sha256,
             created_by=user.id,
         )
+        if upload_id:
+            doc.upload_id, doc.part_no, doc.part_count = upload_id, i + 1, len(parts)
+            doc.part_pages = _page_span(groups[i])
         db.add(doc)
         db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.submitted", target=doc.id))
         docs.append(doc)
@@ -452,7 +465,8 @@ async def submit_document(
         _enqueue_and_start(db, background_tasks, doc, prepared.content_type, doc_type)
     message = None
     if len(docs) > 1:
-        message = f"This PDF held {len(docs)} invoices - each is scanned as its own document."
+        message = (f"This PDF held {len(docs)} bills - each is scanned as its own document. "
+                   f"Each one shows the others at the top.")
     elif prepared.pages_removed:
         message = f"{prepared.pages_removed} blank page(s) were left out."
     return DocumentResponse(
@@ -660,7 +674,43 @@ def document_diagnostics(
 
 @router.get("/{document_id}", response_model=DocumentOut)
 def get_document(document_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return _get_owned_document(document_id, db, user)
+    doc = _get_owned_document(document_id, db, user)
+    out = DocumentOut.model_validate(doc)
+    out.parts = [_part_summary(p) for p in _parts_of(db, doc)]
+    return out
+
+
+def _parts_of(db: Session, doc: Document) -> list:
+    """Every document cut from the same uploaded PDF as this one, in page
+    order - none when the file held one bill."""
+    if not doc.upload_id:
+        return []
+    return (
+        db.query(Document)
+        .filter(Document.shop_id == doc.shop_id, Document.upload_id == doc.upload_id)
+        .order_by(Document.part_no.asc())
+        .all()
+    )
+
+
+def _part_summary(doc: Document) -> DocumentPart:
+    fields = (doc.payload or {}).get("fields") or {}
+    head = fields.get("invoice") or {}
+
+    def value(key):
+        leaf = head.get(key)
+        return (leaf.get("value") if isinstance(leaf, dict) else leaf) or None
+
+    return DocumentPart(id=doc.id, part_no=doc.part_no, pages=doc.part_pages, status=doc.status,
+                        number=value("invoice_no"), total=value("total_amount"))
+
+
+def _page_span(pages: list) -> str:
+    """0-based page indexes as the file's page numbers: [1, 2, 3] -> "2-4"."""
+    first, last = min(pages) + 1, max(pages) + 1
+    if last - first + 1 == len(pages):
+        return str(first) if first == last else f"{first}-{last}"
+    return ",".join(str(p + 1) for p in sorted(pages))[:32]
 
 
 @router.patch("/{document_id}", response_model=DocumentOut)

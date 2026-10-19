@@ -1,3 +1,4 @@
+import type { DocumentPart } from '../lib/parts';
 import { api } from './client';
 import type { ExtractionPayload, Fields } from '../lib/payload';
 
@@ -10,6 +11,11 @@ export interface DocumentDto {
   progress?: string | null;
   error?: string | null;
   created_at: string;
+  // One of several bills in one uploaded PDF (see src/lib/parts.ts).
+  part_no?: number | null;
+  part_count?: number | null;
+  part_pages?: string | null;
+  parts?: DocumentPart[];
 }
 
 export interface UploadFile {

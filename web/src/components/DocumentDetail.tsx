@@ -17,6 +17,7 @@ import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import RecheckField from './RecheckField';
 import { formatMoney } from '../lib/table';
+import { kindLabel, otherParts, pagesLabel, partTitle } from '../lib/parts';
 import {
   choicesOf,
   openChecks,
@@ -186,6 +187,7 @@ export default function DocumentDetail() {
   const meta = payload?.meta as
     | {
         pages?: number;
+        document_kind?: string;
         warnings?: string[];
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
@@ -244,7 +246,8 @@ export default function DocumentDetail() {
         <div>
           <h1>{documentTitle(doc).title}</h1>
           <div className="text-muted">
-            {[documentTitle(doc).subtitle, confidencePercent(doc.overall_confidence)].filter(Boolean).join(' · ')}
+            {[kindLabel(meta?.document_kind), documentTitle(doc).subtitle,
+              confidencePercent(doc.overall_confidence)].filter(Boolean).join(' · ')}
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
@@ -258,6 +261,21 @@ export default function DocumentDetail() {
           </button>
         </div>
       </div>
+
+      {/* One of several bills in one PDF: say so, and link the others -
+          Ajanta's 6-page credit note was taken for lost behind the 1-page one. */}
+      {partTitle(doc) && (
+        <div className="glass-card" style={{ marginBottom: 16 }}>
+          <strong>{partTitle(doc)}</strong>
+          {otherParts(doc).map((p) => (
+            <div key={p.id} style={{ marginTop: 6 }}>
+              <a href={`/documents/${p.id}`} onClick={(e) => { e.preventDefault(); navigate(`/documents/${p.id}`); }}>
+                {p.label} ›
+              </a>
+            </div>
+          ))}
+        </div>
+      )}
 
       {doc.status === 'failed' && (
         <div className="glass-card" style={{ borderColor: 'rgba(239,68,68,0.4)' }}>
@@ -429,7 +447,7 @@ export default function DocumentDetail() {
               </button>
             ) : null}
             <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>
-              {itemSections.length} items{meta?.pages ? ` · ${meta.pages}p` : ''}
+              {itemSections.length} items{meta?.pages ? ` · ${pagesLabel(meta.pages)}` : ''}
               {inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}
             </span>
           </div>

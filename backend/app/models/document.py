@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, JSON, ForeignKey, Index, Text
+from sqlalchemy import Column, String, Float, Integer, JSON, ForeignKey, Index, Text
 
 from app.database import Base
 from app.models.base import TimestampMixin, gen_uuid
@@ -31,5 +31,13 @@ class Document(Base, TimestampMixin):
     progress = Column(String(16), nullable=True)  # e.g. "12/60" while processing
     error = Column(Text, nullable=True)
     created_by = Column(String(32), ForeignKey("users.id"), nullable=True)
+    # A PDF holding several invoices or credit notes becomes one document
+    # each: they share upload_id, and part_no counts them (1..part_count) in
+    # page order, so each part can show where the others are.
+    upload_id = Column(String(40), nullable=True, index=True)
+    part_no = Column(Integer, nullable=True)
+    part_count = Column(Integer, nullable=True)
+    # The file's pages this part was cut from, as "2-7".
+    part_pages = Column(String(32), nullable=True)
 
     __table_args__ = (Index("ix_documents_shop_content_hash", "shop_id", "content_hash"),)

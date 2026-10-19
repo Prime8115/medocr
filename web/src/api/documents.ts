@@ -1,3 +1,4 @@
+import type { DocumentPart } from '../lib/parts';
 import { api } from './client';
 
 export interface Leaf {
@@ -21,6 +22,11 @@ export interface DocumentDto {
   payload?: ExtractionPayload | null;
   error?: string | null;
   created_at: string;
+  // One of several bills in one uploaded PDF (see lib/parts.ts).
+  part_no?: number | null;
+  part_count?: number | null;
+  part_pages?: string | null;
+  parts?: DocumentPart[];
 }
 
 export interface Delivery {

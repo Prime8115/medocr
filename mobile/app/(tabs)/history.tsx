@@ -127,7 +127,7 @@ export default function HistoryScreen() {
               <View style={styles.cardMain}>
                 <Text style={styles.cardId} numberOfLines={2}>{title}</Text>
                 <Text style={styles.cardMeta}>
-                  {[subtitle, confidencePercent(item.overall_confidence)].filter(Boolean).join(' · ')}
+                  {[subtitle, item.part_count && item.part_count > 1 ? `bill ${item.part_no} of ${item.part_count} in one PDF` : '', confidencePercent(item.overall_confidence)].filter(Boolean).join(' · ')}
                 </Text>
               </View>
               <Badge label={statusLabel(item.status)} tone={STATUS_TONE[item.status] ?? 'neutral'} />
