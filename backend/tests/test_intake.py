@@ -234,10 +234,42 @@ def test_an_upload_of_three_invoices_makes_three_documents(client, mock_ocr):
     assert r.status_code == 200, r.text
     body = r.json()
     assert len(body["document_ids"]) == 3 and body["document_id"] == body["document_ids"][0]
-    assert "3 invoices" in body["message"]
+    assert "3 bills" in body["message"]
     for doc_id in body["document_ids"]:
         doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
         assert doc["status"] == "needs_review"
+
+
+def test_each_part_of_a_split_pdf_shows_all_the_parts(client, mock_ocr):
+    """A 7-page file of two credit notes opened on the first, "9 items · 1
+    pages": the 6-page one had to be found in History. Each part lists them all."""
+    headers = register_and_login(client)
+    data = sample_pdf(_invoice_page("S-1"), _invoice_page("S-2"), "continued " * 20, _invoice_page("S-3"))
+    ids = _upload(client, headers, data, "batch.pdf", "application/pdf", doc_type="invoice").json()["document_ids"]
+    assert len(ids) == 3
+    for n, doc_id in enumerate(ids, 1):
+        doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+        assert (doc["part_no"], doc["part_count"]) == (n, 3)
+        assert [p["id"] for p in doc["parts"]] == ids
+        assert [p["pages"] for p in doc["parts"]] == ["1", "2-3", "4"]
+        assert [p["part_no"] for p in doc["parts"]] == [1, 2, 3]
+
+
+def test_the_same_file_again_opens_every_part(client, mock_ocr):
+    headers = register_and_login(client)
+    data = sample_pdf(_invoice_page("S-1"), _invoice_page("S-2"))
+    first = _upload(client, headers, data, "batch.pdf", "application/pdf", doc_type="invoice").json()
+    again = _upload(client, headers, data, "batch.pdf", "application/pdf", doc_type="invoice").json()
+    assert again["duplicate"] and again["document_ids"] == first["document_ids"]
+    assert again["document_id"] == first["document_ids"][0] and "2 bills" in again["message"]
+
+
+def test_a_single_bill_has_no_parts(client, mock_ocr):
+    headers = register_and_login(client)
+    doc_id = _upload(client, headers, sample_pdf(_invoice_page("S-1")), "one.pdf", "application/pdf",
+                     doc_type="invoice").json()["document_id"]
+    doc = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert doc["parts"] == [] and doc["part_no"] is None
 
 
 def test_splitting_can_be_switched_off(client, mock_ocr, monkeypatch):

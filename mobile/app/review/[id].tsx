@@ -35,6 +35,7 @@ import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/c
 import { isRetryableFailure, isWaitingForAi } from '@/src/lib/failure';
 import { matchDocument, DocMatch, MatchItem } from '@/src/api/inventory';
 import { t } from '@/src/i18n/strings';
+import { kindLabel, otherParts, pagesLabel, partTitle } from '@/src/lib/parts';
 import {
   Check,
   Choice,
@@ -377,6 +378,7 @@ export default function ReviewScreen() {
     | {
         warnings?: string[];
         pages?: number;
+        document_kind?: string;
         item_count?: number;
         line_items_total?: string | null;
         total_reconciles?: boolean | null;
@@ -474,10 +476,12 @@ export default function ReviewScreen() {
       <View style={styles.topBar}>
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.docType}>{doc.doc_type === 'invoice' ? t('invoice') : t('prescription')}</Text>
+            <Text style={styles.docType}>
+              {doc.doc_type === 'invoice' ? kindLabel(meta?.document_kind) ?? t('invoice') : t('prescription')}
+            </Text>
             <Text style={styles.confidence}>
               {itemSections.length > 0
-                ? `${itemSections.length} items${meta?.pages ? ` · ${meta.pages} pages` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
+                ? `${itemSections.length} items${meta?.pages ? ` · ${pagesLabel(meta.pages)}` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
                 : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
             </Text>
           </View>
@@ -488,6 +492,19 @@ export default function ReviewScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* One of several bills in one PDF: say so, and link the others -
+            Ajanta's 6-page credit note was taken for lost behind the 1-page one. */}
+        {partTitle(doc) && (
+          <View style={styles.parts}>
+            <Text style={styles.partsTitle}>{partTitle(doc)}</Text>
+            {otherParts(doc).map((p) => (
+              <TouchableOpacity key={p.id} onPress={() => router.push(`/review/${p.id}`)} accessibilityRole="link">
+                <Text style={styles.partsLink}>{p.label} ›</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
         {/* The verdict, its notes and any choices scroll in a band of their own,
             capped at a third of the screen. Abbott's bill (a failed check, notes
@@ -999,6 +1016,9 @@ function ItemRow({
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: spacing.xl },
+  parts: { marginTop: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, backgroundColor: colors.primaryTint },
+  partsTitle: { ...font.label, color: colors.text },
+  partsLink: { ...font.body, color: colors.primary, paddingVertical: spacing.sm },
   topBar: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
   search: {
     minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,

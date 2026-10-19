@@ -58,6 +58,16 @@ class DocumentReportAck(BaseModel):
     message: str
 
 
+class DocumentPart(BaseModel):
+    """Another document cut from the same uploaded PDF."""
+    id: str
+    part_no: Optional[int] = None
+    pages: Optional[str] = None
+    status: str
+    number: Optional[str] = None
+    total: Optional[str] = None
+
+
 class DocumentOut(BaseModel):
     id: str
     doc_type: str
@@ -67,5 +77,11 @@ class DocumentOut(BaseModel):
     progress: Optional[str] = None
     error: Optional[str] = None
     created_at: datetime
+    # One of several bills in one uploaded PDF: which one, the file's pages it
+    # holds ("2-7"), and every part of the file, this one included.
+    part_no: Optional[int] = None
+    part_count: Optional[int] = None
+    part_pages: Optional[str] = None
+    parts: List[DocumentPart] = []
 
     model_config = {"from_attributes": True}

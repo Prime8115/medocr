@@ -361,10 +361,14 @@ def test_a_buyer_name_cut_short_is_finished_from_the_shops_own_name():
                   "bill_to": {"gstin": _leaf(EASTERN), "name": _leaf("EASTERN AGENCIES")}}
         parties.resolve(fields, f"ADROIT BIOMED LIMITED {SUPPLIER}\nEASTERN AGENCIES\nGSTIN {EASTERN}\n")
         assert _v(fields["bill_to"], "name") == "EASTERN AGENCIES HEALTHCARE PVT LTD"
-        # A different name the bill prints in full is the bill's own: kept.
+        # Another spelling of the same shop is the name its GSTIN goes by...
         fields["bill_to"]["name"] = _leaf("EASTERN AGENCY (ANDHERI)")
         parties.resolve(fields, "")
-        assert _v(fields["bill_to"], "name") == "EASTERN AGENCY (ANDHERI)"
+        assert _v(fields["bill_to"], "name") == "EASTERN AGENCIES HEALTHCARE PVT LTD"
+        # ...while a trade name of its own is the bill's: kept.
+        fields["bill_to"]["name"] = _leaf("SHREE GANESH CHEMIST")
+        parties.resolve(fields, "")
+        assert _v(fields["bill_to"], "name") == "SHREE GANESH CHEMIST"
     finally:
         OWN_GSTINS.reset(token)
 
