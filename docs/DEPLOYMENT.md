@@ -52,6 +52,12 @@ Put that host's URL into the backend's `CORS_ORIGINS`.
   `alembic upgrade head` on every deploy.
 - **Storage:** default `local` disk works for a single instance. For multiple
   instances or durability, set `STORAGE_BACKEND=s3` + S3 vars.
+- **Original uploads:** to compare with the exact received photo/PDF, use
+  durable S3 storage and set `SOURCE_ENCRYPTION_KEYS` to a Fernet key in the
+  host's secret manager. Generate one using the command in
+  `backend/.env.example`. Keep previous keys after rotation, newest first,
+  separated by commas. Without a configured key, the processed source view
+  remains available and exact originals are not retained.
 - **Scaling OCR:** current processing uses FastAPI background tasks. If volume
   grows, move OCR to a worker queue (documented as a future step).
 

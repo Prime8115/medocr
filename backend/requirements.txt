@@ -15,6 +15,7 @@ psycopg2-binary>=2.9.9   # PostgreSQL driver (prod)
 # --- Auth & security ---
 PyJWT>=2.8.0
 bcrypt>=4.1.0
+cryptography>=42.0.0  # authenticated encryption for retained original uploads
 slowapi>=0.1.9
 
 # --- OCR ---

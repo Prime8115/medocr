@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     s3_bucket: Optional[str] = None
     s3_region: Optional[str] = None
     s3_endpoint_url: Optional[str] = None
+    # Comma-separated Fernet keys, newest first. Without a key, existing
+    # processed-source behavior remains available but originals are not kept.
+    source_encryption_keys: str = ""
 
     # --- Limits ---
     max_upload_mb: int = 25

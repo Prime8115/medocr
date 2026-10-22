@@ -26,6 +26,10 @@ class Document(Base, TimestampMixin):
     # earlier scan.
     content_hash = Column(String(64), nullable=True)
     image_ref = Column(String(512), nullable=True)
+    # Optional encrypted bytes of the upload exactly as received. image_ref
+    # continues to name the prepared file read by OCR and old clients.
+    original_ref = Column(String(512), nullable=True)
+    source_manifest = Column(JSON, nullable=True)
     overall_confidence = Column(Float, nullable=True)
     payload = Column(JSON, nullable=True)  # extracted structured data
     progress = Column(String(16), nullable=True)  # e.g. "12/60" while processing

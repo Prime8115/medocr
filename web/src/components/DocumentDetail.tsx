@@ -17,6 +17,7 @@ import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import RecheckField from './RecheckField';
 import SourcePages from './SourcePages';
+import TallyReadiness from './TallyReadiness';
 import { formatMoney } from '../lib/table';
 import { kindLabel, otherParts, pagesLabel, partTitle } from '../lib/parts';
 import {
@@ -265,7 +266,9 @@ export default function DocumentDetail() {
         </div>
       </div>
 
-      <SourcePages documentId={doc.id} selected={recheckPage} onSelect={setRecheckPage} />
+      <SourcePages documentId={doc.id} selected={recheckPage} onSelect={setRecheckPage}
+        manifest={doc.source_manifest} />
+      {doc.doc_type === 'invoice' && <TallyReadiness documentId={doc.id} status={doc.status} payload={doc.payload} />}
 
       {/* One of several bills in one PDF: say so, and link the others -
           Ajanta's 6-page credit note was taken for lost behind the 1-page one. */}

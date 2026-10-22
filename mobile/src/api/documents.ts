@@ -16,6 +16,9 @@ export interface DocumentDto {
   part_count?: number | null;
   part_pages?: string | null;
   parts?: DocumentPart[];
+  source_manifest?: { input_pages: number; processed_pages: number; page_map: number[];
+    removed_pages: number[]; transformations: string[]; quality_warnings: string[];
+    original_available: boolean } | null;
 }
 
 export interface SourcePage {
@@ -24,10 +27,14 @@ export interface SourcePage {
   pages: number;
   width: number;
   height: number;
+  source_page?: number;
+  source_pages?: number;
+  view?: 'processed' | 'original';
+  original_available?: boolean;
 }
 
-export async function getSourcePage(id: string, page: number): Promise<SourcePage> {
-  const res = await api.get(`/v1/documents/${id}/source`, { params: { page } });
+export async function getSourcePage(id: string, page: number, view: 'processed' | 'original' = 'processed'): Promise<SourcePage> {
+  const res = await api.get(`/v1/documents/${id}/source`, { params: { page, view } });
   return res.data as SourcePage;
 }
 

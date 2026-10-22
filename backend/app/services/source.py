@@ -4,7 +4,7 @@ import io
 
 from PIL import Image, ImageOps
 
-from app.services.intake import sniff, PDF
+from app.services.intake import sniff, PDF, HEIC
 
 
 def page_total(data):
@@ -22,6 +22,9 @@ def preview(data, page):
         from app.services.ocr.pdfium_safe import render_pages
         image = render_pages(data, 2, only=[page - 1], max_side=2200)[0]
     else:
+        if sniff(data) == HEIC:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
         with Image.open(io.BytesIO(data)) as opened:
             image = ImageOps.exif_transpose(opened).convert("RGB")
         image.thumbnail((2200, 2200))
