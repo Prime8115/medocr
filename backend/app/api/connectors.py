@@ -98,6 +98,11 @@ def update_connector(
     connector_id: str, body: ConnectorUpdate, db: Session = Depends(get_db), user: User = Depends(require_owner)
 ):
     c = _get_owned(connector_id, db, user)
+    if (body.config is not None
+            and (c.config or {}).get("format") == "tally_prime_xml"
+            and body.config.get("format") != "tally_prime_xml"
+            and db.query(TallyExport.id).filter(TallyExport.connector_id == connector_id).first()):
+        raise HTTPException(status_code=409, detail="This Tally connector has an export history. Disable it instead of changing its format.")
     if body.name is not None:
         c.name = body.name
     if body.config is not None:

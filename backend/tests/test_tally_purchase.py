@@ -142,6 +142,8 @@ def test_tally_download_is_pending_until_owner_reports_a_matching_receipt(client
     assert client.post(url + "/report", params=params, json=report, headers=owner).status_code == 200
     assert client.get(url + "/download", params=params, headers=owner).status_code == 409
     assert client.delete(f"/v1/connectors/{connector_id}", headers=owner).status_code == 409
+    assert client.patch(f"/v1/connectors/{connector_id}", json={"config": {"format": "json"}},
+                        headers=owner).status_code == 409
 
     with db_session() as db:
         shop_id = db.query(User).filter(User.email == "owner@shop.com").one().shop_id
