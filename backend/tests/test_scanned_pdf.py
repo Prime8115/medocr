@@ -86,6 +86,17 @@ def test_the_copy_sent_for_reading_has_no_scanner_text():
     assert len(PdfReader(io.BytesIO(pictures)).pages) == 2
 
 
+def test_scanned_pdf_sends_each_page_as_a_separate_vision_unit():
+    from pypdf import PdfReader
+
+    units, total, _ = ocr._build_units(scanned_pdf(pages=2), "application/pdf")
+    assert total == 2
+    assert len(units) == 2
+    assert all(kind == "application/pdf" and count == 1
+               and len(PdfReader(io.BytesIO(data)).pages) == 1
+               for data, kind, count in units)
+
+
 class RecordingProvider(OCRProvider):
     """Records what it is given to read."""
 

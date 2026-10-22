@@ -16,6 +16,8 @@ def _present(value):
 
 
 def requirements(fields, report):
+    from app.services.ocr.postprocess import is_pack_expression
+
     missing = []
     supplier = fields.get("supplier") or {}
     if not any(_present(_value(supplier, key)) for key in ("name", "gstin")):
@@ -33,6 +35,15 @@ def requirements(fields, report):
         if not any(_present(_value(item, key)) for key in ("amount", "net_amount", "gross_amount")):
             missing.append(f"line_items[{n}].amount")
     checks = []
+    ambiguous = [f"line_items[{n}].{key}" for n, item in enumerate(items)
+                 for key in ("quantity", "free_quantity", "total_quantity")
+                 if is_pack_expression(_value(item, key))]
+    if ambiguous:
+        checks.append({"id": "pack_quantity", "status": "fail",
+                       "label": "Pack size appears in a quantity field",
+                       "message": "Keep pack wording (such as 15's tablets) in Pack. Enter billed "
+                                  "quantity and unit from their own columns; do not infer them from pack size.",
+                       "fields": ambiguous})
     if missing:
         examples = "; ".join(p.replace("line_items[", "item[").replace("_", " ") for p in missing[:8])
         if len(missing) > 8:

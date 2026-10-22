@@ -24,7 +24,8 @@ _LOCK = threading.RLock()
 
 
 def render_pages(data: bytes, scale: float, max_pages: Optional[int] = None,
-                 grayscale: bool = False, only: Optional[List[int]] = None) -> list:
+                 grayscale: bool = False, only: Optional[List[int]] = None,
+                 max_side: Optional[int] = None) -> list:
     """The document's pages as PIL images, rendered at `scale` (dpi / 72).
 
     `max_pages` caps how many are rendered from the start; `only` renders just
@@ -43,7 +44,8 @@ def render_pages(data: bytes, scale: float, max_pages: Optional[int] = None,
             for i in indexes:
                 page = pdf[i]
                 try:
-                    image = page.render(scale=scale, grayscale=grayscale).to_pil()
+                    bounded_scale = min(scale, max_side / max(page.get_size())) if max_side else scale
+                    image = page.render(scale=bounded_scale, grayscale=grayscale).to_pil()
                     # A real copy, so the image does not share PDFium's buffer.
                     images.append(image.copy())
                 finally:

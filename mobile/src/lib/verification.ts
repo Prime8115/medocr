@@ -150,9 +150,15 @@ export function filledNotes(payload: unknown): string[] {
       gap_filled?: FilledField[];
       learned_filled?: FilledField[];
       lessons_applied?: { field: string; heading: string; kind: string }[];
+      learning_feedback?: { path: string; status: string; reason: string }[];
+      learning_application?: { path: string; status: string; reason: string }[];
+      exact_file_corrections?: string[];
     };
   } | null)?.meta;
   const notes: string[] = [];
+  if (meta?.exact_file_corrections?.length) {
+    notes.push(`Your saved corrections from this exact file were carried into this new reading: ${meta.exact_file_corrections.map(fieldLabel).join(', ')}. Please check them against the page.`);
+  }
   const ai = Array.isArray(meta?.gap_filled) ? meta!.gap_filled! : [];
   const learned = Array.isArray(meta?.learned_filled) ? meta!.learned_filled! : [];
   if (ai.length) {
@@ -171,6 +177,14 @@ export function filledNotes(payload: unknown): string[] {
         .map((l) => `${fieldLabel(`line_items.${l.field}`)} from “${l.heading}”`)
         .join(', ')}.`,
     );
+  }
+  for (const decision of meta?.learning_feedback ?? []) {
+    notes.push(`${fieldLabel(decision.path)}: ${decision.status === 'learned' ? 'Saved a supplier rule.' : 'Saved this correction only.'} ${decision.reason}`);
+  }
+  for (const decision of meta?.learning_application ?? []) {
+    if (decision.status !== 'already_correct') {
+      notes.push(`${fieldLabel(decision.path)}: ${decision.reason}`);
+    }
   }
   return notes;
 }

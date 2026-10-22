@@ -13,6 +13,7 @@ import pytest
 
 from app.config import settings
 from app.services.connectors.signing import verify
+from app.services.ocr.verify import open_checks
 from tests.conftest import register_and_login, sample_image
 
 RECEIVED: list[dict] = []
@@ -76,7 +77,10 @@ def test_full_scan_to_webhook_delivery(client, db_session, webhook_server, monke
     assert patched.status_code == 200
 
     # 5. Approve, then push.
-    client.post(f"/v1/documents/{doc_id}/approve", headers=headers)
+    required = open_checks(patched.json()["payload"]["meta"]["verification"])
+    approved = client.post(f"/v1/documents/{doc_id}/approve", headers=headers,
+                           json={"acknowledged": [c["id"] for c in required]})
+    assert approved.status_code == 200
     push = client.post(f"/v1/documents/{doc_id}/push", headers=headers).json()
     assert push["status"] == "pushed"
     assert push["deliveries"][0]["status"] == "success"

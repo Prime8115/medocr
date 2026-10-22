@@ -23,8 +23,8 @@ const en = {
   framingHint: 'Fit the document inside the frame',
   cannotRead: 'Cannot use this file',
   alreadyScanned: 'Already scanned',
-  openEarlier: 'Open earlier scan',
-  scanAgain: 'Scan again anyway',
+  openEarlier: 'Open saved reading',
+  scanAgain: 'Read as a new scan',
   uploaded: 'Uploaded',
   // Review
   review: 'Review',

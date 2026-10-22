@@ -190,6 +190,7 @@ def _read_on_recorded_answers(entry: dict) -> dict:
     provider = ReplayProvider(answers_dir(ROOT / "ai_answers", entry["file"], entry.get("part")))
     saved = (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review,
              settings.gemini_api_key, settings.gemini_api_keys, settings.ocr_chunk_concurrency)
+    old_units, old_extract_one = ocr._build_units, ocr._extract_one
     # The same switches as when the answers were recorded (scripts/corpus.py).
     ocr.get_provider = lambda: provider
     settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review = False, False, False
@@ -197,8 +198,26 @@ def _read_on_recorded_answers(entry: dict) -> dict:
     settings.ocr_chunk_concurrency = 1
     try:
         data = _as_uploaded((ROOT / entry["file"]).read_bytes(), entry.get("part"))
+        order_file = provider.store / "picture-order.json"
+        old_questions = (len(json.loads(order_file.read_text(encoding="utf-8")))
+                         if order_file.exists() else 0)
+        if 1 < old_questions < ocr.page_count(data):
+            # This recording asked about two multi-page picture chunks. The
+            # current reader asks each page separately, so those saved AI
+            # answers cannot be replayed against its new questions. Keep the
+            # old answer-to-question mapping for this historical output pin;
+            # per-page behavior has separate synthetic tests. Re-record this
+            # invoice before using it to grade the new page-level model path.
+            def recorded_units(file_bytes, content_type):
+                pictures = ocr.image_only_pdf(file_bytes)
+                parts = ocr.split_pdf(pictures, settings.ocr_pdf_chunk_pages)
+                return [(part, "application/pdf", ocr.page_count(part)) for part in parts], ocr.page_count(file_bytes), True
+
+            ocr._build_units = recorded_units
+            ocr._extract_one = lambda ai, part, ctype, kind: ocr.validate_fields(kind, ai.extract(part, ctype, kind))
         return process_document_for_corpus(data)
     finally:
+        ocr._build_units, ocr._extract_one = old_units, old_extract_one
         (ocr.get_provider, settings.allow_mock_ocr, settings.ocr_cross_read, settings.ocr_ai_review,
          settings.gemini_api_key, settings.gemini_api_keys, settings.ocr_chunk_concurrency) = saved
 

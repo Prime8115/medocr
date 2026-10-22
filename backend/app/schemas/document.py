@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DocumentResponse(BaseModel):
@@ -9,6 +9,7 @@ class DocumentResponse(BaseModel):
     status: str
     # The same file was uploaded before: document_id is that earlier scan.
     duplicate: bool = False
+    reused_reviewed: bool = False
     # Every document this upload made - more than one when a PDF held
     # several invoices (document_id is the first).
     document_ids: List[str] = []
@@ -36,6 +37,7 @@ class RecheckRequest(BaseModel):
     """One field the reviewer thinks was read wrong, by its path:
     "invoice.po_no", "line_items[2].ptr"."""
     path: str
+    page: Optional[int] = Field(None, ge=1)
 
 
 class ApproveRequest(BaseModel):

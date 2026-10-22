@@ -220,6 +220,11 @@ def _save_result(db: Session, job_id: str, document_id: str, result: dict, cause
             result = _improve(db, "the arrival snapshot", _with_arrival, result)
             _improve(db, "lesson counts",
                      lambda r: supplier_profile.record_outcome(db, shop_id, r.get("meta")) or r, result)
+            # A forced new reading of identical bytes can reuse the human's
+            # corrections without pretending they are a rule for all invoices.
+            from app.services.exact_replay import apply as replay_exact_file
+            result = _improve(db, "exact-file corrections",
+                              lambda r: replay_exact_file(db, doc, r), result)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
@@ -416,19 +421,32 @@ async def submit_document(
     if prepared.notes:
         log.info("upload %s: %s", file.filename, "; ".join(prepared.notes))
 
+    refreshing_saved_corrections = False
     if not allow_duplicate:
         earlier = _earlier_scan(db, user.shop_id, prepared.sha256)
         if earlier is not None:
             # Every bill the file held, not only the first: the rest are as
             # much "the earlier scan" as it is.
-            ids = [p.id for p in _parts_of(db, earlier)] or [earlier.id]
-            message = "This file was already scanned - opening the earlier scan."
-            if len(ids) > 1:
-                message = (f"This file was already scanned. It held {len(ids)} bills - "
-                           f"opening the first; the others are linked from it.")
-            return DocumentResponse(
-                document_id=ids[0], status=earlier.status, duplicate=True, document_ids=ids, message=message,
-            )
+            prior_parts = _parts_of(db, earlier) or [earlier]
+            from app.services.exact_replay import has_unapplied
+            refreshing_saved_corrections = any(has_unapplied(db, part) for part in prior_parts)
+            if not refreshing_saved_corrections:
+                ids = [p.id for p in prior_parts]
+                reviewed = _has_human_review(db, ids)
+                combined = any(((p.payload or {}).get("meta") or {}).get("exact_file_corrections")
+                               for p in prior_parts)
+                message = ("This file was already scanned. Opening the reading with your saved corrections; "
+                           "please review them against the page."
+                           if combined and not reviewed else
+                           "This file was already scanned. Opening your saved review; no new extraction was run."
+                           if reviewed else
+                           "This file was already scanned. Opening the existing reading; no new extraction was run.")
+                if len(ids) > 1:
+                    message += f" Its {len(ids)} bills are linked at the top."
+                return DocumentResponse(
+                    document_id=ids[0], status=earlier.status, duplicate=True,
+                    reused_reviewed=reviewed, document_ids=ids, message=message,
+                )
 
     parts = [prepared.data]
     groups: list = []
@@ -467,6 +485,8 @@ async def submit_document(
     if len(docs) > 1:
         message = (f"This PDF held {len(docs)} bills - each is scanned as its own document. "
                    f"Each one shows the others at the top.")
+    elif refreshing_saved_corrections:
+        message = "Refreshing this file and combining your saved corrections. Please review the result."
     elif prepared.pages_removed:
         message = f"{prepared.pages_removed} blank page(s) were left out."
     return DocumentResponse(
@@ -475,15 +495,37 @@ async def submit_document(
 
 
 def _earlier_scan(db: Session, shop_id: str, sha256: str) -> Optional[Document]:
-    """This shop's earlier scan of the very same file - unless that one failed,
-    when scanning it again is the point."""
-    return (
-        db.query(Document)
-        .filter(Document.shop_id == shop_id, Document.content_hash == sha256,
-                Document.status != lifecycle.FAILED)
-        .order_by(Document.created_at.asc())
-        .first()
-    )
+    """Prefer a corrected/reviewed complete upload over an unreviewed rescan."""
+    docs = (db.query(Document)
+            .filter(Document.shop_id == shop_id, Document.content_hash == sha256)
+            .order_by(Document.created_at.desc()).all())
+    groups = {}
+    for doc in docs:
+        groups.setdefault(doc.upload_id or doc.id, []).append(doc)
+    ids = [doc.id for doc in docs]
+    edited = {target for (target,) in db.query(AuditLog.target).filter(
+        AuditLog.shop_id == shop_id, AuditLog.action == "document.edited",
+        AuditLog.target.in_(ids)).all()} if ids else set()
+    candidates = []
+    for parts in groups.values():
+        if any(part.status == lifecycle.FAILED for part in parts):
+            continue
+        ordered = sorted(parts, key=lambda part: part.part_no or 1)
+        reviewed = any(part.id in edited or part.status in (lifecycle.APPROVED, lifecycle.PUSHED)
+                       for part in parts)
+        latest = max(part.updated_at or part.created_at for part in parts)
+        combined = any(((part.payload or {}).get("meta") or {}).get("exact_file_corrections")
+                       for part in parts)
+        candidates.append((combined, reviewed, latest, ordered[0]))
+    return max(candidates, key=lambda row: (row[0], row[1], row[2]))[3] if candidates else None
+
+
+def _has_human_review(db: Session, ids: list[str]) -> bool:
+    if not ids:
+        return False
+    return bool(db.query(AuditLog.id).filter(AuditLog.action == "document.edited",
+                AuditLog.target.in_(ids)).first()) or bool(db.query(Document.id).filter(
+                    Document.id.in_(ids), Document.status.in_((lifecycle.APPROVED, lifecycle.PUSHED))).first())
 
 
 @router.post("/{document_id}/retry", response_model=DocumentResponse)
@@ -680,6 +722,30 @@ def get_document(document_id: str, db: Session = Depends(get_db), user: User = D
     return out
 
 
+@router.get("/{document_id}/source")
+def source_page(document_id: str, page: int = Query(1, ge=1),
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """An owned document's bounded page image for checking the OCR reading."""
+    from app.services import source
+    from starlette.responses import JSONResponse
+
+    doc = _get_owned_document(document_id, db, user)
+    if not doc.image_ref:
+        raise HTTPException(status_code=410, detail="The source file is unavailable.")
+    try:
+        data = storage.load(doc.image_ref)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=410, detail="The source file is unavailable.")
+    try:
+        result = source.preview(data, page)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception:  # noqa: BLE001
+        log.exception("could not render a source page for document %s", doc.id)
+        raise HTTPException(status_code=422, detail="This source page could not be displayed.")
+    return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
+
+
 def _parts_of(db: Session, doc: Document) -> list:
     """Every document cut from the same uploaded PDF as this one, in page
     order - none when the file held one bill."""
@@ -755,6 +821,9 @@ def update_document(
     # Where the reviewer found what we missed, so this supplier's next bill is read there.
     learned = (learn_from_edit(db, user.shop_id, old_payload, clean, user.id)
                if doc.doc_type == "invoice" else [])
+    if doc.doc_type == "invoice":
+        from app.services.learning_feedback import for_edit
+        payload["meta"]["learning_feedback"] = for_edit(old_payload, old_clean, clean, learned, column_lessons)
     doc.payload = payload
     # Editing reopens review; the state machine forbids editing from other states above.
     doc.status = lifecycle.NEEDS_REVIEW
@@ -860,8 +929,6 @@ def recheck_field(
     from app.services.ocr import get_provider
 
     doc = _get_owned_document(document_id, db, user)
-    if doc.doc_type != "invoice":
-        raise HTTPException(status_code=422, detail="Only an invoice's fields can be rechecked.")
     if doc.status not in (lifecycle.NEEDS_REVIEW, lifecycle.APPROVED):
         raise HTTPException(status_code=409, detail=f"Cannot recheck a document in '{doc.status}' state.")
     if not doc.image_ref:
@@ -874,7 +941,7 @@ def recheck_field(
     payload = doc.payload or {}
     fields = payload.get("fields") or {}
     try:
-        rechecking.question(fields, body.path)
+        rechecking.question(fields, body.path, doc.doc_type)
     except rechecking.RecheckError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     try:
@@ -883,7 +950,10 @@ def recheck_field(
         raise HTTPException(status_code=410, detail="Stored file is no longer available.")
     try:
         result = rechecking.recheck(get_provider(), fields, (payload.get("meta") or {}).get("page_text"),
-                                    body.path, data, jobs.infer_content_type(doc.image_ref))
+                                    body.path, data, jobs.infer_content_type(doc.image_ref),
+                                    doc_type=doc.doc_type, page=body.page)
+    except rechecking.RecheckError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except OCRError as exc:
         log.warning("recheck %s %s: %s", doc.id, body.path, str(exc)[:200])
         raise HTTPException(status_code=503, detail=_public_message(exc))

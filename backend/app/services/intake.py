@@ -49,10 +49,8 @@ MSG_PDF_BLANK = "Every page of this PDF looks blank. Please check that you chose
 
 _MIN_IMAGE_SIDE = 200          # pixels; below this nothing on a bill is legible
 _BLANK_STDDEV = 4.0            # grey-level spread of a photo with nothing in it
-# A page is blank when almost none of it is ink - but a scanned blank page has
-# specks of dust, so "none" cannot mean zero.
-_BLANK_INK_FRACTION = 0.002
-_BLANK_RENDER_SCALE = 0.25     # ~18 dpi: enough to see ink, cheap per page
+# A page containing even faint ink is retained; only structurally empty pages
+# are removed below.
 _MAX_PAGES_CHECKED_FOR_BLANKS = 200
 
 
@@ -219,24 +217,24 @@ def _repair_pdf(data: bytes) -> Optional[bytes]:
 
 
 def _blank_pages(data: bytes, texts: List[str]) -> List[int]:
-    """Indexes of the pages with no text and next to no ink."""
-    from app.services.ocr.pdfium_safe import page_total, render_pages
+    """Only structurally empty pages; faint writing must never be discarded."""
+    from pypdf import PdfReader
+    from pypdf.generic import ContentStream
 
+    blank = []
     try:
-        total = min(page_total(data), _MAX_PAGES_CHECKED_FOR_BLANKS)
-        candidates = [i for i in range(total) if not (i < len(texts) and texts[i].strip())]
-        if not candidates:
-            return []
-        images = render_pages(data, _BLANK_RENDER_SCALE, grayscale=True, only=candidates)
+        reader = PdfReader(io.BytesIO(data))
+        painting = {b"Do", b"INLINE IMAGE", b"sh", b"S", b"s", b"f", b"F", b"f*",
+                    b"B", b"B*", b"b", b"b*", b"Tj", b"TJ", b"'", b'"'}
+        for i, page in enumerate(reader.pages[:_MAX_PAGES_CHECKED_FOR_BLANKS]):
+            if (i < len(texts) and texts[i].strip()) or page.get("/Annots"):
+                continue
+            content = page.get_contents()
+            if content is None or not any(op in painting for _, op in ContentStream(content, reader).operations):
+                blank.append(i)
     except Exception as exc:  # noqa: BLE001 - never refuse a file over this check
         log.info("upload: blank-page check skipped: %s", exc)
         return []
-    blank = []
-    for i, image in zip(candidates, images):
-        grey = image.convert("L")
-        ink = sum(grey.histogram()[:160])  # clearly darker than paper
-        if ink <= _BLANK_INK_FRACTION * grey.width * grey.height:
-            blank.append(i)
     return blank
 
 

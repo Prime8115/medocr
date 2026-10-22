@@ -236,6 +236,35 @@ def test_a_doubly_printed_block_reports_no_name():
     assert detail["gstin"] == "27AAECD7847H1ZC"
 
 
+def test_party_addresses_stop_before_delivery_note_and_invoice_reference_column():
+    import io
+    import pdfplumber
+    from reportlab.pdfgen import canvas
+    from app.services.ocr.invoice_header import party_regions
+
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=(850, 842))
+    for x, lines in (
+        (220, ["Bill to Address : (401)", "NORTH HEALTHCARE LTD", "12 Market Road Mumbai 400001",
+               "Email: buyer@example.test", "DELIVERY AT : MUMBAI", "GST No : 27ABCDE1234F1Z5"]),
+        (420, ["Ship to Address : (401)", "NORTH HEALTHCARE LTD", "12 Market Road Mumbai 400001",
+               "Email: store@example.test", "DELIVERY AT : MUMBAI", "GST No : 27ABCDE1234F1Z5"]),
+        (630, ["TAX INVOICE", "Invoice No : S-1029", "Inv. Date : 06.10.2025",
+               "Order No : 4455", "GR/PR No : 7788"]),
+    ):
+        for i, line in enumerate(lines):
+            pdf.drawString(x, 800 - 15 * i, line)
+    # A footer label to the left must not displace the invoice column anchor.
+    pdf.drawString(14, 620, "EWAY BILL")
+    pdf.save()
+    with pdfplumber.open(io.BytesIO(buf.getvalue())) as doc:
+        regions = party_regions(doc.pages[0])
+    for role in ("bill_to", "ship_to"):
+        details = party_details(regions[role])
+        assert details["name"] == "NORTH HEALTHCARE LTD"
+        assert details["address"] == "12 Market Road Mumbai 400001"
+
+
 def test_a_supplier_name_cut_at_the_column_edge_is_completed():
     page = "OVERSEAS HEALTH CARE PRIVATE LIMITED\nC/O HSS ENTER"
     assert _complete_legal_suffix("OVERSEAS HEALTH CARE PRIVATE", page) == \

@@ -128,27 +128,36 @@ def apply_learned(db: Session, shop_id: str, doc_type: str, payload: dict) -> di
             return payload
         owned = _owned_by_choices(meta)
         filled = []
+        outcomes = []
         for row in rows:
             if row.field not in LEARNABLE or row.field in owned:
+                outcomes.append({"path": row.field, "status": "skipped", "reason": "The field is handled by another review rule."})
                 continue
             learned = {"path": row.field, "label": row.label, "where": row.position,
                        "shape": row.shape, "words": row.words, "tail": row.tail}
             value = find(page, learned, fields)
             current = _value(fields, row.field)
             if not value or value == current:
+                outcomes.append({"path": row.field, "status": "no_match" if not value else "already_correct",
+                                 "reason": "The saved label did not uniquely match this invoice." if not value
+                                           else "The invoice already has this value."})
                 continue
             if current and row.learned_from != "misread":
+                outcomes.append({"path": row.field, "status": "kept_reading",
+                                 "reason": "This rule fills blanks and cannot replace a printed reading."})
                 continue
             section, _, key = row.field.partition(".")
             fields.setdefault(section, {})[key] = {"value": value, "confidence": LEARNED_CONFIDENCE}
             filled.append({"path": row.field, "value": value, "label": row.label,
                            "replaced": current or None})
             row.times_used = (row.times_used or 0) + 1
+            outcomes.append({"path": row.field, "status": "applied", "reason": "A saved supplier label located the field."})
         if not filled:
-            return payload
+            return {**payload, "meta": {**meta, "learning_application": outcomes}}
         new_meta = reverify(doc_type, payload, fields)
         new_meta["choices"] = meta.get("choices")
         new_meta["learned_filled"] = filled
+        new_meta["learning_application"] = outcomes
         ch.settle_checks(new_meta)
         payload = {**payload, "fields": fields, "meta": new_meta}
         log.info("supplier labels: filled %s", [f["path"] for f in filled])

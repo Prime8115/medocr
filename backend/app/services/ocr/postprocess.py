@@ -22,16 +22,19 @@ def normalize_date(value: Optional[str]) -> Optional[str]:
         return None
 
 
-_NUM_RE = re.compile(r"[-+]?\d*\.?\d+")
+def is_pack_expression(value) -> bool:
+    """Explicit pack notation; ordinary '15 tablets' can still be quantity."""
+    return bool(re.search(r"\d\s*['’`]\s*s\b|\d\s*[x×*]\s*\d", str(value or ""), re.I))
 
 
 def normalize_quantity(value: Optional[str]):
-    if not value:
+    if value is None or is_pack_expression(value):
         return None
-    m = _NUM_RE.search(value)
+    m = re.fullmatch(r"\s*(?:qty\s*:\s*)?([-+]?(?:\d[\d,]*(?:\.\d+)?|\.\d+))\s*(?:[A-Za-z.]+)?\s*",
+                     str(value), re.I)
     if not m:
         return None
-    num = m.group()
+    num = m.group(1).replace(",", "")
     return float(num) if "." in num else int(num)
 
 
@@ -60,8 +63,10 @@ def normalize_medication_name(value: Optional[str]) -> Optional[str]:
 
 
 def _set_norm(field: dict, normalized) -> None:
-    if isinstance(field, dict) and normalized is not None:
-        field["normalized"] = normalized
+    if isinstance(field, dict):
+        field.pop("normalized", None)
+        if normalized is not None:
+            field["normalized"] = normalized
 
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -185,6 +190,7 @@ def postprocess_fields(doc_type: str, fields: dict) -> dict:
             if isinstance(item, dict):
                 tidy_line(item)
             _set_norm(item.get("expiry"), normalize_date((item.get("expiry") or {}).get("value")))
-            _set_norm(item.get("quantity"), normalize_quantity((item.get("quantity") or {}).get("value")))
+            for key in ("quantity", "free_quantity", "total_quantity"):
+                _set_norm(item.get(key), normalize_quantity((item.get(key) or {}).get("value")))
         fill_single_slab(fields)
     return fields

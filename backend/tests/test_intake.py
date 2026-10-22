@@ -322,6 +322,110 @@ def test_it_can_be_scanned_again_on_purpose(client, mock_ocr):
     assert not again["duplicate"] and again["document_id"] != first["document_id"]
 
 
+def test_fresh_reading_of_same_invoice_replays_saved_address_edit(client, mock_ocr):
+    headers = register_and_login(client)
+    data = sample_image("INVOICE")
+    first = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(url, headers=headers).json()["payload"]["fields"]
+    fields["bill_to"]["address"] = {"value": "Corrected address from paper", "confidence": 1}
+    assert client.patch(url, headers=headers, json={"fields": fields}).status_code == 200
+
+    fresh = _upload(client, headers, data, "bill.png", "image/png",
+                    doc_type="invoice", allow_duplicate="true").json()
+    saved = client.get(f"/v1/documents/{fresh['document_id']}", headers=headers).json()
+    assert saved["status"] == "needs_review"
+    assert saved["payload"]["fields"]["bill_to"]["address"]["value"] == "Corrected address from paper"
+    assert "bill_to.address" in saved["payload"]["meta"]["exact_file_corrections"]
+
+
+def test_fresh_reading_combines_edits_saved_on_separate_scans(client, mock_ocr, monkeypatch):
+    from app.services import exact_replay
+    headers = register_and_login(client)
+    data = sample_image("INVOICE")
+    first = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    first_url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(first_url, headers=headers).json()["payload"]["fields"]
+    fields["bill_to"]["address"] = {"value": "Buyer address on page", "confidence": 1}
+    assert client.patch(first_url, headers=headers, json={"fields": fields}).status_code == 200
+
+    # Simulate an older app build: it made a fresh copy but did not replay the
+    # first correction. Today's Mankind scans were created in that state.
+    replay = exact_replay.apply
+    monkeypatch.setattr(exact_replay, "apply", lambda _db, _doc, payload: payload)
+    second = _upload(client, headers, data, "bill.png", "image/png",
+                     doc_type="invoice", allow_duplicate="true").json()
+    monkeypatch.setattr(exact_replay, "apply", replay)
+    second_url = f"/v1/documents/{second['document_id']}"
+    fields = client.get(second_url, headers=headers).json()["payload"]["fields"]
+    fields["ship_to"]["address"] = {"value": "Delivery address on page", "confidence": 1}
+    assert client.patch(second_url, headers=headers, json={"fields": fields}).status_code == 200
+
+    third = _upload(client, headers, data, "bill.png", "image/png",
+                    doc_type="invoice").json()
+    assert third["duplicate"] is False
+    assert "combining your saved corrections" in third["message"]
+    saved = client.get(f"/v1/documents/{third['document_id']}", headers=headers).json()["payload"]
+    assert saved["fields"]["bill_to"]["address"]["value"] == "Buyer address on page"
+    assert saved["fields"]["ship_to"]["address"]["value"] == "Delivery address on page"
+    fourth = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    assert fourth["duplicate"] is True and fourth["document_id"] == third["document_id"]
+
+
+def test_a_later_address_edit_with_neighbouring_labels_does_not_replace_a_clean_one(client, mock_ocr, monkeypatch):
+    from app.services import exact_replay
+
+    headers = register_and_login(client)
+    data = sample_image("INVOICE")
+    first = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    first_url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(first_url, headers=headers).json()["payload"]["fields"]
+    fields["bill_to"]["address"] = {"value": "Buyer Street, Patna 800011", "confidence": 1}
+    assert client.patch(first_url, headers=headers, json={"fields": fields}).status_code == 200
+
+    replay = exact_replay.apply
+    monkeypatch.setattr(exact_replay, "apply", lambda _db, _doc, payload: payload)
+    second = _upload(client, headers, data, "bill.png", "image/png",
+                     doc_type="invoice", allow_duplicate="true").json()
+    monkeypatch.setattr(exact_replay, "apply", replay)
+    second_url = f"/v1/documents/{second['document_id']}"
+    fields = client.get(second_url, headers=headers).json()["payload"]["fields"]
+    fields["bill_to"]["address"] = {"value": "Patna 800011, DELIVERY AT : PARNA", "confidence": 1}
+    assert client.patch(second_url, headers=headers, json={"fields": fields}).status_code == 200
+
+    third = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    saved = client.get(f"/v1/documents/{third['document_id']}", headers=headers).json()["payload"]
+    assert saved["fields"]["bill_to"]["address"]["value"] == "Buyer Street, Patna 800011"
+
+
+def test_reupload_prefers_saved_review_over_newer_unreviewed_scan(client, mock_ocr):
+    headers = register_and_login(client)
+    data = sample_image()
+    first = _upload(client, headers, data, "rx.png", "image/png").json()
+    second = _upload(client, headers, data, "rx.png", "image/png", allow_duplicate="true").json()
+    assert first["document_id"] != second["document_id"]
+    url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(url, headers=headers).json()["payload"]["fields"]
+    fields["patient"]["name"]["value"] = "TEST PATIENT"
+    assert client.patch(url, headers=headers, json={"fields": fields}).status_code == 200
+
+    reused = _upload(client, headers, data, "rx.png", "image/png").json()
+    assert reused["duplicate"] and reused["reused_reviewed"]
+    assert reused["document_id"] == first["document_id"]
+    assert "no new extraction" in reused["message"]
+    assert client.get(url, headers=headers).json()["payload"]["fields"]["patient"]["name"]["value"] == "TEST PATIENT"
+
+
+def test_reupload_uses_latest_complete_scan_without_review(client, mock_ocr):
+    headers = register_and_login(client)
+    data = sample_image()
+    _upload(client, headers, data, "rx.png", "image/png")
+    latest = _upload(client, headers, data, "rx.png", "image/png", allow_duplicate="true").json()
+    reused = _upload(client, headers, data, "rx.png", "image/png").json()
+    assert reused["document_id"] == latest["document_id"]
+    assert reused["duplicate"] and not reused["reused_reviewed"]
+
+
 def test_a_failed_scan_is_not_a_duplicate(client, monkeypatch):
     from app.api import documents as documents_api
 
@@ -348,3 +452,19 @@ def test_another_shops_scan_is_never_shown(client, mock_ocr):
     first = _upload(client, a, data, "rx.png", "image/png").json()
     other = _upload(client, b, data, "rx.png", "image/png").json()
     assert not other["duplicate"] and other["document_id"] != first["document_id"]
+
+
+def test_exact_file_edits_never_cross_shops(client, mock_ocr):
+    data = sample_image("INVOICE")
+    a = register_and_login(client)
+    b = register_and_login(client, email="b@shop.com", shop="Shop B")
+    first = _upload(client, a, data, "bill.png", "image/png", doc_type="invoice").json()
+    url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(url, headers=a).json()["payload"]["fields"]
+    fields["bill_to"]["address"] = {"value": "Shop A private address", "confidence": 1}
+    assert client.patch(url, headers=a, json={"fields": fields}).status_code == 200
+
+    other = _upload(client, b, data, "bill.png", "image/png", doc_type="invoice").json()
+    payload = client.get(f"/v1/documents/{other['document_id']}", headers=b).json()["payload"]
+    assert "bill_to.address" not in payload["meta"].get("exact_file_corrections", [])
+    assert (payload["fields"]["bill_to"].get("address") or {}).get("value") != "Shop A private address"

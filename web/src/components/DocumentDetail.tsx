@@ -16,6 +16,7 @@ import { addLineItem, buildSections, confidencePercent, documentTitle, extraColu
 import { matchDocument, type DocMatch, type MatchItem } from '../api/inventory';
 import InvoiceTable, { type TableRow } from './InvoiceTable';
 import RecheckField from './RecheckField';
+import SourcePages from './SourcePages';
 import { formatMoney } from '../lib/table';
 import { kindLabel, otherParts, pagesLabel, partTitle } from '../lib/parts';
 import {
@@ -44,6 +45,8 @@ export default function DocumentDetail() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const [doc, setDoc] = useState<DocumentDto | null>(null);
+  const [recheckPage, setRecheckPage] = useState<number | undefined>();
+  useEffect(() => { setRecheckPage(undefined); }, [id]);
   const [fields, setFields] = useState<Fields>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -206,7 +209,7 @@ export default function DocumentDetail() {
   // A field the reviewer doubts can be asked about again (RecheckField) - not
   // the few that are not printed values (licence dates, how a rate was chosen).
   const canRecheck = (path: string): boolean =>
-    isInvoice && ['needs_review', 'approved'].includes(doc.status)
+    ['needs_review', 'approved'].includes(doc.status)
     && !/dl_date_|rate_source|free_supply/.test(path);
   // What the bill itself says is payable - the figure on the paper.
   const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
@@ -261,6 +264,8 @@ export default function DocumentDetail() {
           </button>
         </div>
       </div>
+
+      <SourcePages documentId={doc.id} selected={recheckPage} onSelect={setRecheckPage} />
 
       {/* One of several bills in one PDF: say so, and link the others -
           Ajanta's 6-page credit note was taken for lost behind the 1-page one. */}
@@ -402,7 +407,7 @@ export default function DocumentDetail() {
                   />
                   {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
                   {canRecheck(spec.path) && (
-                    <RecheckField docId={id} path={spec.path} revision={fields}
+                    <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage}
                       onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
                   )}
                 </div>
@@ -625,7 +630,7 @@ export default function DocumentDetail() {
                     <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable}
                       onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
                     {canRecheck(spec.path) && (
-                      <RecheckField key={spec.path} docId={id} path={spec.path} revision={fields}
+                      <RecheckField key={spec.path} docId={id} path={spec.path} revision={fields} page={recheckPage}
                         onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
                     )}
                   </div>

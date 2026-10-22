@@ -74,3 +74,18 @@ def test_an_answer_without_its_line_list_is_asked_again():
     ai = Forgetful()
     fields = _extract_one(ai, b"page", "text/plain", "invoice")
     assert ai.asked == 2 and len(fields["line_items"]) == 1
+
+
+def test_an_empty_invoice_line_list_is_retried_and_cannot_pass_as_a_complete_bill():
+    from app.services.ocr import _extract_one
+
+    class EmptyRows(_Asked):
+        def extract(self, file_bytes, content_type, doc_type):
+            self.asked += 1
+            return {"invoice": {"invoice_no": {"value": "A-1", "confidence": 0.9}},
+                    "line_items": []}
+
+    ai = EmptyRows()
+    with pytest.raises(ValueError, match="item rows"):
+        _extract_one(ai, b"page", "application/pdf", "invoice")
+    assert ai.asked == 2

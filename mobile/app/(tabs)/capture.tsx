@@ -1,6 +1,5 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import NetInfo from '@react-native-community/netinfo';
 import { router } from 'expo-router';
@@ -12,28 +11,14 @@ import { refusalMessage } from '@/src/lib/upload';
 import { useQueue } from '@/src/queue/QueueContext';
 import { Badge, Button, Screen } from '@/src/theme/components';
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
-import { IMAGE_COMPRESSION, MAX_IMAGE_DIMENSION } from '@/src/config';
 import { t } from '@/src/i18n/strings';
 
 type DocType = 'prescription' | 'invoice' | undefined;
 
 interface Picked {
   uri: string;
-  type: 'image/jpeg' | 'application/pdf';
+  type: string;
   name: string;
-}
-
-async function compressImage(uri: string): Promise<string> {
-  try {
-    const result = await ImageManipulator.manipulateAsync(
-      uri,
-      [{ resize: { width: MAX_IMAGE_DIMENSION } }],
-      { compress: IMAGE_COMPRESSION, format: ImageManipulator.SaveFormat.JPEG },
-    );
-    return result.uri;
-  } catch {
-    return uri; // fall back to original on any failure
-  }
 }
 
 export default function CaptureScreen() {
@@ -61,18 +46,17 @@ export default function CaptureScreen() {
 
   async function takePicture() {
     if (!cameraRef.current || !ready) return;
-    const photo = await cameraRef.current.takePictureAsync();
+    const photo = await cameraRef.current.takePictureAsync({ quality: 1 });
     if (photo?.uri) {
-      const uri = await compressImage(photo.uri);
-      setPicked({ uri, type: 'image/jpeg', name: 'scan.jpg' });
+      setPicked({ uri: photo.uri, type: 'image/jpeg', name: 'scan.jpg' });
     }
   }
 
   async function pickImage() {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
     if (!result.canceled && result.assets[0]) {
-      const uri = await compressImage(result.assets[0].uri);
-      setPicked({ uri, type: 'image/jpeg', name: 'upload.jpg' });
+      const asset = result.assets[0];
+      setPicked({ uri: asset.uri, type: asset.mimeType || 'application/octet-stream', name: asset.fileName || 'upload' });
     }
   }
 

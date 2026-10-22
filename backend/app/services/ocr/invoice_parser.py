@@ -1464,7 +1464,13 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 item["description"] = _f(name)
     for field in _NUMERIC_FIELDS:
         if cols.get(field) is not None:
-            item[field] = _f(_num(_unwrapped_number(cell(field))))
+            from app.services.ocr.postprocess import is_pack_expression
+
+            raw = _clean(cell(field))
+            if field in ("quantity", "free_quantity", "total_quantity") and is_pack_expression(raw):
+                item[field] = _f(raw, confidence=0.3)
+            else:
+                item[field] = _f(_num(_unwrapped_number(cell(field))))
     # The unit printed beside the quantity in one cell: "Billed Qty / UoM" over
     # "120" and "ECH" (Piramal), "Qty. / UOM" over "252" and "BOT" (Lupin).
     if cols.get("uom") is None and cols.get("quantity") is not None:
