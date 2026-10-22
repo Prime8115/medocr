@@ -27,21 +27,23 @@ export default function SourcePages({ documentId, selected, onSelect, manifest }
 
   const imageWidth = source ? Math.min(source.width, 1400) : 0;
   const imageHeight = source ? Math.round(imageWidth * source.height / source.width) : 0;
+  const scanNoteCount = (manifest?.quality_warnings?.length ?? 0) + (manifest?.removed_pages?.length ? 1 : 0);
   return <>
-    <Button title="View source pages" variant="secondary" onPress={() => setOpen(true)} />
+    <Button title={`View source pages${scanNoteCount ? ` · ${scanNoteCount} scan note${scanNoteCount === 1 ? '' : 's'}` : ''}`}
+      variant="secondary" onPress={() => setOpen(true)} />
     {selected && <Button title={`Rechecks use page ${selected} · clear selection`}
       variant="secondary" onPress={() => onSelect(undefined)} />}
-    {(manifest?.quality_warnings ?? []).map((warning, i) =>
-      <Text key={i} style={{ color: colors.text, marginVertical: 6 }}>{warning}</Text>)}
-    {!!manifest?.removed_pages?.length && <Text style={{ color: colors.text, marginVertical: 6 }}>
-      Blank source pages {manifest.removed_pages.join(', ')} were left out of OCR.
-    </Text>}
     <Modal visible={open} onRequestClose={() => setOpen(false)} animationType="slide">
       <View style={{ flex: 1, padding: spacing.lg, paddingTop: 48, backgroundColor: colors.bg }}>
         <Button title="Close source" onPress={() => setOpen(false)} />
         <Text style={{ color: colors.text, marginVertical: 8 }}>
           Page {page}{source ? ` of ${source.pages}` : ''} · Check addresses and rows against the page.
         </Text>
+        {(manifest?.quality_warnings ?? []).map((warning, i) =>
+          <Text key={i} style={{ color: colors.text, marginVertical: 6 }}>{warning}</Text>)}
+        {!!manifest?.removed_pages?.length && <Text style={{ color: colors.text, marginVertical: 6 }}>
+          Blank source pages {manifest.removed_pages.join(', ')} were left out of OCR.
+        </Text>}
         {source?.original_available && <View style={{ flexDirection: 'row', gap: 8 }}>
           <Button title="OCR copy" disabled={view === 'processed'} onPress={() => setView('processed')} />
           <Button title="Original upload" disabled={view === 'original'} onPress={() => setView('original')} />
