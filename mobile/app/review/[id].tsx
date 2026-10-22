@@ -77,6 +77,8 @@ export default function ReviewScreen() {
   const [headerOpen, setHeaderOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [rawTextOpen, setRawTextOpen] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  useEffect(() => { setNoticeOpen(false); }, [id]);
   const [reportNote, setReportNote] = useState('');
   const [reporting, setReporting] = useState(false);
   // The confirm-before-approve checklist: which failed checks, which are ticked.
@@ -216,7 +218,7 @@ export default function ReviewScreen() {
       if (!saved) return;
       const undecided = pendingChoices(saved.payload);
       if (undecided.length > 0) {
-        Alert.alert('Choose first', undecided.map((c) => c.question).join('\n\n'));
+        setNoticeOpen(true);
         return;
       }
       const open = openChecks(verificationOf(saved.payload));
@@ -395,6 +397,13 @@ export default function ReviewScreen() {
   const warnings = meta?.warnings ?? [];
   const verdict = verdictOf(verificationOf(payload));
   const choices = choicesOf(payload);
+  const pendingChoiceCount = choices.filter((choice) => choice.chosen == null).length;
+  const warningSentences = warnings.filter((warning) => warning.includes(' ')).slice(0, 2);
+  const hasReviewNotice = !!verdict || choices.length > 0 || warnings.length > 0;
+  const noticeNeedsAttention = (!!verdict && !verdict.ok) || pendingChoiceCount > 0 || (!verdict && warnings.length > 0);
+  const noticeTitle = verdict?.title ?? (pendingChoiceCount > 0
+    ? `${pendingChoiceCount} decision${pendingChoiceCount === 1 ? '' : 's'} needed`
+    : 'Review scan notes');
 
   const matchForIndex = (i: number): MatchItem | undefined =>
     inv?.connected ? inv.items[i] : undefined;
@@ -475,8 +484,10 @@ export default function ReviewScreen() {
     <Screen>
       {/* The bill's own name in the header - its supplier and number - not "Review". */}
       <Stack.Screen options={{ title: documentTitle(doc).title }} />
-      {/* Fixed top: title, summary, and (for long lists) search + filter — always visible */}
-      <View style={styles.topBar}>
+      {/* Cap the controls on small screens so invoice rows always keep room.
+          The header itself scrolls when a split bill has many links or filters. */}
+      <ScrollView style={[styles.topBar, { maxHeight: Math.round(windowHeight * 0.42) }]}
+        contentContainerStyle={styles.topBarContent} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.docType}>
@@ -512,82 +523,26 @@ export default function ReviewScreen() {
           </View>
         )}
 
-        {/* The verdict, its notes and any choices scroll in a band of their own,
-            capped at a third of the screen. Abbott's bill (a failed check, notes
-            and a two-option choice) filled the whole fixed top on a phone and
-            pushed the line items off the screen - "headers only, lines missing". */}
-        <ScrollView style={{ maxHeight: Math.round(windowHeight * 0.33) }} nestedScrollEnabled>
-          {/* Integrity warnings are full sentences ("the invoice states 143 items
-              but 429 were read"); low-confidence warnings are dotted field paths.
-              Show the sentences — they are the ones that change a decision. */}
-          {/* The verdict: every check the bill's own figures allow, passed or
-              not. Tapping a failing verdict shows just the lines to check. */}
-          {verdict && (
-            <TouchableOpacity
-              activeOpacity={verdict.ok ? 1 : 0.7}
-              onPress={() => {
-                if (!verdict.ok) setAttentionOnly(true);
-              }}
-              style={[styles.verdict, verdict.ok ? styles.verdictOk : styles.verdictWarn]}
-            >
-              <Text style={[styles.verdictTitle, { color: verdict.ok ? colors.success : colors.warning }]}>
-                {verdict.ok ? '✓ ' : '⚠ '}
-                {verdict.title}
+        {/* Keep the invoice rows visible. Full checks, notes and supplier
+            choices live in a scrollable sheet instead of the fixed header. */}
+        {hasReviewNotice && (
+          <TouchableOpacity
+            style={[styles.noticeSummary, noticeNeedsAttention ? styles.verdictWarn : styles.verdictOk]}
+            onPress={() => setNoticeOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`${noticeTitle}. View review details`}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.verdictTitle, { color: noticeNeedsAttention ? colors.warning : colors.success }]} numberOfLines={1}>
+                {noticeNeedsAttention ? '⚠ ' : '✓ '}{noticeTitle}
               </Text>
-              <Text style={styles.verdictDetail}>{verdict.detail}</Text>
-              {filledNotes(payload).map((note) => (
-                <Text key={note} style={styles.verdictDetail}>ⓘ {note}</Text>
-              ))}
-            </TouchableOpacity>
-          )}
-
-          {/* Fields the bill gives two answers to: the reviewer decides. A
-              remembered decision (from this supplier's earlier bills) shows as
-              such and can still be changed. */}
-          {choices.map((choice) => (
-            <View key={choice.id} style={[styles.choiceCard, choice.chosen == null && styles.choicePending]}>
-              <Text style={styles.choiceTitle}>
-                {choice.label}
-                {choice.chosen == null ? ' - choose one' : choice.remembered ? ' · remembered for this supplier' : ''}
+              <Text style={styles.noticeHint} numberOfLines={1}>
+                {pendingChoiceCount > 0 ? `${pendingChoiceCount} choice${pendingChoiceCount === 1 ? '' : 's'} to make · ` : ''}View checks and notes
               </Text>
-              <Text style={styles.choiceQuestion}>{choice.question}</Text>
-              {choice.options.map((opt, i) => {
-                const on = choice.chosen === i;
-                return (
-                  <TouchableOpacity
-                    key={opt.label}
-                    style={[styles.choiceOption, on && styles.choiceOptionOn]}
-                    onPress={() => pick(choice, i)}
-                    disabled={busy !== null}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: on }}
-                  >
-                    <Text style={styles.choiceOptionLabel}>
-                      {on ? '● ' : '○ '}
-                      {opt.label}
-                    </Text>
-                    <Text style={styles.choiceOptionValue}>{optionText(opt) || 'blank on the bill'}</Text>
-                  </TouchableOpacity>
-                );
-              })}
             </View>
-          ))}
-
-          {!verdict && warnings.length > 0 &&
-            (() => {
-              const sentences = warnings.filter((w) => w.includes(' ')).slice(0, 2);
-              const shown = sentences.length > 0 ? sentences : [t('lowConfidence')];
-              return (
-                <View style={styles.warnBanner}>
-                  {shown.map((w) => (
-                    <Text key={w} style={styles.warnText}>
-                      {w}
-                    </Text>
-                  ))}
-                </View>
-              );
-            })()}
-        </ScrollView>
+            <Text style={styles.noticeChevron}>›</Text>
+          </TouchableOpacity>
+        )}
 
         {/* In table mode the supplier/invoice fields live behind this line, so the
             table gets the full height of the screen. */}
@@ -665,7 +620,7 @@ export default function ReviewScreen() {
             </View>
           </>
         )}
-      </View>
+      </ScrollView>
 
       {showTable ? (
         <InvoiceTable
@@ -760,6 +715,79 @@ export default function ReviewScreen() {
           <Text style={styles.sentText}>✓ {t('pushed')}</Text>
         </View>
       )}
+
+      {/* Long review messages never take space from the line-item table. */}
+      <Modal visible={noticeOpen} animationType="slide" transparent onRequestClose={() => setNoticeOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setNoticeOpen(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>Review checks and notes</Text>
+            <TouchableOpacity onPress={() => setNoticeOpen(false)} accessibilityRole="button">
+              <Text style={styles.modalDone}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={styles.noticeDetails}>
+            {verdict && (
+              <TouchableOpacity
+                activeOpacity={verdict.ok ? 1 : 0.7}
+                onPress={() => {
+                  if (!verdict.ok) {
+                    setAttentionOnly(true);
+                    setNoticeOpen(false);
+                  }
+                }}
+                style={[styles.verdict, verdict.ok ? styles.verdictOk : styles.verdictWarn]}
+                accessibilityRole={verdict.ok ? undefined : 'button'}
+              >
+                <Text style={[styles.verdictTitle, { color: verdict.ok ? colors.success : colors.warning }]}>
+                  {verdict.ok ? '✓ ' : '⚠ '}{verdict.title}
+                </Text>
+                <Text style={styles.verdictDetail}>{verdict.detail}</Text>
+                {filledNotes(payload).map((note) => (
+                  <Text key={note} style={styles.verdictDetail}>ⓘ {note}</Text>
+                ))}
+                {!verdict.ok && <Text style={styles.verdictDetail}>Tap to show lines needing a check.</Text>}
+              </TouchableOpacity>
+            )}
+
+            {choices.map((choice) => (
+              <View key={choice.id} style={[styles.choiceCard, choice.chosen == null && styles.choicePending]}>
+                <Text style={styles.choiceTitle}>
+                  {choice.label}
+                  {choice.chosen == null ? ' - choose one' : choice.remembered ? ' · remembered for this supplier' : ''}
+                </Text>
+                <Text style={styles.choiceQuestion}>{choice.question}</Text>
+                {choice.options.map((opt, i) => {
+                  const on = choice.chosen === i;
+                  return (
+                    <TouchableOpacity
+                      key={opt.label}
+                      style={[styles.choiceOption, on && styles.choiceOptionOn]}
+                      onPress={() => pick(choice, i)}
+                      disabled={busy !== null}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: on }}
+                    >
+                      <Text style={styles.choiceOptionLabel}>
+                        {on ? '● ' : '○ '}{opt.label}
+                      </Text>
+                      <Text style={styles.choiceOptionValue}>{optionText(opt) || 'blank on the bill'}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+
+            {!verdict && warnings.length > 0 && (
+              <View style={styles.warnBanner}>
+                {(warningSentences.length > 0 ? warningSentences : [t('lowConfidence')]).map((warning) => (
+                  <Text key={warning} style={styles.warnText}>{warning}</Text>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
 
       {/* Confirm-before-approve: each failed check ticked against the paper. */}
       <Modal visible={ackAction !== null} animationType="slide" transparent onRequestClose={() => setAckAction(null)}>
@@ -1025,7 +1053,8 @@ const styles = StyleSheet.create({
   parts: { marginTop: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, backgroundColor: colors.primaryTint },
   partsTitle: { ...font.label, color: colors.text },
   partsLink: { ...font.body, color: colors.primary, paddingVertical: spacing.sm },
-  topBar: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  topBar: { backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  topBarContent: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   search: {
     minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
     paddingHorizontal: spacing.md, ...font.body, color: colors.text, backgroundColor: colors.surfaceAlt, marginTop: spacing.sm,
@@ -1097,6 +1126,10 @@ const styles = StyleSheet.create({
   invSummary: { ...font.caption, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.sm },
   modalBackdrop: { flex: 1, backgroundColor: colors.overlay },
   verdict: { padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg },
+  noticeSummary: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, marginTop: spacing.sm },
+  noticeHint: { ...font.caption, color: colors.textSecondary, marginTop: 2 },
+  noticeChevron: { ...font.h2, color: colors.textSecondary },
+  noticeDetails: { paddingBottom: spacing.lg },
   choiceCard: { padding: spacing.md, borderRadius: spacing.sm, marginBottom: spacing.lg, borderWidth: 1, borderColor: colors.border },
   choicePending: { borderColor: colors.warning, backgroundColor: colors.warningTint },
   choiceTitle: { ...font.body, fontWeight: '700' },
