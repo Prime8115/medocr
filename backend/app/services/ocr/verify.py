@@ -624,6 +624,10 @@ def reverify(doc_type: str, old_payload: dict, fields: dict) -> dict:
     from app.services.ocr.invoice_checks import reconcile_invoice
 
     meta = dict((old_payload or {}).get("meta") or {})
+    if doc_type == "prescription":
+        from app.services.ocr.prescription_review import verify_prescription
+        meta["verification"] = verify_prescription(fields, meta)
+        return meta
     if doc_type != "invoice":
         return meta
     report = reconcile_invoice(fields, meta.get("stated_item_count"), meta.get("total_in_words"),

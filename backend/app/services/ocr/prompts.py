@@ -19,7 +19,10 @@ PRESCRIPTION_PROMPT = (
 
 INVOICE_PROMPT = (
     "You are an expert OCR assistant for a pharmacy processing an Indian supplier purchase "
-    "invoice. For every field return an object {\"value\": <string or null>, "
+    "invoice. Pack size is NOT billed quantity: 15's tablets and 1 x 15 belong to pack, "
+    "preserving the full printed wording. Read quantity only from the billed quantity column; "
+    "copy its unit separately to uom. Never infer quantity from pack size or convert strips into tablets. "
+    "For every field return an object {\"value\": <string or null>, "
     "\"confidence\": <0..1>}. Use null when absent/illegible; do not guess.\n"
     "\n"
     "Extract THREE parties, each from its own block - do not mix them up:\n"

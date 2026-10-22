@@ -30,6 +30,7 @@ import { colors, font, radius, spacing } from '@/src/theme/tokens';
 import { addLineItem, buildSections, documentTitle, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
 import RecheckField from '@/src/components/RecheckField';
+import SourcePages from '@/src/components/SourcePages';
 import { formatMoney } from '@/src/lib/table';
 import { confidenceColor, confidencePercent, isLowConfidence } from '@/src/lib/confidence';
 import { isRetryableFailure, isWaitingForAi } from '@/src/lib/failure';
@@ -58,6 +59,8 @@ type ViewMode = 'table' | 'cards';
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [doc, setDoc] = useState<DocumentDto | null>(null);
+  const [recheckPage, setRecheckPage] = useState<number | undefined>();
+  useEffect(() => { setRecheckPage(undefined); }, [id]);
   const [fields, setFields] = useState<Fields>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -164,7 +167,7 @@ export default function ReviewScreen() {
   // A field the reviewer doubts can be asked about again (RecheckField) - not
   // the few that are not printed values (licence dates, how a rate was chosen).
   const canRecheck = (path: string): boolean =>
-    !!doc && doc.doc_type === 'invoice' && ['needs_review', 'approved'].includes(doc.status)
+    !!doc && ['needs_review', 'approved'].includes(doc.status)
     && !/dl_date_|rate_source|free_supply/.test(path);
 
   // A line the reading missed - or every line, on a document sent for manual
@@ -452,7 +455,7 @@ export default function ReviewScreen() {
                   hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                 />
                 {canRecheck(spec.path) && (
-                  <RecheckField docId={id} path={spec.path} revision={fields} onUse={(v) => onChangeField(spec.path, v)} />
+                  <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => onChangeField(spec.path, v)} />
                 )}
               </Fragment>
             );
@@ -492,6 +495,8 @@ export default function ReviewScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        <SourcePages documentId={doc.id} selected={recheckPage} onSelect={setRecheckPage} />
 
         {/* One of several bills in one PDF: say so, and link the others -
             Ajanta's 6-page credit note was taken for lost behind the 1-page one. */}
@@ -861,7 +866,7 @@ export default function ReviewScreen() {
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                       />
                       {canRecheck(spec.path) && (
-                        <RecheckField docId={id} path={spec.path} revision={fields} onUse={(v) => onChangeField(spec.path, v)} />
+                        <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => onChangeField(spec.path, v)} />
                       )}
                     </Fragment>
                   );
@@ -918,7 +923,7 @@ export default function ReviewScreen() {
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                       />
                       {canRecheck(spec.path) && (
-                        <RecheckField docId={id} path={spec.path} revision={fields} onUse={(v) => onChangeField(spec.path, v)} />
+                        <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => onChangeField(spec.path, v)} />
                       )}
                     </Fragment>
                   );

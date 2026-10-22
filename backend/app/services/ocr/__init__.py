@@ -150,14 +150,15 @@ def chunk_conflict_warnings(fields: dict) -> List[str]:
 def _extract_one(provider: OCRProvider, data: bytes, content_type: str, doc_type: str) -> dict:
     raw = provider.extract(data, content_type, doc_type)
     list_key = _LIST_KEY.get(doc_type)
-    if list_key and isinstance(raw, dict) and raw and list_key not in raw:
-        # An answer without its list at all - not an empty one - is the model
-        # skipping it: AREX and an MSV scan came back with the header and no
-        # line_items key, and were kept as bills of nothing. Asked once more.
-        log.warning("the AI's answer has no %s; asking once more", list_key)
+    if list_key and isinstance(raw, dict) and raw and not raw.get(list_key):
+        # Both an omitted list and an empty list can mean that the model read
+        # only the header of a scanned invoice. Give the page one more reading.
+        log.warning("the AI's answer has no %s rows; asking once more", list_key)
         again = provider.extract(data, content_type, doc_type)
-        if isinstance(again, dict) and list_key in again:
+        if isinstance(again, dict) and again.get(list_key):
             raw = again
+        elif doc_type == "invoice":
+            raise ValueError("The AI could not read any invoice item rows from this page")
     return validate_fields(doc_type, raw)
 
 
@@ -184,6 +185,9 @@ def _build_units(file_bytes: bytes, content_type: str):
     if is_scanned_pdf(file_bytes):
         # Read the picture, not the scanner's guess at it (see is_scanned_pdf).
         file_bytes = image_only_pdf(file_bytes)
+        # Vision sometimes answers from only one page of a multi-page PDF.
+        # Independent page calls make omitted pages visible to page coverage.
+        return [(p, "application/pdf", 1) for p in split_pdf(file_bytes, 1)], total, False
     cs = settings.ocr_pdf_chunk_pages
     if total <= cs:
         return [(file_bytes, "application/pdf", total)], total, False
@@ -506,6 +510,9 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             if check["status"] == "fail" and check["id"] in _NEW_CHECKS:
                 check_warnings.append(f"{check['label']}: {check['message']}")
 
+    if resolved_type == "prescription":
+        from app.services.ocr.prescription_review import verify_prescription
+        integrity["verification"] = verify_prescription(fields, {"pages_failed": failed_pages})
     list_key = _LIST_KEY.get(resolved_type)
     item_count = len(fields.get(list_key, []) or []) if list_key else 0
     warnings = check_warnings + collect_low_confidence(fields, settings.low_confidence_threshold)

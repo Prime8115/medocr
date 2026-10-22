@@ -1,12 +1,17 @@
 """Push delivery idempotency and multi-connector orchestration via the API."""
 from app.models.connector import Connector
+from app.services.ocr.verify import open_checks
 from tests.conftest import register_and_login, sample_image
 
 
 def _approved_doc(client, headers, mock=True):
     files = {"file": ("rx.png", sample_image(), "image/png")}
     doc_id = client.post("/v1/documents/", files=files, headers=headers).json()["document_id"]
-    client.post(f"/v1/documents/{doc_id}/approve", headers=headers)
+    payload = client.get(f"/v1/documents/{doc_id}", headers=headers).json()["payload"]
+    required = open_checks(payload["meta"]["verification"])
+    approved = client.post(f"/v1/documents/{doc_id}/approve", headers=headers,
+                           json={"acknowledged": [c["id"] for c in required]})
+    assert approved.status_code == 200
     return doc_id
 
 

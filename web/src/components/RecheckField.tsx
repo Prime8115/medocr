@@ -7,11 +7,12 @@ import { recheckField, type RecheckResult } from '../api/documents';
  * the reviewer uses the value and saves - then it is recorded as a correction,
  * so this supplier's next bill is read right.
  */
-export default function RecheckField({ docId, path, onUse, revision }: {
+export default function RecheckField({ docId, path, onUse, revision, page }: {
   docId: string;
   path: string;
   onUse: (value: string) => void;
   revision?: unknown;
+  page?: number;
 }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<RecheckResult | null>(null);
@@ -23,7 +24,7 @@ export default function RecheckField({ docId, path, onUse, revision }: {
     setError(null);
     setBusy(false);
     return () => { request.current += 1; };
-  }, [docId, path, revision]);
+  }, [docId, path, revision, page]);
 
   async function ask() {
     const token = ++request.current;
@@ -31,7 +32,7 @@ export default function RecheckField({ docId, path, onUse, revision }: {
     setError(null);
     setResult(null);
     try {
-      const answer = await recheckField(docId, path);
+      const answer = await recheckField(docId, path, page);
       if (token === request.current) setResult(answer);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;

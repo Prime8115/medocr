@@ -65,7 +65,9 @@ def test_patch_corrections_then_approve_and_push(client, mock_ocr, db_session):
     assert body["payload"]["fields"]["patient"]["name"]["value"] == "Corrected Name"
 
     # Approve.
-    approved = client.post(f"/v1/documents/{doc_id}/approve", headers=headers)
+    required = body["payload"]["meta"]["verification"]["review_requirements"]
+    approved = client.post(f"/v1/documents/{doc_id}/approve", headers=headers,
+                           json={"acknowledged": [c["id"] for c in required if c["status"] == "fail"]})
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
 

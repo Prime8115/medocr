@@ -466,7 +466,7 @@ _ADDRESS_LABEL = re.compile(r"^\s*(?:address|add)\s*:", re.I)
 # lines when the two flatten into one: "DESTINATION" (V L), "Dt:", "Case:",
 # "Loose:" (Zydus), "LR Date" (Bharat).
 _BESIDE_ADDRESS = re.compile(
-    r"\b(?:destination|distance|vehicle\b|cases?\s*:|cases\b|loose\s*:|dt\s*:|"
+    r"\b(?:delivery\s+at\s*:|destination|distance|vehicle\b|cases?\s*:|cases\b|loose\s*:|dt\s*:|"
     r"l\.?\s*r\.?\s*(?:no|date)|transport(?:er)?|place\s*of\s*supply|name\s+of\s+carrier)",
     re.I,
 )
@@ -681,6 +681,13 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
     # taking that as the boundary cut "PVT LTD" off the consignee's name.
     party_top = min(top for _, top, _ in parties)
     anchors = [a for a in anchors if a[2] != "_refs" or a[1] >= party_top - 15]
+    # A later EWAY BILL footer can be farther left than every party. If there
+    # is also a reference heading beyond the rightmost party, that is the
+    # actual third column; the footer must not steal its boundary.
+    left_party = min(x for x, _, _ in parties)
+    right_party = max(x for x, _, _ in parties)
+    if any(key == "_refs" and x > right_party for x, _, key in anchors):
+        anchors = [a for a in anchors if a[2] != "_refs" or a[0] > left_party]
 
     # Leftmost occurrence of each anchor, since a heading can repeat down the page.
     firsts: Dict[str, Tuple[float, float]] = {}
@@ -906,6 +913,10 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
         parts = []
         for line in lines[index + 1:index + 5]:
             line = _PARTY_LABEL_RUN.sub("", line)
+            # A delivery instruction is a separate field, not a continuation of
+            # the party's postal address (Mankind prints it after the contact).
+            if re.match(r"\s*DELIVERY\s+AT\s*:", line, re.I):
+                break
             # The address, not the label in front of it or the column printed
             # beside it ("DISTANCE : 0" on V L, "LR Date" on Bharat, "Tel. No."
             # and "D.L. No." on Kanchan). Cut at those rather than dropping the

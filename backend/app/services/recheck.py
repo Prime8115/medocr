@@ -143,8 +143,10 @@ def _wordings(section: Optional[str], key: str) -> List[str]:
     return []
 
 
-def question(fields: dict, path: str) -> Tuple[str, str, str]:
+def question(fields: dict, path: str, doc_type: str = "invoice") -> Tuple[str, str, str]:
     """(prompt, current value, kind) for the field at `path`."""
+    if doc_type == "prescription":
+        return _prescription_question(fields, path)
     m = _PATH.match(path or "")
     if not m:
         raise RecheckError("This field cannot be rechecked.")
@@ -175,6 +177,33 @@ def question(fields: dict, path: str) -> Tuple[str, str, str]:
     prompt = PROMPT.format(what=what, where=where, wordings=wordings,
                            current=json.dumps(current or None, ensure_ascii=False))
     return prompt, current, kind
+
+
+def _prescription_question(fields, path):
+    allowed = {"patient": ("name", "age", "gender"),
+               "prescriber": ("name", "registration_no")}
+    match = re.fullmatch(r"medications\[(\d+)\]\.([a-z_]+)", path or "")
+    if match:
+        index, key = int(match.group(1)), match.group(2)
+        items = fields.get("medications") or []
+        if index >= len(items) or key not in ("name", "strength", "form", "frequency", "duration", "instructions"):
+            raise RecheckError("No such medication field.")
+        node = items[index]
+        context = ", ".join(f"{k}: {_leaf(node, k)!r}" for k in ("name", "strength", "form") if k != key and _leaf(node, k))
+        what = f"{key} of medication {index + 1} of {len(items)} ({context})"
+    else:
+        section, _, key = (path or "").partition(".")
+        if key not in allowed.get(section, ()):
+            raise RecheckError("This prescription field cannot be rechecked.")
+        node, what = fields.get(section) or {}, f"{section} {key}"
+    current = _leaf(node, key)
+    prompt = (f"Transcribe only the printed or handwritten {what} from this prescription. "
+              "Do not infer dosing, expand ambiguous abbreviations, substitute medicines or correct a name "
+              "using medical knowledge. If unclear or absent, return null. The other fields only help locate "
+              "the line; they may be wrong. Current reading: " + json.dumps(current or None) +
+              '\nReturn JSON: {"value": "literal text or null", "printed_label": "label or null", '
+              '"printed_text": "literal surrounding text or null"}.')
+    return prompt, current, "text"
 
 
 def _squash(text: str) -> str:
@@ -269,11 +298,22 @@ def _pages(file_bytes: bytes, content_type: str, fields: dict, path: str) -> Tup
 
 
 def recheck(provider, fields: dict, page_text: Optional[str], path: str,
-            file_bytes: bytes, content_type: str) -> dict:
+            file_bytes: bytes, content_type: str, doc_type: str = "invoice", page: Optional[int] = None) -> dict:
     """The AI's answer for one field, checked against the page. Raises
     RecheckError for a field that cannot be asked about; never changes `fields`."""
-    prompt, current, kind = question(fields, path)
-    shown, shown_type = _pages(file_bytes, content_type, fields, path)
+    prompt, current, kind = question(fields, path, doc_type)
+    if page is not None:
+        from app.services.source import page_total
+        from app.services.ocr.pdf_utils import split_pdf
+
+        if page < 1 or page > page_total(file_bytes):
+            raise RecheckError("That page is not in this document.")
+        shown = split_pdf(file_bytes, 1)[page - 1] if content_type == "application/pdf" else file_bytes
+        shown_type = content_type
+        page_text = None
+        prompt += f"\nThe reviewer selected document page {page}. If the target is absent here, return null."
+    else:
+        shown, shown_type = _pages(file_bytes, content_type, fields, path)
     if shown_type == "application/pdf":
         from app.services.ocr.pdf_utils import extract_text_pages, is_scanned_pdf
 
@@ -303,5 +343,7 @@ def recheck(provider, fields: dict, page_text: Optional[str], path: str,
         message = f"The AI reads {found!r}" + (f", printed as '{label}'" if label else "") + "."
     if found and on_page is not False:
         message += " Confirm the field and row against the original; text presence alone does not verify them."
-    return {"path": path, "current": current or None, "found": found, "printed_label": label,
+    if doc_type == "prescription":
+        message = message.replace("bill", "prescription").replace("paper", "source")
+    return {"path": path, "current": current or None, "found": found, "printed_label": label, "page": page,
             "printed_text": around, "on_page": on_page, "agrees": agrees, "message": message}

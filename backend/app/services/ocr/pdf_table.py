@@ -725,7 +725,8 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 if before:
                     if not record[col]:
                         record[col] = val
-                elif record[col] and len(val) <= 4 and val.isalpha():
+                elif record[col] and (len(val) <= 4 and val.isalpha() or
+                                      re.fullmatch(r"TABLETS?|CAPSULES?|BOTTLES?|HDPE", val, re.I)):
                     # ...a word the cell broke, joined back: "10X10TA" over "B".
                     glue = "" if len(val) <= 2 and re.search(r"\d[A-Za-z]+$", record[col]) else " "
                     record[col] = f"{record[col]}{glue}{val}"

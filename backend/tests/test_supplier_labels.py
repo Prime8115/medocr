@@ -125,6 +125,9 @@ def test_a_reviewers_fill_in_is_learned_and_the_next_bill_arrives_filled(client,
     fixed = _fields(lr_no="DK778812", lr_date="23-09-2025")
     r = client.patch(f"/v1/documents/{doc_id}", json={"fields": fixed}, headers=headers)
     assert r.status_code == 200, r.text
+    feedback = r.json()["payload"]["meta"]["learning_feedback"]
+    assert {note["path"] for note in feedback if note["status"] == "learned"} == {
+        "invoice.lr_no", "invoice.lr_date"}
 
     s = db_session()
     try:
@@ -143,10 +146,26 @@ def test_a_reviewers_fill_in_is_learned_and_the_next_bill_arrives_filled(client,
     assert inv["lr_no"] == {"value": "DK901122", "confidence": ll.LEARNED_CONFIDENCE}
     assert inv["lr_date"]["value"] == "01-10-2025"
     assert {f["path"] for f in nxt["meta"]["learned_filled"]} == {"invoice.lr_no", "invoice.lr_date"}
+    assert {note["path"] for note in nxt["meta"]["learning_application"]
+            if note["status"] == "applied"} == {"invoice.lr_no", "invoice.lr_date"}
 
     # Another shop has taught us nothing.
     other = _next_bill(db_session, "some-other-shop")
     assert not other["fields"]["invoice"].get("lr_no")
+
+
+def test_address_correction_is_saved_but_not_claimed_as_a_reusable_rule(client, db_session):
+    headers = register_and_login(client)
+    shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
+    doc_id = _seed(db_session, shop_id, _payload())
+    fixed = _fields()
+    fixed["bill_to"]["address"] = _leaf("18 Market Road, Mumbai 400056")
+    r = client.patch(f"/v1/documents/{doc_id}", json={"fields": fixed}, headers=headers)
+    assert r.status_code == 200, r.text
+    payload = r.json()["payload"]
+    assert payload["fields"]["bill_to"]["address"]["value"] == "18 Market Road, Mumbai 400056"
+    assert {n["path"]: n["status"] for n in payload["meta"]["learning_feedback"]}[
+        "bill_to.address"] == "not_learned"
 
 
 def test_a_value_the_reader_did_read_is_replaced_only_if_it_was_misread(client, db_session):

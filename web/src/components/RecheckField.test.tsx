@@ -21,7 +21,7 @@ describe('RecheckField', () => {
     render(<RecheckField docId="d1" path="line_items[2].ptr" onUse={onUse} />);
     fireEvent.click(screen.getByText('Recheck'));
     await screen.findByText(/RETAILER RATE/);
-    expect(docsApi.recheckField).toHaveBeenCalledWith('d1', 'line_items[2].ptr');
+    expect(docsApi.recheckField).toHaveBeenCalledWith('d1', 'line_items[2].ptr', undefined);
     fireEvent.click(screen.getByText('Use this'));
     expect(onUse).toHaveBeenCalledWith('90.75');
   });

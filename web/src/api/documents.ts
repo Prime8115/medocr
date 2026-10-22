@@ -29,6 +29,19 @@ export interface DocumentDto {
   parts?: DocumentPart[];
 }
 
+export interface SourcePage {
+  image: string;
+  page: number;
+  pages: number;
+  width: number;
+  height: number;
+}
+
+export async function getSourcePage(id: string, page: number): Promise<SourcePage> {
+  const res = await api.get(`/v1/documents/${id}/source`, { params: { page } });
+  return res.data as SourcePage;
+}
+
 export interface Delivery {
   id: string;
   document_id: string;
@@ -84,8 +97,8 @@ export interface RecheckResult {
 }
 
 /** Ask the AI again about one field. Changes nothing: a value is kept by saving it. */
-export async function recheckField(id: string, path: string): Promise<RecheckResult> {
-  const res = await api.post(`/v1/documents/${id}/recheck`, { path });
+export async function recheckField(id: string, path: string, page?: number): Promise<RecheckResult> {
+  const res = await api.post(`/v1/documents/${id}/recheck`, { path, ...(page ? { page } : {}) });
   return res.data as RecheckResult;
 }
 
