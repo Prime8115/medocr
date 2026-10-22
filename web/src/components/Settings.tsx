@@ -29,7 +29,8 @@ const PROFILE_LABEL: Record<string, string> = {
 };
 
 const FORMAT_LABEL: Record<string, string> = {
-  csv: 'CSV', json: 'JSON', tally_xml: 'Tally XML', both: 'CSV + JSON',
+  csv: 'CSV', json: 'JSON', tally_xml: 'Tally XML (basic)',
+  tally_prime_xml: 'Tally purchase XML (pilot)', both: 'CSV + JSON',
 };
 
 export default function Settings() {

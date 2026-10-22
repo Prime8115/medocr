@@ -445,10 +445,13 @@ def render(payload: dict, config: dict) -> Dict[str, str]:
         return {"json": render_json(payload, config)}
     if fmt == "tally_xml":
         return {"xml": render_tally_xml(payload, config)}
+    if fmt == "tally_prime_xml":
+        from app.services.connectors.tally_purchase import render as render_tally_purchase
+        return {"xml": render_tally_purchase(payload, config)}
     if fmt == "both":
         return {"csv": render_csv(payload, config), "json": render_json(payload, config)}
     return {"csv": render_csv(payload, config)}
 
 
 AVAILABLE_PROFILES = list(PROFILES.keys())
-AVAILABLE_FORMATS = ["csv", "json", "tally_xml", "both"]
+AVAILABLE_FORMATS = ["csv", "json", "tally_xml", "tally_prime_xml", "both"]

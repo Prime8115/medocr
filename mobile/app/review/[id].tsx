@@ -496,7 +496,8 @@ export default function ReviewScreen() {
           </View>
         </View>
 
-        <SourcePages documentId={doc.id} selected={recheckPage} onSelect={setRecheckPage} />
+        <SourcePages documentId={doc.id} selected={recheckPage} onSelect={setRecheckPage}
+          manifest={doc.source_manifest} />
 
         {/* One of several bills in one PDF: say so, and link the others -
             Ajanta's 6-page credit note was taken for lost behind the 1-page one. */}

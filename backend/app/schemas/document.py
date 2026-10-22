@@ -84,6 +84,7 @@ class DocumentOut(BaseModel):
     part_no: Optional[int] = None
     part_count: Optional[int] = None
     part_pages: Optional[str] = None
+    source_manifest: Optional[dict] = None
     parts: List[DocumentPart] = []
 
     model_config = {"from_attributes": True}

@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -45,6 +45,8 @@ from app.schemas.document import (
 from app.schemas.extraction import validate_fields
 from app.services import corrections, intake, jobs, lifecycle, supplier_profile
 from app.services.connectors import service as connector_service
+from app.services.connectors.payload import build_push_payload
+from app.services.connectors import tally_purchase
 from app.services.inventory.matching import enrich_payload_with_matches
 from app.services.ocr import OCRError, process_document
 from app.services.ocr.key_pool import next_quota_reset
@@ -458,21 +460,41 @@ async def submit_document(
             log.info("upload %s: %d invoices in one PDF, one document each", file.filename, len(parts))
 
     upload_id = "up_" + gen_uuid()[:12] if len(parts) > 1 else None
+    # The same encrypted original is shared by all parts. With no configured
+    # key this stays None; existing storage and OCR behavior are unchanged.
+    from app.services import original_source
+    original_ref = await run_in_threadpool(original_source.save, data, prepared.filename)
+    removed_pages = sorted(set(range(1, prepared.input_pages + 1)) - set(prepared.page_map))
     docs = []
     for i, part in enumerate(parts):
         name = prepared.filename if len(parts) == 1 else prepared.filename.replace(".pdf", f"_{i + 1}.pdf")
+        page_map = ([prepared.page_map[p] for p in groups[i]] if len(parts) > 1
+                    else prepared.page_map)
         doc = Document(
             shop_id=user.shop_id,
             doc_type=doc_type or "prescription",
             requested_doc_type=doc_type,
             status=lifecycle.QUEUED,
             image_ref=storage.save(part, name, prepared.content_type),
+            original_ref=original_ref,
+            source_manifest={
+                "version": 1,
+                "input_pages": prepared.input_pages,
+                "processed_pages": len(page_map),
+                "page_map": page_map,
+                "removed_pages": removed_pages,
+                "transformations": prepared.notes,
+                "quality_warnings": prepared.quality_warnings,
+                "source_mime": intake.sniff(data),
+                "processed_mime": prepared.content_type,
+                "original_available": bool(original_ref),
+            },
             content_hash=prepared.sha256,
             created_by=user.id,
         )
         if upload_id:
             doc.upload_id, doc.part_no, doc.part_count = upload_id, i + 1, len(parts)
-            doc.part_pages = _page_span(groups[i])
+            doc.part_pages = _page_span([source_page - 1 for source_page in page_map])
         db.add(doc)
         db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.submitted", target=doc.id))
         docs.append(doc)
@@ -724,6 +746,7 @@ def get_document(document_id: str, db: Session = Depends(get_db), user: User = D
 
 @router.get("/{document_id}/source")
 def source_page(document_id: str, page: int = Query(1, ge=1),
+                view: Literal["processed", "original"] = "processed",
                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """An owned document's bounded page image for checking the OCR reading."""
     from app.services import source
@@ -732,18 +755,78 @@ def source_page(document_id: str, page: int = Query(1, ge=1),
     doc = _get_owned_document(document_id, db, user)
     if not doc.image_ref:
         raise HTTPException(status_code=410, detail="The source file is unavailable.")
+    manifest = doc.source_manifest or {}
+    page_map = manifest.get("page_map") or []
+    if page_map and page > len(page_map):
+        raise HTTPException(status_code=422, detail="That page is not in this document.")
     try:
-        data = storage.load(doc.image_ref)
+        if view == "original":
+            if not doc.original_ref or not page_map:
+                raise HTTPException(status_code=410, detail="The original upload is unavailable.")
+            from app.services import original_source
+            data = original_source.load(doc.original_ref, doc.content_hash)
+            source_page_number = page_map[page - 1]
+        else:
+            data = storage.load(doc.image_ref)
+            source_page_number = page
+    except HTTPException:
+        raise
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=410, detail="The source file is unavailable.")
     try:
-        result = source.preview(data, page)
+        result = source.preview(data, source_page_number)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception:  # noqa: BLE001
         log.exception("could not render a source page for document %s", doc.id)
         raise HTTPException(status_code=422, detail="This source page could not be displayed.")
+    result.update({"page": page, "pages": len(page_map) if page_map else result["pages"],
+                   "source_page": page_map[page - 1] if page_map else page,
+                   "source_pages": manifest.get("input_pages", result["pages"]),
+                   "view": view, "original_available": bool(doc.original_ref)})
     return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
+
+
+def _tally_config(db: Session, user: User, connector_id: str) -> dict:
+    connector = (db.query(Connector)
+                 .filter(Connector.id == connector_id, Connector.shop_id == user.shop_id,
+                         Connector.type == "file_export").first())
+    if not connector or (connector.config or {}).get("format") != "tally_prime_xml":
+        raise HTTPException(status_code=404, detail="Tally purchase connector not found.")
+    return connector.config or {}
+
+
+@router.get("/{document_id}/tally/preflight")
+def tally_preflight(document_id: str, connector_id: str,
+                    db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Show specific blockers before an approved invoice is exported to Tally."""
+    doc = _get_owned_document(document_id, db, user)
+    config = _tally_config(db, user, connector_id)
+    return tally_purchase.assess(build_push_payload(doc), config)
+
+
+@router.get("/{document_id}/tally/download")
+def tally_download(document_id: str, connector_id: str,
+                   db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """A reviewed, balanced purchase voucher for manual import into Tally."""
+    from starlette.responses import Response
+
+    doc = _get_owned_document(document_id, db, user)
+    if doc.status not in (lifecycle.APPROVED, lifecycle.PUSHED):
+        raise HTTPException(status_code=409, detail="Approve the invoice before exporting it to Tally.")
+    config = _tally_config(db, user, connector_id)
+    payload = build_push_payload(doc)
+    check = tally_purchase.assess(payload, config)
+    if not check["ready"]:
+        raise HTTPException(status_code=409, detail=check)
+    xml = tally_purchase.render(payload, config)
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.tally_exported",
+                    target=doc.id, detail={"connector_id": connector_id}))
+    db.commit()
+    return Response(xml, media_type="application/xml", headers={
+        "Content-Disposition": f'attachment; filename="{doc.id}_tally_purchase.xml"',
+        "Cache-Control": "private, no-store",
+    })
 
 
 def _parts_of(db: Session, doc: Document) -> list:

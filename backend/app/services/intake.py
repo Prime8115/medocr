@@ -71,6 +71,10 @@ class Prepared:
     sha256: str                       # of the file exactly as uploaded
     notes: List[str] = field(default_factory=list)   # what was done to it, for the log
     pages_removed: int = 0
+    input_pages: int = 1
+    # One-based source page for each page in the prepared file.
+    page_map: List[int] = field(default_factory=lambda: [1])
+    quality_warnings: List[str] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ type --
@@ -117,7 +121,7 @@ def _open_image(data: bytes, kind: str):
         raise UploadRejected(MSG_BAD_IMAGE, "image_unreadable")
 
 
-def _prepare_image(data: bytes, kind: str, notes: List[str]):
+def _prepare_image(data: bytes, kind: str, notes: List[str], quality_warnings: List[str]):
     from PIL import ImageOps, ImageStat
 
     img = _open_image(data, kind)
@@ -134,6 +138,10 @@ def _prepare_image(data: bytes, kind: str, notes: List[str]):
 
     if min(img.size) < _MIN_IMAGE_SIDE:
         raise UploadRejected(MSG_SMALL_IMAGE, "image_too_small")
+    if min(img.size) < 900:
+        quality_warnings.append(
+            "This photo may have small print. Check every field against the image; retake closer if text is unclear."
+        )
     grey = img.convert("L")
     if ImageStat.Stat(grey).stddev[0] < _BLANK_STDDEV:
         raise UploadRejected(MSG_BLANK_IMAGE, "image_blank")
@@ -272,7 +280,7 @@ def _prepare_pdf(data: bytes, notes: List[str]):
     if blank:
         data = _without_pages(reader, blank)
         notes.append(f"removed {len(blank)} blank page(s)")
-    return data, len(blank)
+    return data, len(blank), count, [i + 1 for i in range(count) if i not in blank]
 
 
 # ------------------------------------------------------------------ entry --
@@ -284,14 +292,16 @@ def prepare(data: bytes, claimed_type: Optional[str], filename: Optional[str]) -
     if kind is None:
         raise UploadRejected(MSG_UNSUPPORTED, "unsupported_type")
     notes: List[str] = []
+    quality_warnings: List[str] = []
     if claimed_type and claimed_type != kind and claimed_type not in ("application/octet-stream", "image/heif"):
         notes.append(f"sent as {claimed_type}, is {kind}")
     removed = 0
+    input_pages, page_map = 1, [1]
     if kind == PDF:
-        out, removed = _prepare_pdf(data, notes)
+        out, removed, input_pages, page_map = _prepare_pdf(data, notes)
         out_type = PDF
     else:
-        out, out_type = _prepare_image(data, kind, notes)
+        out, out_type = _prepare_image(data, kind, notes, quality_warnings)
     return Prepared(
         data=out,
         content_type=out_type,
@@ -299,6 +309,9 @@ def prepare(data: bytes, claimed_type: Optional[str], filename: Optional[str]) -
         sha256=digest,
         notes=notes,
         pages_removed=removed,
+        input_pages=input_pages,
+        page_map=page_map,
+        quality_warnings=quality_warnings,
     )
 
 

@@ -73,6 +73,27 @@ Any mismatch also appears in plain language in `meta.warnings`.
 
 ## Export profiles
 
+### Tally purchase XML pilot
+
+Choose a `file_export` connector with `format: "tally_prime_xml"` to enable the
+purchase-specific preflight and download on an invoice review page. This is a
+separate format; existing `tally_xml`, CSV and JSON mappings are unchanged.
+The shop owner maps the Tally company, supplier ledger, purchase ledger, unit,
+tax ledgers and each stock item in the review panel. Every pharmaceutical
+batch/expiry pair must also be confirmed against the existing Tally batch
+master. The XML references that batch but **does not create or update its expiry
+date**. The export blocks on non-invoices, a malformed or missing quantity,
+missing batch/expiry, missing mapping, or a total that does not balance exactly.
+Only an approved invoice can be downloaded.
+
+For manual import, use TallyPrime's Import → Transactions flow and check the
+Exceptions report and Purchase Register afterwards. An XML download confirms
+only that MediScan's preflight passed; it does not confirm Tally accepted the
+voucher. Import behavior, ledger names and batch settings must be validated
+against a pilot Tally company before calling this integration certified. See
+[Tally's XML sample and prerequisites](https://help.tallysolutions.com/sample-xml/)
+and [Tally's import instructions](https://help.tallysolutions.com/import-data-from-xml-or-json/).
+
 `profile` picks a ready-made column layout; `columns` overrides it entirely.
 
 | Profile | Use it for |

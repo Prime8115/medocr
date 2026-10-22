@@ -27,6 +27,9 @@ export interface DocumentDto {
   part_count?: number | null;
   part_pages?: string | null;
   parts?: DocumentPart[];
+  source_manifest?: { input_pages: number; processed_pages: number; page_map: number[];
+    removed_pages: number[]; transformations: string[]; quality_warnings: string[];
+    original_available: boolean } | null;
 }
 
 export interface SourcePage {
@@ -35,11 +38,43 @@ export interface SourcePage {
   pages: number;
   width: number;
   height: number;
+  source_page?: number;
+  source_pages?: number;
+  view?: 'processed' | 'original';
+  original_available?: boolean;
 }
 
-export async function getSourcePage(id: string, page: number): Promise<SourcePage> {
-  const res = await api.get(`/v1/documents/${id}/source`, { params: { page } });
+export async function getSourcePage(id: string, page: number, view: 'processed' | 'original' = 'processed'): Promise<SourcePage> {
+  const res = await api.get(`/v1/documents/${id}/source`, { params: { page, view } });
   return res.data as SourcePage;
+}
+
+export interface TallyPreflight {
+  ready: boolean;
+  issues: { code: string; path: string; message: string }[];
+  line_count: number;
+  line_total: string;
+  tax_total: string;
+  invoice_total: string | null;
+}
+
+export async function getTallyPreflight(id: string, connectorId: string): Promise<TallyPreflight> {
+  const res = await api.get(`/v1/documents/${id}/tally/preflight`, { params: { connector_id: connectorId } });
+  return res.data as TallyPreflight;
+}
+
+export async function downloadTallyPurchase(id: string, connectorId: string): Promise<void> {
+  const res = await api.get(`/v1/documents/${id}/tally/download`, {
+    params: { connector_id: connectorId }, responseType: 'blob',
+  });
+  const url = URL.createObjectURL(res.data as Blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${id}_tally_purchase.xml`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export interface Delivery {

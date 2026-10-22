@@ -86,6 +86,7 @@ def test_a_sideways_phone_photo_is_turned_upright():
 def test_an_upright_photo_is_kept_byte_for_byte():
     data = _photo()
     assert intake.prepare(data, "image/jpeg", "p.jpg").data == data
+    assert intake.prepare(data, "image/jpeg", "p.jpg").quality_warnings
 
 
 def test_a_huge_photo_is_scaled_down(monkeypatch):
@@ -169,6 +170,8 @@ def test_blank_pages_are_left_out():
     out = intake.prepare(_with_blank_pages("TBTB"), "application/pdf", "bill.pdf")
     assert len(PdfReader(io.BytesIO(out.data)).pages) == 2
     assert out.pages_removed == 2
+    assert out.input_pages == 4
+    assert out.page_map == [1, 3]
 
 
 def test_a_scanned_blank_page_is_found_by_its_ink_not_its_text():
