@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.connector import Connector
 from app.models.push_delivery import PushDelivery
+from app.models.tally_export import TallyExport
 from app.models.user import User
 from app.schemas.connector import (
     ConnectorCreate,
@@ -113,6 +114,8 @@ def update_connector(
 @router.delete("/{connector_id}", status_code=204)
 def delete_connector(connector_id: str, db: Session = Depends(get_db), user: User = Depends(require_owner)):
     c = _get_owned(connector_id, db, user)
+    if db.query(TallyExport.id).filter(TallyExport.connector_id == connector_id).first():
+        raise HTTPException(status_code=409, detail="This Tally connector has an export history. Disable it instead of deleting it.")
     db.delete(c)
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="connector.deleted", target=connector_id))
     db.commit()

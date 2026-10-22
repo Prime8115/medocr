@@ -86,6 +86,17 @@ date**. The export blocks on non-invoices, a malformed or missing quantity,
 missing batch/expiry, missing mapping, or a total that does not balance exactly.
 Only an approved invoice can be downloaded.
 
+The first download records an export revision and its XML hash. Another
+download of that invoice is blocked while its outcome is unknown. After trying
+the import, the shop owner records either **not imported**, with the reason,
+or **reported imported**, with the Tally voucher reference, matching stock-line
+count and total, and confirmation that billed/free quantities, batches and
+expiries were checked. A not-imported outcome permits a new reviewed download
+revision. A reported import blocks further downloads. The ordinary document
+Push action skips this manual pilot connector; it cannot turn a generated XML
+file into a successful Tally delivery. Disabling the connector preserves its
+download and outcome history.
+
 For manual import, use TallyPrime's Import → Transactions flow and check the
 Exceptions report and Purchase Register afterwards. An XML download confirms
 only that MediScan's preflight passed; it does not confirm Tally accepted the
@@ -93,6 +104,11 @@ voucher. Import behavior, ledger names and batch settings must be validated
 against a pilot Tally company before calling this integration certified. See
 [Tally's XML sample and prerequisites](https://help.tallysolutions.com/sample-xml/)
 and [Tally's import instructions](https://help.tallysolutions.com/import-data-from-xml-or-json/).
+The owner report is an attestation, **not** a response from Tally. Re-importing
+the same XML outside MediScan can still duplicate or alter a voucher depending
+on Tally's import settings. A corrected invoice that was already imported needs
+the corresponding Tally entry reviewed or reversed before a new purchase is
+entered; the pilot does not automate that reconciliation.
 
 `profile` picks a ready-made column layout; `columns` overrides it entirely.
 

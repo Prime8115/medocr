@@ -12,8 +12,9 @@ from app.models.supplier_choice import SupplierChoice
 from app.models.supplier_label import SupplierLabel
 from app.models.document_correction import DocumentCorrection
 from app.models.supplier_column_lesson import SupplierColumnLesson
+from app.models.tally_export import TallyExport
 
 __all__ = [
     "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "InventoryItem", "OcrJob", "SupplierChoice",
-    "SupplierLabel", "DocumentCorrection", "SupplierColumnLesson",
+    "SupplierLabel", "DocumentCorrection", "SupplierColumnLesson", "TallyExport",
 ]

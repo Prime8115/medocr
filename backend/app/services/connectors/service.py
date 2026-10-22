@@ -17,6 +17,11 @@ def _idempotency_key(document_id: str, connector_id: str) -> str:
     return f"{document_id}:{connector_id}"
 
 
+def is_manual_tally(model: Connector) -> bool:
+    """A generated XML file is not a delivery accepted by Tally."""
+    return model.type == "file_export" and (model.config or {}).get("format") == "tally_prime_xml"
+
+
 def push_document(db: Session, document: Document, connector_overrides: Optional[dict] = None) -> List[PushDelivery]:
     """Deliver the document to every enabled connector for its shop.
 
@@ -31,6 +36,8 @@ def push_document(db: Session, document: Document, connector_overrides: Optional
 
     deliveries: List[PushDelivery] = []
     for model in connectors:
+        if is_manual_tally(model):
+            continue
         # Built per connector: each may ask for its own column profile, and the
         # payload then also carries the flat rows under those names.
         payload = build_push_payload(document, model.config or {})
