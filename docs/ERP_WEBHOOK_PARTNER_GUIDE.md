@@ -42,7 +42,7 @@ For a FastAPI receiver, read `await request.body()` before JSON parsing and veri
 
 The shop owner creates a **Webhook (HTTP)** connector in Settings with the endpoint URL and shared secret. A connection test sends a synthetic `test.ping` event; the ERP endpoint should acknowledge it without creating a voucher. On a real document, the reviewer corrects fields, approves, then chooses **Send to software**. The review screen shows each connector's separate outcome. A failed connector can be retried; a received or imported delivery is idempotent and will not be posted again by MediScan's normal resend action.
 
-The document status **pushed** means every enabled connector confirmed delivery. The delivery state gives the stronger meaning: **queued** (waiting for desktop agent), **file_written** (written to a folder, ERP import unconfirmed), **received** (webhook accepted, ERP import unconfirmed), **imported** (ERP supplied a voucher reference), or **failed**. If one connector fails, the document remains approved and its successful deliveries stay recorded.
+The document status **pushed** means every enabled **automatic** connector confirmed delivery. The manual Tally XML pilot is tracked separately and never counts as a successful push. The delivery state gives the stronger meaning: **queued** (waiting for desktop agent), **file_written** (written to a folder, ERP import unconfirmed), **received** (webhook accepted, ERP import unconfirmed), **imported** (ERP supplied a voucher reference), or **failed**. If one automatic connector fails, the document remains approved and its successful deliveries stay recorded.
 
 ## Tally and folder alternatives
 

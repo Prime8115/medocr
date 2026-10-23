@@ -1278,7 +1278,8 @@ def push_document(document_id: str, db: Session = Depends(get_db), user: User = 
 
     Idempotent per (document, connector): already-delivered/queued connectors are
     skipped, previously-failed ones are retried. The document becomes 'pushed' only
-    when every connector confirms delivery. A queued agent is not delivered yet.
+    when every automatic connector confirms delivery. A queued agent is not delivered yet;
+    the manual Tally XML pilot is handled through its separate export flow.
     """
     doc = _get_owned_document(document_id, db, user)
     if doc.status not in (lifecycle.APPROVED, lifecycle.PUSHED):
