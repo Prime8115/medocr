@@ -2,7 +2,8 @@
 
 A tiny companion app for pharmacy PCs. It receives approved documents from the
 MediScan cloud and drops **CSV + JSON** files into a folder your billing/inventory
-software imports — no API needed on the software's side.
+software can import — no API needed on the software's side. The agent reports
+that a file was written; it cannot confirm that the software imported it.
 
 ## How it works
 

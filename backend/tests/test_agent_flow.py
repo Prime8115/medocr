@@ -50,6 +50,9 @@ def test_agent_polls_and_acks_delivery(client, db_session):
     # Seed an approved doc + a pending delivery queued for this agent.
     s = db_session()
     try:
+        # Manual Tally XML is a separate download; it must not block an agent ack.
+        s.add(Connector(shop_id=shop_id, type="file_export", name="Tally pilot",
+                        config={"format": "tally_prime_xml"}, enabled=True))
         doc = Document(shop_id=shop_id, doc_type="prescription", status="approved", payload={"fields": {}})
         s.add(doc)
         s.flush()
@@ -60,6 +63,7 @@ def test_agent_polls_and_acks_delivery(client, db_session):
         s.add(delivery)
         s.commit()
         delivery_id = delivery.id
+        doc_id = doc.id
     finally:
         s.close()
 
@@ -70,6 +74,8 @@ def test_agent_polls_and_acks_delivery(client, db_session):
 
     # Agent acks it.
     assert client.post(f"/v1/agent/deliveries/{delivery_id}/ack", headers=agent_headers).status_code == 200
+    document = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert document["status"] == "pushed"
     # Now no pending deliveries remain.
     assert client.get("/v1/agent/deliveries", headers=agent_headers).json() == []
 

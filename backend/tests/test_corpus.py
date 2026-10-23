@@ -59,6 +59,36 @@ def test_the_corpus_is_present_where_it_is_required():
         pytest.skip("no invoice corpus (set INVOICE_CORPUS to a clone of medocr-invoices)")
 
 
+def test_hindustan_tax_invoice_line_gst_reconciles_after_bill_discount():
+    """The four product rows have 0% line discount, but the GST slab foot
+    takes 3% off before CGST/SGST. Its 6% slab needs a one-paisa allocation."""
+    entry = next((e for e in ENTRIES if e.get("file", "").endswith("HINDUSTAN CAPSULE LLP.pdf")
+                  and e.get("part") == 0), None)
+    if entry is None:
+        if REQUIRED:
+            pytest.fail("Hindustan Capsules tax invoice is missing from the required corpus")
+        pytest.skip("Hindustan Capsules tax invoice is not available")
+    result = _read(entry)
+    fields = result["fields"]
+    items = fields["line_items"]
+    assert len(items) == 4
+    assert [_value(item, "cgst_amount") for item in items] == ["51.63", "248.80", "447.46", "144.88"]
+    assert [_value(item, "net_amount") for item in items] == ["963.75", "4644.35", "5866.66", "1899.57"]
+    assert round(sum(float(_value(item, "cgst_amount")) for item in items), 2) == 892.77
+    assert round(sum(float(_value(item, "sgst_amount")) for item in items), 2) == 892.77
+    printed_rows = [
+        {"amount": "5162.10", "scheme_amount": "0.00", "discount_amount": "154.86",
+         "taxable_amount": "5007.24", "cgst_percent": "6.00", "cgst_amount": "300.43",
+         "sgst_percent": "6.00", "sgst_amount": "300.43", "total_amount": "5608.11"},
+        {"amount": "6785.10", "scheme_amount": "0.00", "discount_amount": "203.55",
+         "taxable_amount": "6581.55", "cgst_percent": "9.00", "cgst_amount": "592.34",
+         "sgst_percent": "9.00", "sgst_amount": "592.34", "total_amount": "7766.23"},
+    ]
+    assert result["meta"]["slab_summary"]["rows"] == printed_rows
+    from app.services.ocr.verify import reverify
+    assert reverify("invoice", result, fields)["slab_summary"]["rows"] == printed_rows
+
+
 def _ids(entries):
     return [pathlib.Path(e["file"]).stem[:40] + (f" #{e['part'] + 1}" if "part" in e else "") for e in entries]
 

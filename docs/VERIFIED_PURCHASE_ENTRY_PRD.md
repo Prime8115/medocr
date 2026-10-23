@@ -4,7 +4,7 @@
 - **Date:** 23 October 2026
 - **Owner:** Product and Engineering
 - **Status:** In progress; numeric targets are proposed pilot gates, not achieved results
-- **Shipped baseline:** GitHub `main` at `6a2e563` (PR #28 merged)
+- **Shipped baseline:** GitHub `main` at `1b3796e` (PR #32 merged)
 
 ## 1. Decision and product promise
 
@@ -20,7 +20,7 @@ Low-cost Indian pharmacy packages already advertise purchase OCR. As observed on
 
 The current product already has PDF/photo intake, page-level handling for scanned PDFs, structured invoice and prescription extraction, required-field review, source-page preview, field/page recheck, offline Android capture, web review, exact-file correction replay, scoped supplier lessons, exports, a desktop agent, and CI/live-AI/APK/deployment workflows. The October accuracy release is [PR #25](https://github.com/Prime8115/medocr/pull/25). Do not rebuild these as new features. Extend and measure them.
 
-Since that baseline, PR #27 added source manifests, original-upload retrieval when encrypted storage is configured, guarded Tally purchase XML preflight, and review mapping. PR #28 fixed a mobile review layout issue. Original retention is still disabled until its storage key is configured. This increment separates a Tally XML download from an owner-reported import and prevents the general push action from treating that file as delivered. It does **not** certify a Tally import or prove that the reported values match Tally's records. The older [production rebuild PRD](PRD.md) describes an obsolete prototype state. The [photo and handwriting PRD](PHOTO_HANDWRITING_PRD.md) remains the detailed extraction baseline; this document defines the marketable workflow and release decision.
+Since the first pilot, PR #27 added source manifests, original-upload retrieval when encrypted storage is configured, guarded Tally purchase XML preflight, and review mapping. PR #28 fixed a mobile review layout issue; PRs #30 and #31 improved invoice GST handling; PR #32 distinguishes queued, received, file-written and imported delivery states and supplies ERP endpoint examples. Original retention is still disabled until its storage key is configured. This increment separates a Tally XML download from an owner-reported import and prevents the general push action from treating that file as delivered. It does **not** certify a Tally import or prove that the reported values match Tally's records. The older [production rebuild PRD](PRD.md) describes an obsolete prototype state. The [photo and handwriting PRD](PHOTO_HANDWRITING_PRD.md) remains the detailed extraction baseline; this document defines the marketable workflow and release decision.
 
 The unresolved launch gaps are an independently labelled holdout; reliable field and row source coordinates; photo-quality guidance; verified address locators on fresh invoices; approved and reversible supplier learning; a witnessed Tally import/reconciliation; staff and audit controls; usage and cost metering; and restore and release drills.
 

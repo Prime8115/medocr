@@ -1,14 +1,14 @@
 """Track manual Tally export and the customer's import report.
 
 Revision ID: 9b7c2d5e4f10
-Revises: e4f1c7a9b2d6
+Revises: f6d8a4c2e901
 """
 from alembic import op
 import sqlalchemy as sa
 
 
 revision = "9b7c2d5e4f10"
-down_revision = "e4f1c7a9b2d6"
+down_revision = "f6d8a4c2e901"
 branch_labels = None
 depends_on = None
 

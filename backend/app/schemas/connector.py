@@ -36,6 +36,10 @@ class DeliveryOut(BaseModel):
     document_id: str
     connector_id: str
     status: str
+    delivery_state: Optional[str] = None
+    external_reference: Optional[str] = None
+    connector_name: Optional[str] = None
+    connector_type: Optional[str] = None
     response_code: Optional[int] = None
     response_body: Optional[str] = None
     attempts: int

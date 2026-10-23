@@ -1278,7 +1278,7 @@ def push_document(document_id: str, db: Session = Depends(get_db), user: User = 
 
     Idempotent per (document, connector): already-delivered/queued connectors are
     skipped, previously-failed ones are retried. The document becomes 'pushed' only
-    when every delivery succeeded or was queued for an agent.
+    when every connector confirms delivery. A queued agent is not delivered yet.
     """
     doc = _get_owned_document(document_id, db, user)
     if doc.status not in (lifecycle.APPROVED, lifecycle.PUSHED):
@@ -1305,5 +1305,13 @@ def push_document(document_id: str, db: Session = Depends(get_db), user: User = 
     db.refresh(doc)
 
     out = PushResult.model_validate(doc)
-    out.deliveries = [DeliveryOut.model_validate(d) for d in deliveries]
+    connectors_by_id = {c.id: c for c in db.query(Connector).filter(Connector.shop_id == user.shop_id).all()}
+    out.deliveries = []
+    for delivery in deliveries:
+        item = DeliveryOut.model_validate(delivery)
+        connector = connectors_by_id.get(delivery.connector_id)
+        if connector:
+            item.connector_name = connector.name
+            item.connector_type = connector.type
+        out.deliveries.append(item)
     return out

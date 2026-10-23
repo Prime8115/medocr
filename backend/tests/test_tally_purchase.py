@@ -180,12 +180,12 @@ def test_tally_not_imported_requires_reason_and_allows_one_reviewed_retry(client
                        headers=owner).status_code == 200
 
 
-def test_general_push_still_uses_other_connectors_without_claiming_tally_delivery(client, db_session):
+def test_general_push_still_uses_other_connectors_without_claiming_tally_delivery(client, db_session, tmp_path):
     owner, doc_id, tally_id = _approved_tally_invoice(client, db_session)
     with db_session() as db:
         user = db.query(User).filter(User.email == "owner@shop.com").one()
         db.add(Connector(shop_id=user.shop_id, type="file_export", name="JSON archive",
-                         config={"formats": ["json"]}))
+                         config={"formats": ["json"], "output_dir": str(tmp_path)}))
         db.commit()
     pushed = client.post(f"/v1/documents/{doc_id}/push", headers=owner)
     assert pushed.status_code == 200, pushed.text

@@ -21,6 +21,7 @@ Two things this parser is careful about, because both burned real users:
 import functools
 import logging
 import re
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
 from app.services.ocr.amount_words import total_from_words
@@ -2695,6 +2696,25 @@ def _labelled_totals(invoice_meta: dict, text: str) -> None:
 _SUMMARY_FIGURE = re.compile(r"^₹?-?[\d,]*\d\.\d{2}%?$")
 
 
+def _summary_column(head: str) -> Optional[str]:
+    """Normalise a printed GST-summary heading without losing its column."""
+    name = _norm(head).replace("csgt", "cgst")  # Hindustan prints CSGT%.
+    for tax in ("cgst", "sgst", "igst", "utgst"):
+        if tax in name:
+            return f"{tax}_{'percent' if '%' in name or 'rate' in name else 'amount'}"
+    if "taxable" in name:
+        return "taxable_amount"
+    if "disc" in name:
+        return "discount_amount"
+    if name.startswith("sch"):
+        return "scheme_amount"
+    if "total" in name:
+        return "total_amount"
+    if name in ("amount", "amt", "value"):
+        return "amount"
+    return None
+
+
 def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
     """The bill's totals from its GST slab summary: a heading line naming the
     taxable value and the tax heads, then one row of figures per slab.
@@ -2724,17 +2744,22 @@ def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
         heads = line.split()[-width:] if width else []
         if not rows or len(heads) != width:
             continue
+        columns = [_summary_column(head) for head in heads]
+        printed_rows = []
+        for row in rows:
+            cells = {key: f"{float(token.lstrip('₹').replace(',', '').rstrip('%')):.2f}"
+                     for key, token in zip(columns, row) if key}
+            if any(float(cells.get(key, 0)) > 0 for key in
+                   ("amount", "taxable_amount", "cgst_amount", "sgst_amount",
+                    "igst_amount", "utgst_amount")):
+                printed_rows.append(cells)
         sums: Dict[str, float] = {}
-        for i, head in enumerate(heads):
-            h = _norm(head)
-            if "%" in head:
-                continue
-            key = ("total_discount_amount" if "disc" in h or h.startswith("sch") else
-                   "total_taxable_amount" if "taxable" in h else
-                   next((f"total_{t}_amount" for t in ("cgst", "sgst", "igst", "utgst") if t in h), None) or
-                   ("bill_total" if "total" in h else
-                    # The plain "Amount" column: the lines' own value, by slab.
-                    "lines_amount" if h in ("amount", "amt", "value") else None))
+        for i, column in enumerate(columns):
+            key = ("total_discount_amount" if column in ("discount_amount", "scheme_amount") else
+                   "total_taxable_amount" if column == "taxable_amount" else
+                   f"total_{column}" if column in ("cgst_amount", "sgst_amount", "igst_amount", "utgst_amount") else
+                   "bill_total" if column == "total_amount" else
+                   "lines_amount" if column == "amount" else None)
             if key:
                 sums[key] = sums.get(key, 0.0) + sum(
                     float(r[i].lstrip("₹").replace(",", "").rstrip("%")) for r in rows)
@@ -2750,7 +2775,8 @@ def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
                 invoice_meta[key] = _f(f"{value:.2f}")
         # What the table itself says, for the reconciliation: its Amount column
         # is the bill's own sum of its lines (invoice_checks.reconcile_invoice).
-        return {k: round(v, 2) for k, v in {**sums, "tax": tax}.items()}
+        return {**{k: round(v, 2) for k, v in {**sums, "tax": tax}.items()},
+                "rows": printed_rows}
     return None
 
 
@@ -2762,7 +2788,8 @@ def _scale_worked_out_tax(items: List[dict], invoice_meta: dict) -> None:
     3% (printed only in its slab summary), Cosmin's 5% (never printed). When
     the lines less the discount the bill states - or a round rate - come to its
     printed taxable value, each worked-out tax is scaled by the same share.
-    Only worked-out figures change; a tax the line prints stands.
+    Reconcile row rounding to the independently printed tax heads and refresh
+    derived net amounts on that same discounted base. Printed rows stand.
     """
     def printed(key):
         leaf = invoice_meta.get(key) or {}
@@ -2786,17 +2813,84 @@ def _scale_worked_out_tax(items: List[dict], invoice_meta: dict) -> None:
         # worked out per line would be a figure the bill never states. Left
         # blank - the bill's own head totals stand.
         for item in items:
+            removed_tax = False
             for head in ("cgst", "sgst", "igst", "utgst"):
                 if (item.get(f"{head}_amount") or {}).get("confidence") == _DERIVED_CONFIDENCE:
                     item.pop(f"{head}_amount", None)
+                    removed_tax = True
+            if removed_tax and (item.get("net_amount") or {}).get("confidence") == _DERIVED_CONFIDENCE:
+                # It was computed before the bill-wide scheme/discount was
+                # known. Keeping it after dropping its tax would be false.
+                item.pop("net_amount", None)
         return
     scale = float(taxable) / line_total
-    for item in items:
+    exact_scale = Decimal(str(taxable)) / sum(Decimal(str(a)) for a in amounts)
+    raw_tax: Dict[str, Dict[int, Decimal]] = {h: {} for h in ("cgst", "sgst", "igst", "utgst")}
+    for index, item in enumerate(items):
         for head in ("cgst", "sgst", "igst", "utgst"):
             leaf = item.get(f"{head}_amount") or {}
             if leaf.get("value") and leaf.get("confidence") == _DERIVED_CONFIDENCE:
+                rate = _num((item.get(f"{head}_percent") or {}).get("value"))
+                # Rank rounding remainders from the unrounded tax when its
+                # rate is known. The original derived tax may already have
+                # lost half a paisa to row-level rounding.
+                raw_tax[head][index] = (Decimal(str(amounts[index])) * Decimal(str(rate)) / 100
+                                        if rate is not None else Decimal(str(leaf["value"]))) * exact_scale
                 item[f"{head}_amount"] = _f(f"{float(_num(leaf['value'])) * scale:.2f}",
                                             confidence=_DERIVED_CONFIDENCE)
+
+    # The supplier prints tax by GST slab, not by product. Independent row
+    # rounding can exceed its printed head total by a paisa (Hindustan's 6%
+    # slab: 300.44 from rows against 300.43 on paper). Allocate only that
+    # small rounding difference, and only when every charged row was derived.
+    cent = Decimal("0.01")
+    for head, raw in raw_tax.items():
+        target_leaf = invoice_meta.get(f"total_{head}_amount") or {}
+        # A total inferred elsewhere in the pipeline is not independent
+        # evidence for changing rows; only a value read from the PDF is.
+        target = printed(f"total_{head}_amount") if target_leaf.get("confidence") == 1.0 else None
+        if target is None or not raw:
+            continue
+        charged = [i for i, item in enumerate(items)
+                   if float(_num((item.get(f"{head}_percent") or {}).get("value")) or 0) > 0]
+        if set(charged) != set(raw):
+            continue
+        current = sum(Decimal(str(_num((items[i].get(f"{head}_amount") or {}).get("value"))))
+                      for i in charged)
+        delta = Decimal(str(target)) - current
+        cents = int(delta / cent)
+        # A larger gap is evidence of a wrong rate, a missing row, or a
+        # different tax basis. Never manufacture a match by spreading it.
+        max_cents = min(3, max(1, (len(charged) + 49) // 50))
+        if delta != cents * cent or abs(cents) > max_cents:
+            continue
+        remainders = {i: Decimal(str(_num((items[i].get(f"{head}_amount") or {}).get("value")))) - raw[i]
+                      for i in charged}
+        eligible = [i for i in charged if remainders[i] * cents < 0]
+        ranked = sorted(eligible, key=lambda i: (remainders[i], i), reverse=cents < 0)
+        if len(ranked) < abs(cents):
+            continue
+        for i in ranked[:abs(cents)]:
+            value = Decimal(str(_num(items[i][f"{head}_amount"]["value"]))) + (cent if cents > 0 else -cent)
+            if value >= 0:
+                items[i][f"{head}_amount"] = _f(f"{value:.2f}", confidence=_DERIVED_CONFIDENCE)
+
+    # A derived net was calculated before this bill-wide discount. Refresh it
+    # from the discounted taxable base and the final head amounts; never
+    # overwrite a net amount that the line actually prints.
+    for item in items:
+        net = item.get("net_amount") or {}
+        if net.get("confidence") != _DERIVED_CONFIDENCE:
+            continue
+        taxed_heads = [h for h in ("cgst", "sgst", "igst", "utgst")
+                       if float(_num((item.get(f"{h}_percent") or {}).get("value")) or 0) > 0]
+        if not taxed_heads or any(not (item.get(f"{h}_amount") or {}).get("value") for h in taxed_heads):
+            item.pop("net_amount", None)
+            continue
+        amount = Decimal(str(_num((item.get("amount") or {}).get("value"))))
+        base = (amount * exact_scale).quantize(cent)
+        taxes = sum(Decimal(str(_num(item[f"{h}_amount"]["value"]))) for h in taxed_heads)
+        item["net_amount"] = _f(f"{base + taxes:.2f}", confidence=_DERIVED_CONFIDENCE)
 
 
 def _gst_total_from_heads(invoice_meta: dict) -> None:

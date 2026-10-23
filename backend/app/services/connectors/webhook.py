@@ -54,8 +54,27 @@ class WebhookConnector(BaseConnector):
                 last_code = getattr(resp, "status_code", None)
                 last_body = (getattr(resp, "text", "") or "")[:2000]
                 if last_code is not None and 200 <= last_code < 300:
+                    try:
+                        receipt = json.loads(last_body)
+                    except (ValueError, TypeError):
+                        receipt = None
+                    if isinstance(receipt, dict):
+                        state = receipt.get("status")
+                        if state in ("rejected", "failed", "error"):
+                            return DeliveryResult(status=FAILED, delivery_state="failed", response_code=last_code,
+                                                  response_body=last_body, attempts=attempt)
+                        if state == "imported":
+                            reference = receipt.get("external_reference")
+                            if not isinstance(reference, str) or not reference.strip():
+                                return DeliveryResult(status=FAILED, delivery_state="failed", response_code=last_code,
+                                                      response_body="ERP reported imported without an external_reference.",
+                                                      attempts=attempt)
+                            return DeliveryResult(status=SUCCESS, delivery_state="imported",
+                                                  external_reference=reference.strip(), response_code=last_code,
+                                                  response_body=last_body, attempts=attempt)
                     return DeliveryResult(
-                        status=SUCCESS, response_code=last_code, response_body=last_body, attempts=attempt
+                        status=SUCCESS, delivery_state="received", response_code=last_code,
+                        response_body=last_body, attempts=attempt
                     )
             except requests.RequestException as exc:
                 last_body = str(exc)
@@ -64,5 +83,6 @@ class WebhookConnector(BaseConnector):
                 self.sleep(self.base_backoff * (2 ** (attempt - 1)))
 
         return DeliveryResult(
-            status=FAILED, response_code=last_code, response_body=last_body, attempts=self.max_attempts
+            status=FAILED, delivery_state="failed", response_code=last_code,
+            response_body=last_body, attempts=self.max_attempts
         )

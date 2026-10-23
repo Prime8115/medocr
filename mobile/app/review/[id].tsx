@@ -29,6 +29,8 @@ import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
 import { addLineItem, buildSections, documentTitle, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
+import GstSlabSummary from '@/src/components/GstSlabSummary';
+import { gstSlabRows } from '@/src/lib/gstSlabs';
 import RecheckField from '@/src/components/RecheckField';
 import SourcePages from '@/src/components/SourcePages';
 import { formatMoney } from '@/src/lib/table';
@@ -245,7 +247,21 @@ export default function ReviewScreen() {
       }
       const result = await pushDocument(id);
       applyDoc(result);
-      Alert.alert(t('pushed'), `${result.deliveries.length} delivery(ies)`);
+      const lines = result.deliveries.map((delivery) => {
+        const name = delivery.connector_name || 'Connection';
+        const state = delivery.delivery_state || delivery.status;
+        const label = state === 'imported' ? `Imported (${delivery.external_reference})`
+          : state === 'received' ? 'Received by software endpoint; import unconfirmed'
+          : state === 'file_written' ? 'File written; import unconfirmed'
+          : state === 'queued' ? 'Queued for shop PC'
+          : state === 'success' ? 'Delivery confirmed; import unconfirmed'
+          : state === 'pending' ? 'Queued; delivery unconfirmed'
+          : `Failed: ${delivery.response_body || 'check connection'}`;
+        return `${name}: ${label}`;
+      });
+      const title = result.deliveries.some((d) => d.status === 'failed') ? 'Delivery needs attention'
+        : result.status === 'pushed' ? 'Delivery confirmed' : 'Delivery pending';
+      Alert.alert(title, lines.join('\n'));
     } catch (e: unknown) {
       const raw = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
       const detail = typeof raw === 'string' ? raw : (raw as { message?: string })?.message ?? t('errorGeneric');
@@ -392,9 +408,11 @@ export default function ReviewScreen() {
         total_in_words_disagrees?: boolean;
         needs_manual_entry?: boolean;
         raw_text?: string | null;
+        slab_summary?: unknown;
       }
     | undefined;
   const warnings = meta?.warnings ?? [];
+  const slabRows = gstSlabRows(meta?.slab_summary);
   const verdict = verdictOf(verificationOf(payload));
   const choices = choicesOf(payload);
   const pendingChoiceCount = choices.filter((choice) => choice.chosen == null).length;
@@ -443,6 +461,8 @@ export default function ReviewScreen() {
     index: i,
     attention: needsAttention(section, i),
   }));
+  const slabFooter = isInvoice && slabRows.length > 0
+    ? <GstSlabSummary rows={slabRows} /> : undefined;
 
   // Header sections (patient/supplier) + line-item title — scroll with the list.
   const listHeader = (
@@ -626,6 +646,7 @@ export default function ReviewScreen() {
         <InvoiceTable
           fields={fields}
           rows={tableRows}
+          listFooter={slabFooter}
           onSelect={setEditIndex}
           emptyText={itemSections.length > 0 ? `No items match “${search}”.` : undefined}
         />
@@ -634,6 +655,7 @@ export default function ReviewScreen() {
           data={filtered}
           keyExtractor={({ section }) => section.title}
           ListHeaderComponent={listHeader}
+          ListFooterComponent={slabFooter}
           contentContainerStyle={styles.content}
           initialNumToRender={14}
           windowSize={11}

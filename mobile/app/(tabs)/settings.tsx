@@ -51,6 +51,7 @@ export default function SettingsScreen() {
   const [secret, setSecret] = useState('');
   const [profile, setProfile] = useState('generic');
   const [format, setFormat] = useState('csv');
+  const [outputDir, setOutputDir] = useState('');
   const [options, setOptions] = useState<ConnectorOptions | null>(null);
   const [saving, setSaving] = useState(false);
   const [testMsg, setTestMsg] = useState<Record<string, string>>({});
@@ -134,14 +135,21 @@ export default function SettingsScreen() {
       const config: Record<string, unknown> = {};
       if (type === 'webhook') config.url = url.trim();
       if (type === 'file_export') {
+        if (format !== 'tally_prime_xml' && !outputDir.trim()) {
+          Alert.alert('Output folder required', 'Enter a folder accessible to the MediScan server, or use the desktop agent for a shop PC.');
+          setSaving(false);
+          return;
+        }
         config.profile = profile;
         config.format = format;
+        if (outputDir.trim()) config.output_dir = outputDir.trim();
       }
       await createConnector({ type, name: name.trim(), config, secret: type === 'webhook' ? secret.trim() || undefined : undefined });
       setShowForm(false);
       setName('');
       setUrl('');
       setSecret('');
+      setOutputDir('');
       await load();
     } catch {
       Alert.alert('Could not create connection', 'Only the shop owner can add connections.');
@@ -288,6 +296,9 @@ export default function SettingsScreen() {
                       </TouchableOpacity>
                     ))}
                   </View>
+                  <Text style={styles.fieldLabel}>MediScan server/shared output folder</Text>
+                  <TextInput style={styles.input} value={outputDir} onChangeText={setOutputDir} autoCapitalize="none" placeholder="/mnt/erp-import" placeholderTextColor={colors.textMuted} />
+                  <Text style={styles.mutedNote}>For a folder on your shop PC, use the desktop agent. Tally manual download can leave this blank.</Text>
                 </>
               )}
 
