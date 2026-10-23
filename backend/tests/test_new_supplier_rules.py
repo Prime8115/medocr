@@ -4,6 +4,7 @@ Each test rebuilds the one shape that went wrong on a real bill - the PDFs are
 customer documents and live in the private invoice corpus, never here.
 """
 import io
+import copy
 
 from app.services.ocr import parties
 from app.services.ocr.amount_words import total_from_words
@@ -629,6 +630,70 @@ def test_the_slab_summary_table_gives_the_bills_discount_taxable_and_tax():
     _slab_summary_table(invoice, text)
     assert (_v(invoice, "total_taxable_amount"), _v(invoice, "total_discount_amount"),
             _v(invoice, "total_cgst_amount")) == ("11588.79", "358.41", "892.77")
+
+
+def test_bill_wide_discount_reconciles_hindustan_line_gst_and_net():
+    from app.services.ocr.invoice_parser import _scale_worked_out_tax
+
+    amounts = ("887.10", "4275.00", "5125.50", "1659.60")
+    rates = ("6.00", "6.00", "9.00", "9.00")
+    initial_tax = ("53.23", "256.50", "461.30", "149.36")
+    items = []
+    for amount, rate, tax in zip(amounts, rates, initial_tax):
+        items.append({
+            "amount": {"value": amount, "confidence": 1.0},
+            "cgst_percent": {"value": rate, "confidence": 1.0},
+            "sgst_percent": {"value": rate, "confidence": 1.0},
+            "cgst_amount": {"value": tax, "confidence": 0.85},
+            "sgst_amount": {"value": tax, "confidence": 0.85},
+            "net_amount": {"value": f"{float(amount) + 2 * float(tax):.2f}", "confidence": 0.85},
+        })
+    invoice = {key: {"value": value, "confidence": 1.0} for key, value in {
+        "total_taxable_amount": "11588.79", "total_discount_amount": "358.41",
+        "total_cgst_amount": "892.77", "total_sgst_amount": "892.77",
+    }.items()}
+
+    inferred_total_items = copy.deepcopy(items)
+    inferred_total_invoice = copy.deepcopy(invoice)
+    inferred_total_invoice["total_cgst_amount"]["confidence"] = 0.85
+    _scale_worked_out_tax(inferred_total_items, inferred_total_invoice)
+    assert _v(inferred_total_items[1], "cgst_amount") == "248.81"
+
+    _scale_worked_out_tax(items, invoice)
+
+    assert [_v(i, "cgst_amount") for i in items] == ["51.63", "248.80", "447.46", "144.88"]
+    assert [_v(i, "sgst_amount") for i in items] == ["51.63", "248.80", "447.46", "144.88"]
+    assert [_v(i, "net_amount") for i in items] == ["963.75", "4644.35", "5866.66", "1899.57"]
+    assert round(sum(float(_v(i, "cgst_amount")) for i in items), 2) == 892.77
+
+
+def test_unallocated_credit_note_tax_does_not_keep_a_stale_derived_net():
+    from app.services.ocr.invoice_parser import _scale_worked_out_tax
+
+    items = [{"amount": {"value": "474.09"},
+              "cgst_amount": {"value": "42.67", "confidence": 0.85},
+              "net_amount": {"value": "559.43", "confidence": 0.85}},
+             {"amount": {"value": "81.00"},
+              "cgst_amount": {"value": "4.86", "confidence": 0.85},
+              "net_amount": {"value": "90.72", "confidence": 0.85}}]
+    invoice = {"total_taxable_amount": {"value": "491.03", "confidence": 1.0}}
+    _scale_worked_out_tax(items, invoice)
+    assert all("cgst_amount" not in item and "net_amount" not in item for item in items)
+
+
+def test_bill_discount_does_not_force_a_large_tax_gap_into_rows():
+    from app.services.ocr.invoice_parser import _scale_worked_out_tax
+
+    items = [{"amount": {"value": "100.00"},
+              "cgst_percent": {"value": "6.00"},
+              "cgst_amount": {"value": "6.00", "confidence": 0.85}}
+             for _ in range(20)]
+    invoice = {"total_taxable_amount": {"value": "1940.00", "confidence": 1.0},
+               "total_discount_amount": {"value": "60.00", "confidence": 1.0},
+               "total_cgst_amount": {"value": "116.50", "confidence": 1.0}}
+
+    _scale_worked_out_tax(items, invoice)
+    assert [_v(i, "cgst_amount") for i in items] == ["5.82"] * 20
 
 
 def test_a_credit_note_page_after_an_invoice_is_its_own_document():

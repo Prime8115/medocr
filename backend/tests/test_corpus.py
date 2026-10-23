@@ -59,6 +59,24 @@ def test_the_corpus_is_present_where_it_is_required():
         pytest.skip("no invoice corpus (set INVOICE_CORPUS to a clone of medocr-invoices)")
 
 
+def test_hindustan_tax_invoice_line_gst_reconciles_after_bill_discount():
+    """The four product rows have 0% line discount, but the GST slab foot
+    takes 3% off before CGST/SGST. Its 6% slab needs a one-paisa allocation."""
+    entry = next((e for e in ENTRIES if e.get("file", "").endswith("HINDUSTAN CAPSULE LLP.pdf")
+                  and e.get("part") == 0), None)
+    if entry is None:
+        if REQUIRED:
+            pytest.fail("Hindustan Capsules tax invoice is missing from the required corpus")
+        pytest.skip("Hindustan Capsules tax invoice is not available")
+    fields = _read(entry)["fields"]
+    items = fields["line_items"]
+    assert len(items) == 4
+    assert [_value(item, "cgst_amount") for item in items] == ["51.63", "248.80", "447.46", "144.88"]
+    assert [_value(item, "net_amount") for item in items] == ["963.75", "4644.35", "5866.66", "1899.57"]
+    assert round(sum(float(_value(item, "cgst_amount")) for item in items), 2) == 892.77
+    assert round(sum(float(_value(item, "sgst_amount")) for item in items), 2) == 892.77
+
+
 def _ids(entries):
     return [pathlib.Path(e["file"]).stem[:40] + (f" #{e['part'] + 1}" if "part" in e else "") for e in entries]
 

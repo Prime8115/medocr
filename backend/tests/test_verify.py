@@ -98,6 +98,29 @@ def test_a_tax_total_that_is_not_the_lines_is_caught():
            "head_totals", "invoice.total_cgst_amount")
 
 
+def test_a_paisa_mismatch_in_calculated_line_tax_is_caught():
+    bill = _clean_bill()
+    for item in bill["line_items"]:
+        item["cgst_amount"] = {"value": "58.20", "confidence": 0.85}
+    bill["invoice"]["total_taxable_amount"] = _leaf("1940.00")
+    bill["invoice"]["total_discount_amount"] = _leaf("60.00")
+    bill["invoice"]["total_cgst_amount"] = _leaf("116.41")
+
+    check = _check(verify_invoice(bill, REPORT, today=TODAY), "head_totals")
+    assert check["status"] == "fail"
+    assert "invoice.total_cgst_amount" in check["fields"]
+
+
+def test_supplier_row_rounding_does_not_trigger_the_discount_rule():
+    bill = _clean_bill()
+    for item in bill["line_items"]:
+        item["cgst_amount"]["confidence"] = 0.85
+    bill["invoice"]["total_cgst_amount"] = _leaf("119.98")
+
+    check = _check(verify_invoice(bill, REPORT, today=TODAY), "head_totals")
+    assert check["status"] == "pass"
+
+
 def test_a_total_that_does_not_foot_is_caught():
     _break(lambda b: b["invoice"].__setitem__("total_amount", _leaf("2440.00")),
            "cross_foot", "invoice.total_amount")
