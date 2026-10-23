@@ -58,19 +58,47 @@ export interface TallyPreflight {
   invoice_total: string | null;
 }
 
+export interface TallyExportStatus {
+  id: string;
+  status: 'downloaded' | 'not_imported' | 'reported_imported';
+  revision: number;
+  download_count: number;
+  line_count: number;
+  total_amount: string;
+  external_reference: string | null;
+  report_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  reported_at: string | null;
+}
+
+export async function getTallyExportStatus(id: string, connectorId: string): Promise<TallyExportStatus | null> {
+  const res = await api.get(`/v1/documents/${id}/tally/export-status`, { params: { connector_id: connectorId } });
+  return res.data as TallyExportStatus | null;
+}
+
+export async function reportTallyImport(id: string, connectorId: string, body: {
+  outcome: 'imported' | 'not_imported'; external_reference?: string;
+  imported_line_count?: number; imported_total?: string;
+  rows_and_batches_checked?: boolean; reason?: string;
+}): Promise<TallyExportStatus> {
+  const res = await api.post(`/v1/documents/${id}/tally/report`, body, { params: { connector_id: connectorId } });
+  return res.data as TallyExportStatus;
+}
+
 export async function getTallyPreflight(id: string, connectorId: string): Promise<TallyPreflight> {
   const res = await api.get(`/v1/documents/${id}/tally/preflight`, { params: { connector_id: connectorId } });
   return res.data as TallyPreflight;
 }
 
-export async function downloadTallyPurchase(id: string, connectorId: string): Promise<void> {
+export async function downloadTallyPurchase(id: string, connectorId: string, revision = 1): Promise<void> {
   const res = await api.get(`/v1/documents/${id}/tally/download`, {
     params: { connector_id: connectorId }, responseType: 'blob',
   });
   const url = URL.createObjectURL(res.data as Blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${id}_tally_purchase.xml`;
+  link.download = `${id}_tally_purchase_r${revision}.xml`;
   document.body.appendChild(link);
   link.click();
   link.remove();

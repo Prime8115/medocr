@@ -2,9 +2,11 @@
 lifecycle state machine and human-correction (PATCH) support.
 """
 import logging
+import hashlib
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Literal, Optional
 
 from fastapi import (
@@ -18,6 +20,7 @@ from fastapi import (
     UploadFile,
 )
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
@@ -30,6 +33,7 @@ from app.models.document import Document
 from app.models.inventory import InventoryItem
 from app.models.job import OcrJob
 from app.models.user import User
+from app.models.tally_export import TallyExport
 from app.schemas.connector import DeliveryOut
 from app.schemas.document import (
     DocumentOut,
@@ -43,6 +47,7 @@ from app.schemas.document import (
     RecheckRequest,
 )
 from app.schemas.extraction import validate_fields
+from app.schemas.tally_export import TallyExportOut, TallyImportReport
 from app.services import corrections, intake, jobs, lifecycle, supplier_profile
 from app.services.connectors import service as connector_service
 from app.services.connectors.payload import build_push_payload
@@ -787,11 +792,11 @@ def source_page(document_id: str, page: int = Query(1, ge=1),
     return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
 
 
-def _tally_config(db: Session, user: User, connector_id: str) -> dict:
+def _tally_config(db: Session, user: User, connector_id: str, *, require_enabled: bool = True) -> dict:
     connector = (db.query(Connector)
                  .filter(Connector.id == connector_id, Connector.shop_id == user.shop_id,
                          Connector.type == "file_export").first())
-    if not connector or (connector.config or {}).get("format") != "tally_prime_xml":
+    if not connector or (require_enabled and not connector.enabled) or (connector.config or {}).get("format") != "tally_prime_xml":
         raise HTTPException(status_code=404, detail="Tally purchase connector not found.")
     return connector.config or {}
 
@@ -808,7 +813,7 @@ def tally_preflight(document_id: str, connector_id: str,
 @router.get("/{document_id}/tally/download")
 def tally_download(document_id: str, connector_id: str,
                    db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """A reviewed, balanced purchase voucher for manual import into Tally."""
+    """Offer one approved voucher; downloading does not mean Tally imported it."""
     from starlette.responses import Response
 
     doc = _get_owned_document(document_id, db, user)
@@ -820,13 +825,114 @@ def tally_download(document_id: str, connector_id: str,
     if not check["ready"]:
         raise HTTPException(status_code=409, detail=check)
     xml = tally_purchase.render(payload, config)
+    xml_sha256 = hashlib.sha256(xml.encode("utf-8")).hexdigest()
+    export = (db.query(TallyExport)
+              .filter(TallyExport.document_id == doc.id, TallyExport.connector_id == connector_id)
+              .with_for_update().first())
+    if export and export.status == "reported_imported":
+        raise HTTPException(status_code=409, detail="This invoice was reported imported into Tally. Check its voucher before exporting again.")
+    if export and export.status == "downloaded":
+        raise HTTPException(status_code=409, detail="A Tally XML was already downloaded. Check Tally and record its outcome before trying again.")
+    if export:
+        export.revision += 1
+        export.download_count += 1
+        export.xml_sha256 = xml_sha256
+        export.idempotency_key = hashlib.sha256(f"{doc.id}:{connector_id}:{xml_sha256}".encode()).hexdigest()
+        export.line_count = check["line_count"]
+        export.total_amount = check["invoice_total"]
+        export.status = "downloaded"
+        export.exported_by = user.id
+        export.reported_by = None
+        export.reported_at = None
+        export.external_reference = None
+        export.report_reason = None
+    else:
+        export = TallyExport(
+            shop_id=user.shop_id, document_id=doc.id, connector_id=connector_id,
+            status="downloaded", xml_sha256=xml_sha256,
+            idempotency_key=hashlib.sha256(f"{doc.id}:{connector_id}:{xml_sha256}".encode()).hexdigest(),
+            revision=1, download_count=1, line_count=check["line_count"],
+            total_amount=check["invoice_total"], exported_by=user.id,
+        )
+        db.add(export)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Another Tally export started. Refresh and check its status.")
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.tally_exported",
-                    target=doc.id, detail={"connector_id": connector_id}))
+                    target=doc.id, detail={"connector_id": connector_id, "export_id": export.id,
+                                           "revision": export.revision, "xml_sha256": xml_sha256}))
     db.commit()
     return Response(xml, media_type="application/xml", headers={
-        "Content-Disposition": f'attachment; filename="{doc.id}_tally_purchase.xml"',
+        "Content-Disposition": f'attachment; filename="{doc.id}_tally_purchase_r{export.revision}.xml"',
         "Cache-Control": "private, no-store",
     })
+
+
+@router.get("/{document_id}/tally/export-status", response_model=Optional[TallyExportOut])
+def tally_export_status(document_id: str, connector_id: str,
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    doc = _get_owned_document(document_id, db, user)
+    _tally_config(db, user, connector_id, require_enabled=False)
+    return (db.query(TallyExport)
+            .filter(TallyExport.document_id == doc.id, TallyExport.connector_id == connector_id)
+            .first())
+
+
+@router.post("/{document_id}/tally/report", response_model=TallyExportOut)
+def tally_report(document_id: str, connector_id: str, body: TallyImportReport,
+                 db: Session = Depends(get_db), user: User = Depends(require_owner)):
+    """Owner reports the observed Tally outcome; this is not an API acknowledgement."""
+    doc = _get_owned_document(document_id, db, user)
+    _tally_config(db, user, connector_id, require_enabled=False)
+    export = (db.query(TallyExport)
+              .filter(TallyExport.document_id == doc.id, TallyExport.connector_id == connector_id)
+              .with_for_update().first())
+    if not export:
+        raise HTTPException(status_code=409, detail="Download the approved Tally XML before recording an import outcome.")
+    reference = (body.external_reference or "").strip()
+    reason = (body.reason or "").strip()
+    if export.status != "downloaded":
+        if (export.status == "reported_imported" and body.outcome == "imported"
+                and reference == export.external_reference
+                and body.imported_line_count == export.line_count
+                and body.imported_total == export.total_amount
+                and body.rows_and_batches_checked):
+            return export
+        if export.status == "not_imported" and body.outcome == "not_imported" and reason == export.report_reason:
+            return export
+        raise HTTPException(status_code=409, detail="This export already has an outcome. Refresh before changing it.")
+    if body.outcome == "imported":
+        if not reference or body.imported_line_count is None or not body.imported_total or not body.rows_and_batches_checked:
+            raise HTTPException(status_code=422, detail="Enter the Tally voucher reference and matching row count and total, then confirm rows, quantities and batches.")
+        try:
+            reported_total = Decimal(body.imported_total)
+            expected_total = Decimal(export.total_amount)
+        except InvalidOperation:
+            raise HTTPException(status_code=422, detail="Enter a numeric total shown in Tally.")
+        if not reported_total.is_finite() or body.imported_line_count != export.line_count or reported_total != expected_total:
+            raise HTTPException(status_code=409, detail="Tally rows or total differ from the downloaded invoice. Resolve the difference before marking imported.")
+        export.status = "reported_imported"
+        export.external_reference = reference
+    else:
+        if not reason:
+            raise HTTPException(status_code=422, detail="Record why this XML was not imported before retrying.")
+        export.status = "not_imported"
+        export.report_reason = reason
+    export.reported_by = user.id
+    export.reported_at = datetime.now(timezone.utc)
+    db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.tally_outcome_reported",
+                    target=doc.id, detail={"connector_id": connector_id, "export_id": export.id,
+                                           "revision": export.revision, "status": export.status,
+                                           "external_reference": export.external_reference,
+                                           "reason": export.report_reason,
+                                           "xml_sha256": export.xml_sha256,
+                                           "line_count": export.line_count,
+                                           "total_amount": export.total_amount}))
+    db.commit()
+    db.refresh(export)
+    return export
 
 
 def _parts_of(db: Session, doc: Document) -> list:
@@ -1172,21 +1278,22 @@ def push_document(document_id: str, db: Session = Depends(get_db), user: User = 
 
     Idempotent per (document, connector): already-delivered/queued connectors are
     skipped, previously-failed ones are retried. The document becomes 'pushed' only
-    when every connector confirms delivery. A queued agent is not delivered yet.
+    when every automatic connector confirms delivery. A queued agent is not delivered yet;
+    the manual Tally XML pilot is handled through its separate export flow.
     """
     doc = _get_owned_document(document_id, db, user)
     if doc.status not in (lifecycle.APPROVED, lifecycle.PUSHED):
         raise HTTPException(status_code=409, detail="Document must be approved before pushing.")
 
-    has_connector = (
+    connectors = (
         db.query(Connector)
         .filter(Connector.shop_id == user.shop_id, Connector.enabled.is_(True))
-        .count()
+        .all()
     )
-    if has_connector == 0:
+    if not any(not connector_service.is_manual_tally(c) for c in connectors):
         raise HTTPException(
             status_code=400,
-            detail="No connectors configured. Add one in Settings before pushing.",
+            detail="No automatic connector is configured. Tally purchase XML must be downloaded and imported manually.",
         )
 
     deliveries = connector_service.push_document(db, doc)

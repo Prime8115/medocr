@@ -50,6 +50,9 @@ def test_agent_polls_and_acks_delivery(client, db_session):
     # Seed an approved doc + a pending delivery queued for this agent.
     s = db_session()
     try:
+        # Manual Tally XML is a separate download; it must not block an agent ack.
+        s.add(Connector(shop_id=shop_id, type="file_export", name="Tally pilot",
+                        config={"format": "tally_prime_xml"}, enabled=True))
         doc = Document(shop_id=shop_id, doc_type="prescription", status="approved", payload={"fields": {}})
         s.add(doc)
         s.flush()

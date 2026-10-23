@@ -11,6 +11,7 @@ from app.models.push_delivery import PushDelivery
 from app.models.document import Document
 from app.schemas.connector import AgentDelivery, AgentPairRequest, AgentToken
 from app.services.connectors.base import SUCCESS
+from app.services.connectors.service import is_manual_tally
 
 router = APIRouter()
 
@@ -81,7 +82,9 @@ def ack_delivery(
     db.flush()  # sessions disable autoflush; the all-delivered query must see this ack
     doc = db.get(Document, delivery.document_id)
     if doc and doc.status == "approved":
-        enabled = db.query(Connector).filter(Connector.shop_id == doc.shop_id, Connector.enabled.is_(True)).all()
+        enabled = [target for target in db.query(Connector).filter(
+            Connector.shop_id == doc.shop_id, Connector.enabled.is_(True)).all()
+            if not is_manual_tally(target)]
         if enabled and all(
             db.query(PushDelivery).filter(
                 PushDelivery.idempotency_key == f"{doc.id}:{target.id}", PushDelivery.status == SUCCESS

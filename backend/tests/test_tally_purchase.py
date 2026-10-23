@@ -7,7 +7,10 @@ import pytest
 
 from app.models.connector import Connector
 from app.models.document import Document
+from app.models.push_delivery import PushDelivery
+from app.models.tally_export import TallyExport
 from app.models.user import User
+from app.core.security import create_access_token
 from app.services.connectors import tally_purchase
 from tests.conftest import register_and_login
 
@@ -93,3 +96,103 @@ def test_tally_endpoint_is_shop_scoped_and_approval_gated(client, db_session):
     ET.fromstring(download.text)
     other = register_and_login(client, email="other@shop.com", shop="Other Shop")
     assert client.get(url + "/preflight", params=params, headers=other).status_code == 404
+    assert client.get(url + "/export-status", params=params, headers=other).status_code == 404
+    assert client.post(url + "/report", params=params,
+                       json={"outcome": "not_imported", "reason": "Unused"}, headers=other).status_code == 404
+
+
+def _approved_tally_invoice(client, db_session):
+    owner = register_and_login(client)
+    with db_session() as db:
+        user = db.query(User).filter(User.email == "owner@shop.com").one()
+        doc = Document(shop_id=user.shop_id, doc_type="invoice", status="approved",
+                       payload={"fields": PAYLOAD["data"], "meta": PAYLOAD["meta"]})
+        connector = Connector(shop_id=user.shop_id, type="file_export", name="Tally pilot", config=CONFIG)
+        db.add_all([doc, connector])
+        db.commit()
+        return owner, doc.id, connector.id
+
+
+def test_tally_download_is_pending_until_owner_reports_a_matching_receipt(client, db_session):
+    owner, doc_id, connector_id = _approved_tally_invoice(client, db_session)
+    url = f"/v1/documents/{doc_id}/tally"
+    params = {"connector_id": connector_id}
+    assert client.get(url + "/export-status", params=params, headers=owner).json() is None
+    first = client.get(url + "/download", params=params, headers=owner)
+    assert first.status_code == 200, first.text
+    assert "_r1.xml" in first.headers["content-disposition"]
+    status = client.get(url + "/export-status", params=params, headers=owner).json()
+    assert status["status"] == "downloaded" and status["line_count"] == 1
+    assert client.get(url + "/download", params=params, headers=owner).status_code == 409
+    assert client.post(f"/v1/documents/{doc_id}/push", headers=owner).status_code == 400
+    with db_session() as db:
+        assert db.query(PushDelivery).count() == 0
+        assert db.query(TallyExport).one().download_count == 1
+        assert db.get(Document, doc_id).status == "approved"
+
+    report = {"outcome": "imported", "external_reference": "PUR-18", "imported_line_count": 1,
+              "imported_total": "112.00", "rows_and_batches_checked": True}
+    assert client.post(url + "/report", params=params, json={**report, "imported_line_count": 2},
+                       headers=owner).status_code == 409
+    assert client.post(url + "/report", params=params, json={**report, "imported_total": "113.00"},
+                       headers=owner).status_code == 409
+    accepted = client.post(url + "/report", params=params, json=report, headers=owner)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "reported_imported"
+    assert client.post(url + "/report", params=params, json=report, headers=owner).status_code == 200
+    assert client.get(url + "/download", params=params, headers=owner).status_code == 409
+    assert client.delete(f"/v1/connectors/{connector_id}", headers=owner).status_code == 409
+    assert client.patch(f"/v1/connectors/{connector_id}", json={"config": {"format": "json"}},
+                        headers=owner).status_code == 409
+
+    with db_session() as db:
+        shop_id = db.query(User).filter(User.email == "owner@shop.com").one().shop_id
+        staff = User(shop_id=shop_id, email="staff@shop.com", hashed_password="unused", role="staff")
+        db.add(staff)
+        db.commit()
+        staff_headers = {"Authorization": f"Bearer {create_access_token(staff.id, shop_id, staff.role)}"}
+    assert client.get(url + "/export-status", params=params, headers=staff_headers).status_code == 200
+    assert client.post(url + "/report", params=params, json=report, headers=staff_headers).status_code == 403
+
+
+def test_tally_not_imported_requires_reason_and_allows_one_reviewed_retry(client, db_session):
+    owner, doc_id, connector_id = _approved_tally_invoice(client, db_session)
+    url = f"/v1/documents/{doc_id}/tally"
+    params = {"connector_id": connector_id}
+    assert client.get(url + "/download", params=params, headers=owner).status_code == 200
+    assert client.post(url + "/report", params=params, json={"outcome": "not_imported"},
+                       headers=owner).status_code == 422
+    recorded = client.post(url + "/report", params=params,
+                           json={"outcome": "not_imported", "reason": "File was not used"}, headers=owner)
+    assert recorded.status_code == 200, recorded.text
+    assert recorded.json()["status"] == "not_imported"
+    second = client.get(url + "/download", params=params, headers=owner)
+    assert second.status_code == 200, second.text
+    assert "_r2.xml" in second.headers["content-disposition"]
+    assert client.get(url + "/export-status", params=params, headers=owner).json()["download_count"] == 2
+    with db_session() as db:
+        db.get(Connector, connector_id).enabled = False
+        db.commit()
+    assert client.get(url + "/export-status", params=params, headers=owner).status_code == 200
+    assert client.get(url + "/download", params=params, headers=owner).status_code == 404
+    assert client.post(url + "/report", params=params,
+                       json={"outcome": "not_imported", "reason": "Import exceptions remain"},
+                       headers=owner).status_code == 200
+
+
+def test_general_push_still_uses_other_connectors_without_claiming_tally_delivery(client, db_session, tmp_path):
+    owner, doc_id, tally_id = _approved_tally_invoice(client, db_session)
+    with db_session() as db:
+        user = db.query(User).filter(User.email == "owner@shop.com").one()
+        db.add(Connector(shop_id=user.shop_id, type="file_export", name="JSON archive",
+                         config={"formats": ["json"], "output_dir": str(tmp_path)}))
+        db.commit()
+    pushed = client.post(f"/v1/documents/{doc_id}/push", headers=owner)
+    assert pushed.status_code == 200, pushed.text
+    assert pushed.json()["status"] == "pushed"
+    assert len(pushed.json()["deliveries"]) == 1
+    with db_session() as db:
+        deliveries = db.query(PushDelivery).all()
+        assert len(deliveries) == 1
+        assert deliveries[0].connector_id != tally_id
+        assert db.query(TallyExport).count() == 0
