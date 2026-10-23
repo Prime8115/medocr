@@ -34,6 +34,7 @@ _HEADS = ("cgst", "sgst", "igst", "utgst")
 # Confidence given to a field implicated by a failed check, so the review
 # screen's existing "needs check" highlighting picks it up.
 _FLAGGED_CONFIDENCE = 0.4
+_DERIVED_CONFIDENCE = 0.85
 
 _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
@@ -279,6 +280,13 @@ def _check_line_discount(c: _Checks, items: List[dict]) -> None:
 
 def _check_head_totals(c: _Checks, fields: dict, items: List[dict]) -> None:
     invoice = fields.get("invoice") or {}
+    amounts = [_n(it.get("amount")) for it in items]
+    taxable = _n(invoice.get("total_taxable_amount"))
+    # Only demand an exact match for the bill-wide discount calculation. On
+    # ordinary bills a supplier can itself print row taxes that differ by a
+    # few paise from its GST-slab footer.
+    bill_discounted = (taxable is not None and amounts and all(a is not None for a in amounts)
+                       and sum(amounts) - taxable > 0.01)
     bad, tested = [], 0
     for head in _HEADS:
         printed = _n(invoice.get(f"total_{head}_amount"))
@@ -287,7 +295,15 @@ def _check_head_totals(c: _Checks, fields: dict, items: List[dict]) -> None:
         if printed is None or not known or len(known) < len(items) or printed == 0:
             continue
         tested += 1
-        if not _close(sum(known), printed, 1.0, 0.002):
+        # A supplier's printed row taxes can use a different rounding basis,
+        # but taxes calculated by us must reconcile to its printed head total
+        # to the paisa. The usual ₹1 tolerance hid small derived errors.
+        independent_total = (invoice.get(f"total_{head}_amount") or {}).get("confidence") == 1.0
+        all_derived = bill_discounted and independent_total and all(
+            (it.get(f"{head}_amount") or {}).get("confidence") == _DERIVED_CONFIDENCE
+            for it in items)
+        tolerance = 0.005 if all_derived else 1.0
+        if not _close(sum(known), printed, tolerance, 0 if all_derived else 0.002):
             bad.append(head)
     _verdict(c, "head_totals", "Tax totals equal the sum of the lines", tested, bad,
              "the printed total does not equal the lines' tax",
