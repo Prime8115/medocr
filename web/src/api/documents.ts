@@ -82,6 +82,10 @@ export interface Delivery {
   document_id: string;
   connector_id: string;
   status: string;
+  delivery_state?: string | null;
+  external_reference?: string | null;
+  connector_name?: string | null;
+  connector_type?: string | null;
   response_code?: number | null;
   response_body?: string | null;
   attempts: number;

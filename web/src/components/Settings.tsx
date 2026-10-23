@@ -76,6 +76,11 @@ export default function Settings() {
       const config: Record<string, unknown> = {};
       if (type === 'webhook') config.url = url;
       if (type === 'file_export') {
+        if (format !== 'tally_prime_xml' && !outputDir.trim()) {
+          alert('Enter a folder on the MediScan server or use the desktop agent for a shop PC.');
+          setSaving(false);
+          return;
+        }
         if (outputDir) config.output_dir = outputDir;
         config.format = format;
         config.profile = profile;
@@ -173,8 +178,9 @@ export default function Settings() {
                   <option key={f} value={f}>{FORMAT_LABEL[f] ?? f}</option>
                 ))}
               </select>
-              <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>Output folder (optional)</label>
-              <input className="input-field" style={{ marginBottom: 16 }} value={outputDir} onChange={(e) => setOutputDir(e.target.value)} placeholder="C:\PharmacySoftware\import" />
+              <label className="text-muted" style={{ display: 'block', marginBottom: 6 }}>MediScan server/shared output folder {format === 'tally_prime_xml' ? '(optional for manual download)' : '(required)'}</label>
+              <input className="input-field" style={{ marginBottom: 8 }} value={outputDir} onChange={(e) => setOutputDir(e.target.value)} placeholder="/mnt/erp-import" />
+              <div className="text-muted" style={{ marginBottom: 16, fontSize: 13 }}>A folder on your shop PC needs the desktop agent. Manual Tally XML download does not confirm import.</div>
             </>
           )}
 

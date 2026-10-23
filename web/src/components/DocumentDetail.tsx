@@ -10,6 +10,7 @@ import {
   pushDocument,
   reportDocument,
   type DocumentDto,
+  type Delivery,
   type ExtractionPayload,
 } from '../api/documents';
 import { addLineItem, buildSections, confidencePercent, documentTitle, extraColumns, getLeaf, isLowConfidence, removeLineItem, setLeafValue } from '../lib/payload';
@@ -52,6 +53,8 @@ export default function DocumentDetail() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
+  const [deliveryResult, setDeliveryResult] = useState<Delivery[] | null>(null);
+  useEffect(() => { setDeliveryResult(null); }, [id]);
   const [inv, setInv] = useState<DocMatch | null>(null);
   const [editItem, setEditItem] = useState<number | null>(null);
   const [itemSearch, setItemSearch] = useState('');
@@ -152,7 +155,15 @@ export default function DocumentDetail() {
     try {
       const result = await pushDocument(id);
       apply(result);
-      setToast({ text: `Sent — ${result.deliveries.length} delivery(ies)`, ok: true });
+      setDeliveryResult(result.deliveries);
+      const failed = result.deliveries.filter((d) => d.status === 'failed').length;
+      const queued = result.deliveries.filter((d) => d.status === 'pending').length;
+      setToast({
+        text: failed ? `${failed} connection(s) failed. See delivery details below.`
+          : queued ? `${queued} connection(s) queued. See delivery details below.`
+          : 'Delivery confirmed. See receipt details below.',
+        ok: failed === 0,
+      });
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Push failed';
       setToast({ text: detail, ok: false });
@@ -684,6 +695,23 @@ export default function DocumentDetail() {
 
       {toast && (
         <div style={{ margin: '12px 0', color: toast.ok ? 'var(--success)' : 'var(--danger)' }}>{toast.text}</div>
+      )}
+      {deliveryResult && (
+        <div className="glass-card" style={{ marginBottom: 16 }}>
+          <strong>Delivery details</strong>
+          {deliveryResult.map((delivery) => (
+            <div key={delivery.id} style={{ marginTop: 8, overflowWrap: 'anywhere' }}>
+              {delivery.connector_name || delivery.connector_type || 'Connection'}: {' '}
+              {delivery.delivery_state === 'imported' ? `Imported (${delivery.external_reference})`
+                : delivery.delivery_state === 'received' ? 'Received by endpoint; ERP import unconfirmed'
+                : delivery.delivery_state === 'file_written' ? 'File written; ERP import unconfirmed'
+                : delivery.delivery_state === 'queued' ? 'Queued for shop PC'
+                : delivery.status === 'success' ? 'Delivery confirmed; ERP import unconfirmed'
+                : delivery.status === 'pending' ? 'Queued; delivery unconfirmed'
+                : `Failed: ${delivery.response_body || 'Check connection'}`}
+            </div>
+          ))}
+        </div>
       )}
 
       <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>

@@ -1,0 +1,56 @@
+{
+  "payload_version": "1.0",
+  "event": "document.approved",
+  "document_id": "doc_example001",
+  "shop_id": "shop_example001",
+  "doc_type": "invoice",
+  "overall_confidence": 0.96,
+  "schema_version": "1.0",
+  "data": {
+    "supplier": {
+      "name": { "value": "Example Pharma Distributors", "confidence": 0.99 },
+      "gstin": { "value": "27ABCDE1234F1Z5", "confidence": 0.98 },
+      "address": { "value": "12 Market Road, Pune, Maharashtra 411001", "confidence": 0.94 }
+    },
+    "invoice": {
+      "invoice_no": { "value": "EPD-2026-001", "confidence": 0.99 },
+      "invoice_date": { "value": "2026-10-23", "confidence": 0.98 },
+      "total_taxable_amount": { "value": "700.00", "confidence": 0.98 },
+      "total_gst_amount": { "value": "70.00", "confidence": 0.98 },
+      "total_amount": { "value": "770.00", "confidence": 0.99 }
+    },
+    "line_items": [
+      {
+        "description": { "value": "Example Tablet 500 mg", "confidence": 0.98 },
+        "pack": { "value": "15 tablets", "confidence": 0.95 },
+        "batch_no": { "value": "BATCH-A1", "confidence": 0.96 },
+        "expiry": { "value": "2027-12", "confidence": 0.96 },
+        "quantity": { "value": "10", "confidence": 0.99 },
+        "free_quantity": { "value": "2", "confidence": 0.97 },
+        "rate": { "value": "50.00", "confidence": 0.98 },
+        "rate_source": { "value": "RATE", "confidence": null },
+        "amount": { "value": "500.00", "confidence": 0.99 },
+        "gst_percent": { "value": "12", "confidence": 0.98 },
+        "hsn": { "value": "3004", "confidence": 0.95 }
+      },
+      {
+        "description": { "value": "Example Capsules 100 mg", "confidence": 0.97 },
+        "pack": { "value": "10 capsules", "confidence": 0.95 },
+        "batch_no": { "value": "BATCH-B2", "confidence": 0.94 },
+        "expiry": { "value": "2028-03", "confidence": 0.93 },
+        "quantity": { "value": "2", "confidence": 0.98 },
+        "free_quantity": { "value": "0", "confidence": 0.97 },
+        "rate": { "value": "100.00", "confidence": 0.99 },
+        "rate_source": { "value": "PTR", "confidence": null },
+        "amount": { "value": "200.00", "confidence": 0.99 },
+        "gst_percent": { "value": "5", "confidence": 0.98 },
+        "hsn": { "value": "3004", "confidence": 0.94 }
+      }
+    ]
+  },
+  "meta": {
+    "document_kind": "tax_invoice",
+    "total_reconciles": true,
+    "warnings": []
+  }
+}

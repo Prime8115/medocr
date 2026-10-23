@@ -247,7 +247,21 @@ export default function ReviewScreen() {
       }
       const result = await pushDocument(id);
       applyDoc(result);
-      Alert.alert(t('pushed'), `${result.deliveries.length} delivery(ies)`);
+      const lines = result.deliveries.map((delivery) => {
+        const name = delivery.connector_name || 'Connection';
+        const state = delivery.delivery_state || delivery.status;
+        const label = state === 'imported' ? `Imported (${delivery.external_reference})`
+          : state === 'received' ? 'Received by software endpoint; import unconfirmed'
+          : state === 'file_written' ? 'File written; import unconfirmed'
+          : state === 'queued' ? 'Queued for shop PC'
+          : state === 'success' ? 'Delivery confirmed; import unconfirmed'
+          : state === 'pending' ? 'Queued; delivery unconfirmed'
+          : `Failed: ${delivery.response_body || 'check connection'}`;
+        return `${name}: ${label}`;
+      });
+      const title = result.deliveries.some((d) => d.status === 'failed') ? 'Delivery needs attention'
+        : result.status === 'pushed' ? 'Delivery confirmed' : 'Delivery pending';
+      Alert.alert(title, lines.join('\n'));
     } catch (e: unknown) {
       const raw = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
       const detail = typeof raw === 'string' ? raw : (raw as { message?: string })?.message ?? t('errorGeneric');

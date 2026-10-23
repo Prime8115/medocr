@@ -26,11 +26,11 @@ def _add_connector(db_session, shop_id, ctype="file_export", config=None):
         s.close()
 
 
-def test_push_delivers_and_is_idempotent(client, mock_ocr, db_session):
+def test_push_delivers_and_is_idempotent(client, mock_ocr, db_session, tmp_path):
     headers = register_and_login(client)
     shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
     doc_id = _approved_doc(client, headers)
-    _add_connector(db_session, shop_id, "file_export", {"formats": ["json"]})
+    _add_connector(db_session, shop_id, "file_export", {"formats": ["json"], "output_dir": str(tmp_path)})
 
     first = client.post(f"/v1/documents/{doc_id}/push", headers=headers)
     assert first.status_code == 200
@@ -39,6 +39,8 @@ def test_push_delivers_and_is_idempotent(client, mock_ocr, db_session):
     assert len(body["deliveries"]) == 1
     first_delivery_id = body["deliveries"][0]["id"]
     assert body["deliveries"][0]["status"] == "success"
+    assert body["deliveries"][0]["delivery_state"] == "file_written"
+    assert body["deliveries"][0]["connector_name"] == "file_export"
 
     # Re-push must NOT create a second delivery (idempotent).
     second = client.post(f"/v1/documents/{doc_id}/push", headers=headers).json()
@@ -46,16 +48,27 @@ def test_push_delivers_and_is_idempotent(client, mock_ocr, db_session):
     assert second["deliveries"][0]["id"] == first_delivery_id
 
 
-def test_push_to_agent_connector_is_pending_then_pushed(client, mock_ocr, db_session):
+def test_push_to_agent_connector_stays_approved_while_queued(client, mock_ocr, db_session):
     headers = register_and_login(client)
     shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
     doc_id = _approved_doc(client, headers)
     _add_connector(db_session, shop_id, "desktop_agent", {"paired": True})
 
     body = client.post(f"/v1/documents/{doc_id}/push", headers=headers).json()
-    # Queued for the agent counts as an accepted push.
+    # A queued job has not reached the shop PC yet.
     assert body["deliveries"][0]["status"] == "pending"
-    assert body["status"] == "pushed"
+    assert body["deliveries"][0]["delivery_state"] == "queued"
+    assert body["status"] == "approved"
+
+
+def test_push_without_output_folder_stays_approved(client, mock_ocr, db_session):
+    headers = register_and_login(client)
+    shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
+    doc_id = _approved_doc(client, headers)
+    _add_connector(db_session, shop_id, "file_export", {"format": "json"})
+    body = client.post(f"/v1/documents/{doc_id}/push", headers=headers).json()
+    assert body["status"] == "approved"
+    assert body["deliveries"][0]["status"] == "failed"
 
 
 def test_push_without_connector_returns_400(client, mock_ocr):

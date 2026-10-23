@@ -60,6 +60,7 @@ def test_agent_polls_and_acks_delivery(client, db_session):
         s.add(delivery)
         s.commit()
         delivery_id = delivery.id
+        doc_id = doc.id
     finally:
         s.close()
 
@@ -70,6 +71,8 @@ def test_agent_polls_and_acks_delivery(client, db_session):
 
     # Agent acks it.
     assert client.post(f"/v1/agent/deliveries/{delivery_id}/ack", headers=agent_headers).status_code == 200
+    document = client.get(f"/v1/documents/{doc_id}", headers=headers).json()
+    assert document["status"] == "pushed"
     # Now no pending deliveries remain.
     assert client.get("/v1/agent/deliveries", headers=agent_headers).json() == []
 
