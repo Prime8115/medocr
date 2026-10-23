@@ -14,7 +14,7 @@ class DesktopAgentConnector(BaseConnector):
 
     def deliver(self, payload: dict) -> DeliveryResult:
         # No synchronous transport: the paired agent polls for pending deliveries.
-        return DeliveryResult(status=PENDING, response_body="Queued for desktop agent.")
+        return DeliveryResult(status=PENDING, delivery_state="queued", response_body="Queued for desktop agent.")
 
     def test(self) -> DeliveryResult:
         paired = bool((self.config or {}).get("paired"))

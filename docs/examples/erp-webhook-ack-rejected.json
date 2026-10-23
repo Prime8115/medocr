@@ -1,0 +1,4 @@
+{
+  "status": "rejected",
+  "reason": "Supplier GSTIN does not match the ERP supplier master"
+}

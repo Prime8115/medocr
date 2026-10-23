@@ -41,10 +41,10 @@ def test_connectors_are_shop_scoped(client):
     assert client.get("/v1/connectors/", headers=headers_b).json() == []
 
 
-def test_file_export_test_roundtrip(client):
+def test_file_export_test_roundtrip(client, tmp_path):
     headers = register_and_login(client)
     cid = client.post(
-        "/v1/connectors/", json={"type": "file_export", "name": "Export", "config": {"formats": ["json"]}},
+        "/v1/connectors/", json={"type": "file_export", "name": "Export", "config": {"formats": ["json"], "output_dir": str(tmp_path)}},
         headers=headers,
     ).json()["id"]
     resp = client.post(f"/v1/connectors/{cid}/test", headers=headers)

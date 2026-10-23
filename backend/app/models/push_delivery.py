@@ -11,6 +11,8 @@ class PushDelivery(Base, TimestampMixin):
     document_id = Column(String(40), ForeignKey("documents.id"), nullable=False, index=True)
     connector_id = Column(String(32), ForeignKey("connectors.id"), nullable=False, index=True)
     status = Column(String(32), default="pending", nullable=False)  # pending | success | failed
+    delivery_state = Column(String(32), nullable=True)  # queued | received | file_written | imported | failed
+    external_reference = Column(String(255), nullable=True)  # voucher ID supplied by the receiving ERP
     request_payload = Column(JSON, nullable=True)
     response_body = Column(Text, nullable=True)
     response_code = Column(Integer, nullable=True)

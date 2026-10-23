@@ -53,6 +53,8 @@ def push_document(db: Session, document: Document, connector_overrides: Optional
         if existing and existing.status not in (SUCCESS, PENDING):
             # Retry a previously failed delivery in place.
             existing.status = result.status
+            existing.delivery_state = result.delivery_state or ("failed" if result.status == "failed" else None)
+            existing.external_reference = result.external_reference
             existing.response_code = result.response_code
             existing.response_body = result.response_body
             existing.attempts = (existing.attempts or 0) + result.attempts
@@ -63,6 +65,8 @@ def push_document(db: Session, document: Document, connector_overrides: Optional
                 document_id=document.id,
                 connector_id=model.id,
                 status=result.status,
+                delivery_state=result.delivery_state or ("failed" if result.status == "failed" else None),
+                external_reference=result.external_reference,
                 request_payload=payload,
                 response_body=result.response_body,
                 response_code=result.response_code,
@@ -79,5 +83,5 @@ def push_document(db: Session, document: Document, connector_overrides: Optional
 
 
 def all_ok(deliveries: List[PushDelivery]) -> bool:
-    """True if every delivery succeeded or is queued (pending)."""
-    return bool(deliveries) and all(d.status in (SUCCESS, PENDING) for d in deliveries)
+    """True only when every connector has confirmed delivery, not merely queued it."""
+    return bool(deliveries) and all(d.status == SUCCESS for d in deliveries)

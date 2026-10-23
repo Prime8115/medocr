@@ -32,6 +32,7 @@ def test_webhook_success_sends_valid_signature():
     result = conn.deliver({"payload_version": "1.0", "document_id": "doc_1"})
 
     assert result.status == SUCCESS
+    assert result.delivery_state == "received"
     assert result.attempts == 1
     # Signature header is present and valid over the exact body sent.
     sig = captured["headers"][SIGNATURE_HEADER]
@@ -79,3 +80,34 @@ def test_webhook_no_url_fails_fast():
     conn = WebhookConnector(config={})
     result = conn.deliver({"payload_version": "1.0"})
     assert result.status == FAILED
+
+
+def test_webhook_import_requires_erp_reference():
+    conn = WebhookConnector(
+        config={"url": "https://example.com/hook"},
+        http_post=lambda *a, **kw: FakeResponse(200, '{"status":"imported","external_reference":"PUR-42"}'),
+        sleep=lambda _s: None,
+    )
+    result = conn.deliver({"payload_version": "1.0"})
+    assert result.status == SUCCESS
+    assert result.delivery_state == "imported"
+    assert result.external_reference == "PUR-42"
+
+    conn.http_post = lambda *a, **kw: FakeResponse(200, '{"status":"imported"}')
+    missing = conn.deliver({"payload_version": "1.0"})
+    assert missing.status == FAILED
+    assert missing.delivery_state == "failed"
+
+
+def test_webhook_rejected_receipt_fails_without_retries():
+    calls = []
+    def reject(*a, **kw):
+        calls.append(1)
+        return FakeResponse(200, '{"status":"rejected","reason":"Unknown supplier"}')
+
+    conn = WebhookConnector(config={"url": "https://example.com/hook"}, http_post=reject,
+                            sleep=lambda _s: None)
+    result = conn.deliver({"payload_version": "1.0"})
+    assert result.status == FAILED
+    assert "Unknown supplier" in result.response_body
+    assert len(calls) == 1

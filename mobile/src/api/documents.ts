@@ -129,7 +129,8 @@ export async function recheckField(id: string, path: string, page?: number): Pro
 }
 
 export interface PushResult extends DocumentDto {
-  deliveries: { id: string; connector_id: string; status: string; response_body?: string }[];
+  deliveries: { id: string; connector_id: string; connector_name?: string; connector_type?: string;
+    status: string; delivery_state?: string; external_reference?: string; response_body?: string }[];
 }
 
 export async function pushDocument(id: string): Promise<PushResult> {

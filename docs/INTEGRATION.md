@@ -161,16 +161,23 @@ def verify(secret: str, raw_body: bytes, header: str) -> bool:
     return hmac.compare_digest(expected, header)
 ```
 
-Respond `2xx` to acknowledge. Non-2xx / timeouts are retried with exponential
-backoff (default 3 attempts). Every attempt is logged and viewable in Settings.
+Respond `2xx` to acknowledge receipt. For confirmed ERP import, return JSON
+`{"status":"imported","external_reference":"<ERP voucher ID>"}`; a plain `2xx`
+or `{"status":"received"}` confirms only transport receipt. A JSON
+`{"status":"rejected","reason":"..."}` on `2xx` records a failed delivery.
+Non-2xx / timeouts are retried with exponential backoff (default 3 attempts).
+The delivery record keeps the attempt count and latest response. See the
+[partner implementation guide and example files](ERP_WEBHOOK_PARTNER_GUIDE.md).
 
 ---
 
 ## Connector 2 — File export (CSV / JSON)
 
-MediScan renders `<document_id>.csv` and/or `<document_id>.json` into a folder you
-choose (or offers them for download in the web admin). CSV is flattened to one row
-per medication / invoice line item. Point your software's import at that folder.
+MediScan renders `<document_id>.csv` and/or `<document_id>.json` into a folder
+accessible to the **MediScan server**. Without that configured output folder,
+delivery fails rather than reporting success. CSV is flattened to one row per
+medication / invoice line item. For a folder on a shop PC, use the desktop agent.
+The TallyPrime pilot has its own manual XML download on the invoice review page.
 
 ---
 
@@ -178,7 +185,9 @@ per medication / invoice line item. Point your software's import at that folder.
 
 For software with no API and no shared folder reachable from the cloud. A small
 Windows companion app pairs once with a one-time code, then pulls approved
-documents and writes CSV/JSON locally. See `desktop-agent/README.md`.
+documents and writes CSV/JSON locally. A queued job remains approved until
+the agent confirms the file write. That acknowledgement does not prove the ERP
+imported it. See `desktop-agent/README.md`.
 
 ---
 

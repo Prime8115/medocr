@@ -1,0 +1,29 @@
+{
+  "payload_version": "1.0",
+  "event": "document.approved",
+  "document_id": "doc_example002",
+  "shop_id": "shop_example001",
+  "doc_type": "prescription",
+  "overall_confidence": 0.93,
+  "schema_version": "1.0",
+  "data": {
+    "patient": {
+      "name": { "value": "Example Patient", "confidence": 0.97 }
+    },
+    "prescriber": {
+      "name": { "value": "Dr Example", "confidence": 0.96 },
+      "registration_no": { "value": "EXAMPLE-123", "confidence": 0.91 }
+    },
+    "medications": [
+      {
+        "name": { "value": "Example Tablet 500 mg", "confidence": 0.96 },
+        "strength": { "value": "500 mg", "confidence": 0.94 },
+        "form": { "value": "tablet", "confidence": 0.94 },
+        "frequency": { "value": "1-0-1", "confidence": 0.91 },
+        "duration": { "value": "5 days", "confidence": 0.90 },
+        "instructions": { "value": "After food", "confidence": 0.88 }
+      }
+    ]
+  },
+  "meta": { "warnings": [] }
+}

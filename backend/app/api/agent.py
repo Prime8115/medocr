@@ -8,6 +8,7 @@ from app.core.security import create_agent_token, decode_access_token
 from app.database import get_db
 from app.models.connector import Connector
 from app.models.push_delivery import PushDelivery
+from app.models.document import Document
 from app.schemas.connector import AgentDelivery, AgentPairRequest, AgentToken
 from app.services.connectors.base import SUCCESS
 
@@ -71,10 +72,21 @@ def poll_deliveries(connector: Connector = Depends(get_agent_connector), db: Ses
 def ack_delivery(
     delivery_id: str, connector: Connector = Depends(get_agent_connector), db: Session = Depends(get_db)
 ):
-    """Agent confirms it wrote the data into the local software."""
+    """Agent confirms a local file write; this does not prove ERP import."""
     delivery = db.get(PushDelivery, delivery_id)
     if not delivery or delivery.connector_id != connector.id:
         raise HTTPException(status_code=404, detail="Delivery not found")
     delivery.status = SUCCESS
+    delivery.delivery_state = "file_written"
+    db.flush()  # sessions disable autoflush; the all-delivered query must see this ack
+    doc = db.get(Document, delivery.document_id)
+    if doc and doc.status == "approved":
+        enabled = db.query(Connector).filter(Connector.shop_id == doc.shop_id, Connector.enabled.is_(True)).all()
+        if enabled and all(
+            db.query(PushDelivery).filter(
+                PushDelivery.idempotency_key == f"{doc.id}:{target.id}", PushDelivery.status == SUCCESS
+            ).first() is not None for target in enabled
+        ):
+            doc.status = "pushed"
     db.commit()
     return {"status": "ok", "delivery_id": delivery_id}

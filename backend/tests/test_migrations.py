@@ -53,3 +53,21 @@ def test_layout_upgrade_preserves_legacy_lessons_without_applying_them(tmp_path)
         )).one()
         assert row == ("", 0, 3)
     engine.dispose()
+
+
+def test_delivery_upgrade_reclassifies_old_generated_only_exports(tmp_path):
+    from sqlalchemy import text
+
+    cfg = _alembic_config(f"sqlite:///{tmp_path / 'delivery.db'}")
+    command.upgrade(cfg, "e4f1c7a9b2d6")
+    engine = create_engine(cfg.get_main_option("sqlalchemy.url"))
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO shops (id, name, created_at, updated_at) VALUES ('s', 'Shop', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+        connection.execute(text("INSERT INTO documents (id, shop_id, doc_type, status, created_at, updated_at) VALUES ('d', 's', 'invoice', 'pushed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+        connection.execute(text("INSERT INTO connectors (id, shop_id, type, name, config, enabled, created_at, updated_at) VALUES ('c', 's', 'file_export', 'Old export', '{}', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+        connection.execute(text("INSERT INTO push_deliveries (id, document_id, connector_id, status, attempts, created_at, updated_at) VALUES ('p', 'd', 'c', 'success', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+    command.upgrade(cfg, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT status, delivery_state FROM push_deliveries WHERE id='p'")).one() == ("failed", "failed")
+        assert connection.execute(text("SELECT status FROM documents WHERE id='d'")).scalar_one() == "approved"
+    engine.dispose()

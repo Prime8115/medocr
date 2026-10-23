@@ -33,7 +33,7 @@ def test_enrich_attaches_sku_to_matched_items():
     assert "inventory_match" not in li[1]  # unmatched item not linked
 
 
-def test_approve_links_inventory_and_push_carries_sku(client, mock_ocr, db_session):
+def test_approve_links_inventory_and_push_carries_sku(client, mock_ocr, db_session, tmp_path):
     from app.models.connector import Connector
     from app.models.inventory import InventoryItem
     from app.services.inventory.matching import normalize
@@ -46,7 +46,7 @@ def test_approve_links_inventory_and_push_carries_sku(client, mock_ocr, db_sessi
     try:
         s.add(InventoryItem(shop_id=shop_id, name="Paracetamol 500mg (MOCK)",
                             normalized_name=normalize("Paracetamol 500mg (MOCK)"), sku="PCM-500", stock_qty=100))
-        s.add(Connector(shop_id=shop_id, type="file_export", name="exp", config={"format": "json"}, enabled=True))
+        s.add(Connector(shop_id=shop_id, type="file_export", name="exp", config={"format": "json", "output_dir": str(tmp_path)}, enabled=True))
         s.commit()
     finally:
         s.close()

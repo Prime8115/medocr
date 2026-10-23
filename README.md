@@ -33,7 +33,7 @@ it never fabricates medical data.
 ## Quick links
 - **Product spec:** [docs/PRD.md](docs/PRD.md)
 - **Build plan:** [docs/SDLC_PLAN.md](docs/SDLC_PLAN.md)
-- **Integrate your software:** [docs/INTEGRATION.md](docs/INTEGRATION.md)
+- **Integrate your software:** [ERP endpoint guide and example JSON](docs/ERP_WEBHOOK_PARTNER_GUIDE.md) · [full integration contract](docs/INTEGRATION.md)
 - **Deploy to the cloud:** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - **Staff guide:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 - **Backend setup:** [backend/README.md](backend/README.md)

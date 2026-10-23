@@ -48,7 +48,7 @@ def test_autodetect_invoice(client, mock_ocr):
     assert doc["doc_type"] == "invoice"
 
 
-def test_patch_corrections_then_approve_and_push(client, mock_ocr, db_session):
+def test_patch_corrections_then_approve_and_push(client, mock_ocr, db_session, tmp_path):
     headers = register_and_login(client)
     doc_id = _submit(client, headers).json()["document_id"]
 
@@ -74,11 +74,11 @@ def test_patch_corrections_then_approve_and_push(client, mock_ocr, db_session):
     # Push with no connector -> 400.
     assert client.post(f"/v1/documents/{doc_id}/push", headers=headers).status_code == 400
 
-    # Add a file-export connector (delivers without network), then push -> pushed.
+    # Add a file-export connector writing to a real destination, then push.
     shop_id = _shop_id(client, headers)
     s = db_session()
     try:
-        s.add(Connector(shop_id=shop_id, type="file_export", name="Test", config={"formats": ["json"]}, enabled=True))
+        s.add(Connector(shop_id=shop_id, type="file_export", name="Test", config={"formats": ["json"], "output_dir": str(tmp_path)}, enabled=True))
         s.commit()
     finally:
         s.close()

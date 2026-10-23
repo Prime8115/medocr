@@ -122,7 +122,7 @@ def poll_once(cfg: dict) -> int:
             ack.raise_for_status()
             handled += 1
             print(f"Delivered {delivery['document_id']} -> {cfg['output_dir']}")
-        except requests.RequestException as exc:
+        except (requests.RequestException, OSError) as exc:
             print(f"Failed to process {delivery.get('id')}: {exc}", file=sys.stderr)
     return handled
 

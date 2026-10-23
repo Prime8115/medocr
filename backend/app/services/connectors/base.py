@@ -12,6 +12,8 @@ PENDING = "pending"  # accepted into a queue (desktop agent) but not yet confirm
 @dataclass
 class DeliveryResult:
     status: str
+    delivery_state: Optional[str] = None
+    external_reference: Optional[str] = None
     response_code: Optional[int] = None
     response_body: Optional[str] = None
     attempts: int = 1
