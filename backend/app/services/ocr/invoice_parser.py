@@ -2696,6 +2696,25 @@ def _labelled_totals(invoice_meta: dict, text: str) -> None:
 _SUMMARY_FIGURE = re.compile(r"^₹?-?[\d,]*\d\.\d{2}%?$")
 
 
+def _summary_column(head: str) -> Optional[str]:
+    """Normalise a printed GST-summary heading without losing its column."""
+    name = _norm(head).replace("csgt", "cgst")  # Hindustan prints CSGT%.
+    for tax in ("cgst", "sgst", "igst", "utgst"):
+        if tax in name:
+            return f"{tax}_{'percent' if '%' in name or 'rate' in name else 'amount'}"
+    if "taxable" in name:
+        return "taxable_amount"
+    if "disc" in name:
+        return "discount_amount"
+    if name.startswith("sch"):
+        return "scheme_amount"
+    if "total" in name:
+        return "total_amount"
+    if name in ("amount", "amt", "value"):
+        return "amount"
+    return None
+
+
 def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
     """The bill's totals from its GST slab summary: a heading line naming the
     taxable value and the tax heads, then one row of figures per slab.
@@ -2725,17 +2744,22 @@ def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
         heads = line.split()[-width:] if width else []
         if not rows or len(heads) != width:
             continue
+        columns = [_summary_column(head) for head in heads]
+        printed_rows = []
+        for row in rows:
+            cells = {key: f"{float(token.lstrip('₹').replace(',', '').rstrip('%')):.2f}"
+                     for key, token in zip(columns, row) if key}
+            if any(float(cells.get(key, 0)) > 0 for key in
+                   ("amount", "taxable_amount", "cgst_amount", "sgst_amount",
+                    "igst_amount", "utgst_amount")):
+                printed_rows.append(cells)
         sums: Dict[str, float] = {}
-        for i, head in enumerate(heads):
-            h = _norm(head)
-            if "%" in head:
-                continue
-            key = ("total_discount_amount" if "disc" in h or h.startswith("sch") else
-                   "total_taxable_amount" if "taxable" in h else
-                   next((f"total_{t}_amount" for t in ("cgst", "sgst", "igst", "utgst") if t in h), None) or
-                   ("bill_total" if "total" in h else
-                    # The plain "Amount" column: the lines' own value, by slab.
-                    "lines_amount" if h in ("amount", "amt", "value") else None))
+        for i, column in enumerate(columns):
+            key = ("total_discount_amount" if column in ("discount_amount", "scheme_amount") else
+                   "total_taxable_amount" if column == "taxable_amount" else
+                   f"total_{column}" if column in ("cgst_amount", "sgst_amount", "igst_amount", "utgst_amount") else
+                   "bill_total" if column == "total_amount" else
+                   "lines_amount" if column == "amount" else None)
             if key:
                 sums[key] = sums.get(key, 0.0) + sum(
                     float(r[i].lstrip("₹").replace(",", "").rstrip("%")) for r in rows)
@@ -2751,7 +2775,8 @@ def _slab_summary_table(invoice_meta: dict, text: str) -> Optional[dict]:
                 invoice_meta[key] = _f(f"{value:.2f}")
         # What the table itself says, for the reconciliation: its Amount column
         # is the bill's own sum of its lines (invoice_checks.reconcile_invoice).
-        return {k: round(v, 2) for k, v in {**sums, "tax": tax}.items()}
+        return {**{k: round(v, 2) for k, v in {**sums, "tax": tax}.items()},
+                "rows": printed_rows}
     return None
 
 

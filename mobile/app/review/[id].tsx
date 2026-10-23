@@ -29,6 +29,8 @@ import { Badge, Button, Card, CenterState, Field, Screen, SectionTitle } from '@
 import { colors, font, radius, spacing } from '@/src/theme/tokens';
 import { addLineItem, buildSections, documentTitle, extraColumns, getLeaf, removeLineItem, setLeafValue, ExtractionPayload, FieldSpec, Fields, Leaf, Section } from '@/src/lib/payload';
 import InvoiceTable, { TableRow } from '@/src/components/InvoiceTable';
+import GstSlabSummary from '@/src/components/GstSlabSummary';
+import { gstSlabRows } from '@/src/lib/gstSlabs';
 import RecheckField from '@/src/components/RecheckField';
 import SourcePages from '@/src/components/SourcePages';
 import { formatMoney } from '@/src/lib/table';
@@ -392,9 +394,11 @@ export default function ReviewScreen() {
         total_in_words_disagrees?: boolean;
         needs_manual_entry?: boolean;
         raw_text?: string | null;
+        slab_summary?: unknown;
       }
     | undefined;
   const warnings = meta?.warnings ?? [];
+  const slabRows = gstSlabRows(meta?.slab_summary);
   const verdict = verdictOf(verificationOf(payload));
   const choices = choicesOf(payload);
   const pendingChoiceCount = choices.filter((choice) => choice.chosen == null).length;
@@ -443,6 +447,8 @@ export default function ReviewScreen() {
     index: i,
     attention: needsAttention(section, i),
   }));
+  const slabFooter = isInvoice && slabRows.length > 0
+    ? <GstSlabSummary rows={slabRows} /> : undefined;
 
   // Header sections (patient/supplier) + line-item title — scroll with the list.
   const listHeader = (
@@ -626,6 +632,7 @@ export default function ReviewScreen() {
         <InvoiceTable
           fields={fields}
           rows={tableRows}
+          listFooter={slabFooter}
           onSelect={setEditIndex}
           emptyText={itemSections.length > 0 ? `No items match “${search}”.` : undefined}
         />
@@ -634,6 +641,7 @@ export default function ReviewScreen() {
           data={filtered}
           keyExtractor={({ section }) => section.title}
           ListHeaderComponent={listHeader}
+          ListFooterComponent={slabFooter}
           contentContainerStyle={styles.content}
           initialNumToRender={14}
           windowSize={11}
