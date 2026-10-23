@@ -93,12 +93,14 @@ export default function InvoiceTable({
   rows,
   onSelect,
   listHeader,
+  listFooter,
   emptyText,
 }: {
   fields: Fields;
   rows: TableRow[];
   onSelect: (index: number) => void;
   listHeader?: React.ReactElement;
+  listFooter?: React.ReactElement;
   emptyText?: string;
 }) {
   const columns = invoiceColumns(fields);
@@ -120,6 +122,7 @@ export default function InvoiceTable({
           windowSize={11}
           removeClippedSubviews
           keyboardShouldPersistTaps="handled"
+          ListFooterComponent={listFooter}
           ListEmptyComponent={emptyText ? <Text style={styles.empty}>{emptyText}</Text> : null}
           renderItem={({ item: row }) => (
             <Row row={row} columns={columns} width={width} onPress={() => onSelect(row.index)} />

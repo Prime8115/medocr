@@ -281,6 +281,9 @@ class ExtractionMeta(BaseModel):
     # How the lines reach the printed total when they do, e.g.
     # "lines - bill discount + bill tax" - so a reviewer can see why it matched.
     total_reconciled_by: Optional[str] = None
+    # Printed GST slab rows, retained alongside their summed totals so the
+    # reviewer can inspect each division of a supplier's footer table.
+    slab_summary: Optional[dict] = None
     # The total the bill spells out in words, which on an Indian tax invoice is
     # the controlling figure. Shown beside the total so the reviewer can see
     # both: Abbott's figures build to 144,144.00 while its words say 144,068.00.

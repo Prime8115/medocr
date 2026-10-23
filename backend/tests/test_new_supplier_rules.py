@@ -627,9 +627,18 @@ def test_the_slab_summary_table_gives_the_bills_discount_taxable_and_tax():
             "ForHINDUSTAN ₹6,785.10 ₹0.00 ₹203.55 ₹6,581.55 9.00% ₹592.34 9.00% ₹592.34 ₹7,766.23\n"
             "AuthorisedSignatory\n")
     invoice: dict = {}
-    _slab_summary_table(invoice, text)
+    summary = _slab_summary_table(invoice, text)
     assert (_v(invoice, "total_taxable_amount"), _v(invoice, "total_discount_amount"),
             _v(invoice, "total_cgst_amount")) == ("11588.79", "358.41", "892.77")
+    assert summary is not None
+    assert summary["rows"] == [
+        {"amount": "5162.10", "scheme_amount": "0.00", "discount_amount": "154.86",
+         "taxable_amount": "5007.24", "cgst_percent": "6.00", "cgst_amount": "300.43",
+         "sgst_percent": "6.00", "sgst_amount": "300.43", "total_amount": "5608.11"},
+        {"amount": "6785.10", "scheme_amount": "0.00", "discount_amount": "203.55",
+         "taxable_amount": "6581.55", "cgst_percent": "9.00", "cgst_amount": "592.34",
+         "sgst_percent": "9.00", "sgst_amount": "592.34", "total_amount": "7766.23"},
+    ]
 
 
 def test_bill_wide_discount_reconciles_hindustan_line_gst_and_net():
