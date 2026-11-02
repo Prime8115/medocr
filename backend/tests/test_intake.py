@@ -342,7 +342,8 @@ def test_fresh_reading_of_same_invoice_replays_saved_address_edit(client, mock_o
     assert "bill_to.address" in saved["payload"]["meta"]["exact_file_corrections"]
 
 
-def test_fresh_reading_replays_a_saved_line_item_name(client, mock_ocr):
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_fresh_reading_replays_a_saved_line_item_name(client, mock_ocr, db_session, legacy_snapshot):
     """Use & save changes the name, so the edited name cannot identify its old OCR row."""
     headers = register_and_login(client)
     data = sample_image("INVOICE")
@@ -351,6 +352,19 @@ def test_fresh_reading_replays_a_saved_line_item_name(client, mock_ocr):
     fields = client.get(first_url, headers=headers).json()["payload"]["fields"]
     fields["line_items"][0]["description"] = {"value": "Paracetamol 500mg", "confidence": 1}
     assert client.patch(first_url, headers=headers, json={"fields": fields}).status_code == 200
+    if legacy_snapshot:
+        from copy import deepcopy
+        from app.models.document import Document
+
+        db = db_session()
+        try:
+            saved_doc = db.get(Document, first["document_id"])
+            old_payload = deepcopy(saved_doc.payload)
+            old_payload["meta"]["original_fields"] = None
+            saved_doc.payload = old_payload
+            db.commit()
+        finally:
+            db.close()
 
     fresh = _upload(client, headers, data, "bill.png", "image/png",
                     doc_type="invoice", allow_duplicate="true").json()
