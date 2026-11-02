@@ -3,18 +3,19 @@ import { recheckField, type RecheckResult } from '../api/documents';
 
 /**
  * "Recheck" under a field the reviewer doubts: the AI is asked again about
- * this one value and says what the bill prints for it. Nothing changes until
- * the reviewer uses the value and saves - then it is recorded as a correction,
+ * this one value and says what the bill prints for it. Accepting the value
+ * saves it immediately, recording it as a correction,
  * so this supplier's next bill is read right.
  */
 export default function RecheckField({ docId, path, onUse, revision, page }: {
   docId: string;
   path: string;
-  onUse: (value: string) => void;
+  onUse: (value: string) => Promise<boolean>;
   revision?: unknown;
   page?: number;
 }) {
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<RecheckResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const request = useRef(0);
@@ -23,6 +24,7 @@ export default function RecheckField({ docId, path, onUse, revision, page }: {
     setResult(null);
     setError(null);
     setBusy(false);
+    setSaving(false);
     return () => { request.current += 1; };
   }, [docId, path, revision, page]);
 
@@ -42,6 +44,21 @@ export default function RecheckField({ docId, path, onUse, revision, page }: {
     }
   }
 
+  async function useFound() {
+    if (!result?.found) return;
+    const token = request.current;
+    setSaving(true);
+    setError(null);
+    try {
+      if (await onUse(result.found) && token === request.current) setResult(null);
+      else if (token === request.current) setError('Could not save this value. Please try again.');
+    } catch {
+      if (token === request.current) setError('Could not save this value. Please try again.');
+    } finally {
+      if (token === request.current) setSaving(false);
+    }
+  }
+
   const offer = result && result.found && !result.agrees && result.on_page !== false;
   return (
     <div style={{ fontSize: 12, marginTop: 4 }}>
@@ -58,9 +75,9 @@ export default function RecheckField({ docId, path, onUse, revision, page }: {
           {result.printed_text && <div className="text-muted" style={{ marginTop: 2 }}>AI-reported context: “{result.printed_text}”</div>}
           <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
             {offer && (
-              <button type="button" className="btn-secondary" style={{ padding: '2px 10px', fontSize: 12 }}
-                onClick={() => { onUse(result.found as string); setResult(null); }}>
-                Use this
+              <button type="button" className="btn-secondary" disabled={saving}
+                style={{ padding: '2px 10px', fontSize: 12 }} onClick={useFound}>
+                {saving ? 'Saving…' : 'Use & save'}
               </button>
             )}
             <button type="button" onClick={() => setResult(null)}

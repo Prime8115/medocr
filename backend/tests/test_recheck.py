@@ -1,5 +1,7 @@
 """Recheck one field: the AI is asked about one value, and its answer is
 checked against the bill before it is offered (services/recheck.py)."""
+import copy
+
 import pytest
 
 from app.services import recheck
@@ -33,6 +35,17 @@ def test_the_question_names_the_field_and_points_out_the_line():
     assert "the invoice number" in prompt and current == "NE-0001"
     prompt, _, _ = recheck.question(fields, "invoice.po_no")
     assert "Customer PO" in prompt     # how suppliers print it
+
+
+@pytest.mark.parametrize("index", (1, 2, 3))
+def test_supplier_drug_licence_dates_can_be_rechecked(index):
+    fields = _fields()
+    fields["supplier"][f"dl_no_{index}"] = {"value": f"DL-{index}"}
+    prompt, _, kind = recheck.question(fields, f"supplier.dl_date_{index}")
+    assert f"{('first', 'second', 'third')[index - 1]} drug licence" in prompt
+    assert f"drug licence 'DL-{index}'" in prompt
+    assert "not a bill-to, ship-to or invoice date" in prompt
+    assert kind == "date"
 
 
 @pytest.mark.parametrize("path", ["invoice.nonsense", "line_items[9].ptr", "line_items[0].bogus",
@@ -120,6 +133,62 @@ def test_the_api_answers_without_changing_the_bill(client, db_session, monkeypat
 
     r = client.post(f"/v1/documents/{doc_id}/recheck", json={"path": "invoice.bogus"}, headers=headers)
     assert r.status_code == 422
+
+
+def test_header_recheck_values_survive_patch_and_reload(client, db_session):
+    from app.models.document import Document
+    from app.models.document_correction import DocumentCorrection
+    from app.services.corrections import keep_original
+
+    headers = register_and_login(client, email="header-save@example.com", shop="Header Save Shop")
+    shop_id = client.get("/v1/auth/me", headers=headers).json()["shop_id"]
+    original = keep_original(_read(_bill(1)))
+    s = db_session()
+    try:
+        doc = Document(shop_id=shop_id, doc_type="invoice", status="needs_review", payload=original)
+        s.add(doc)
+        s.commit()
+        doc_id = doc.id
+    finally:
+        s.close()
+
+    corrected = copy.deepcopy(original["fields"])
+    expected = {
+        "supplier.gstin": "27AAECD7847H1ZC",
+        "supplier.dl_no_1": "20B-124567-111",
+        "supplier.dl_date_1": "21/02/2025",
+        "supplier.dl_no_2": "21B-124567-112",
+        "supplier.dl_date_2": "21/02/2025",
+        "supplier.dl_no_3": "20B-124567-113",
+        "supplier.dl_date_3": "21/02/2025",
+        "supplier.address": "2nd floor, Soham Square, Ahmedabad",
+        "bill_to.gstin": "29ATMPA5693E1ZF",
+        "bill_to.address": "Unit 505, Bengaluru",
+        "ship_to.name": "NATIONAL COLL MANAGEMENT AGENCY",
+        "ship_to.gstin": "29ATMPA5693E1ZF",
+        "ship_to.address": "Unit 509, Bengaluru",
+        "invoice.lr_no": "LR-2035873",
+        "invoice.transport": "BHAVESH TRANSPORT SERVICES",
+    }
+    for path, value in expected.items():
+        section, key = path.split(".")
+        corrected[section][key] = {"value": value, "confidence": 1.0}
+
+    response = client.patch(f"/v1/documents/{doc_id}", json={"fields": corrected}, headers=headers)
+    assert response.status_code == 200, response.text
+    reloaded = client.get(f"/v1/documents/{doc_id}", headers=headers)
+    assert reloaded.status_code == 200
+    for path, value in expected.items():
+        section, key = path.split(".")
+        assert response.json()["payload"]["fields"][section][key]["value"] == value
+        assert reloaded.json()["payload"]["fields"][section][key]["value"] == value
+
+    s = db_session()
+    try:
+        changes = {row.field for row in s.query(DocumentCorrection).filter_by(document_id=doc_id).all()}
+        assert set(expected) <= changes
+    finally:
+        s.close()
 
 
 def test_another_shops_bill_cannot_be_rechecked(client, db_session):

@@ -30,8 +30,11 @@ _MEANING = {
     "supplier.address": "the supplier's address",
     "supplier.email": "the supplier's e-mail address",
     "supplier.dl_no_1": "the supplier's first drug licence number",
+    "supplier.dl_date_1": "the date printed with the supplier's first drug licence number",
     "supplier.dl_no_2": "the supplier's second drug licence number",
+    "supplier.dl_date_2": "the date printed with the supplier's second drug licence number",
     "supplier.dl_no_3": "the supplier's third drug licence number",
+    "supplier.dl_date_3": "the date printed with the supplier's third drug licence number",
     "bill_to.name": "the buyer's (bill-to party's) name",
     "bill_to.gstin": "the buyer's (bill-to) GSTIN",
     "bill_to.pan": "the buyer's (bill-to) PAN",
@@ -157,6 +160,11 @@ def question(fields: dict, path: str, doc_type: str = "invoice") -> Tuple[str, s
             raise RecheckError("This field cannot be rechecked.")
         current = _leaf(fields.get(section) or {}, key)
         where, words, kind = "", _wordings(section, key), _kind(key)
+        if section == "supplier" and key.startswith("dl_date_"):
+            licence = _leaf(fields.get("supplier") or {}, key.replace("dl_date_", "dl_no_"))
+            where = "Use the supplier's licence date, not a bill-to, ship-to or invoice date.\n"
+            if licence:
+                where += f"It belongs to drug licence {licence!r}; do not use another licence's date.\n"
     else:
         items = fields.get("line_items") or []
         i = int(index)
