@@ -183,6 +183,40 @@ def test_copy_groups_single_copy_is_one_group():
     assert ip._copy_groups(["original", None]) == [[0, 1]]
 
 
+def test_ai_fallback_reads_each_printed_copy_once_but_keeps_distinct_pages():
+    first = "Invoice INV-1\nORIGINAL FOR RECIPIENT\nPERACETAMOL 28 12375.00\nTotal 602989.00"
+    duplicate = first.replace("ORIGINAL FOR RECIPIENT", "DUPLICATE FOR TRANSPORTER")
+    triplicate = first.replace("ORIGINAL FOR RECIPIENT", "TRIPLICATE FOR SUPPLIER")
+    extra = first.replace("ORIGINAL FOR RECIPIENT", "EXTRA COPY")
+    continuation = "Invoice INV-1\nPage 2\nAMOXICILLIN 12 386.10\nTotal 602989.00"
+    another_invoice = first.replace("INV-1", "INV-2")
+    changed_amount = first.replace("12375.00", "12376.00")
+
+    assert ip.unique_invoice_copy_pages([
+        first, duplicate, triplicate, extra, continuation, another_invoice, changed_amount,
+    ]) == [first, continuation, another_invoice, changed_amount]
+
+
+def test_crowded_qty_and_price_headings_use_line_arithmetic_without_guessing():
+    headings = [
+        "Sr.", "Company", "Product Description", "Pack", "HSN", "MRP", "Batch No.", "Exp",
+        "Packing No Qty Qty Disc.", "P.T.R. BOX Net Rate", "GST %", "Taxable Amt. Amount",
+    ]
+    row = [
+        "4", "MAKER", "PRODUCT 18", "1X18 STRIP", "21069099", "135.00", "PK18", "03-26",
+        "12345 1234F", "28.00 1234.45 27.72", "0", "342203.40 342203.40",
+    ]
+    item = ip._build_item(row, ip._map_columns(headings), headings, [])
+    assert item["quantity"]["value"] == "12345"
+    assert item["rate"]["value"] == "27.72"
+    assert item["pack"]["value"] == "1X18 STRIP"
+
+    # A similar-looking number without matching amount is left for review.
+    row[-1] = "342204.40 342204.40"
+    uncertain = ip._build_item(row, ip._map_columns(headings), headings, [])
+    assert not (uncertain.get("quantity") or {}).get("value")
+
+
 def test_copy_label_reads_the_marker():
     assert ip._copy_label("TAX INVOICE\nDuplicate for Transporter") == "duplicate"
     assert ip._copy_label("TAX INVOICE\nTriplicate for Supplier") == "triplicate"

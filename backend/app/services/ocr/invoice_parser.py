@@ -360,11 +360,38 @@ def _copy_label(text: str) -> Optional[str]:
 
 
 _COPY_WORDS = re.compile(r"\b(original|duplicate|triplicate|quadruplicate)\b", re.I)
+_COPY_CAPTIONS = re.compile(
+    r"\b(?:original\s+for\s+recipient|duplicate\s+for\s+transporter|"
+    r"triplicate\s+for\s+supplier|quadruplicate\s+for\s+office|extra\s+copy)\b",
+    re.I,
+)
 
 
 def _page_signature(text: str) -> str:
     """A page's content with the copy wording removed, for comparing copies."""
-    return re.sub(r"\s+", " ", _COPY_WORDS.sub("", text or "")).strip()
+    without_caption = _COPY_CAPTIONS.sub("", text or "")
+    return re.sub(r"\s+", " ", _COPY_WORDS.sub("", without_caption)).strip()
+
+
+def unique_invoice_copy_pages(texts: List[str]) -> List[str]:
+    """Keep the first occurrence of each identical printed invoice page.
+
+    A digital PDF can contain Original/Duplicate/Triplicate/Extra Copy pages.
+    If the table parser falls back to AI, sending every copy makes row counts
+    depend on how the model groups the repeated pages. Compare the *entire*
+    extracted page after removing copy captions, so a continuation page or
+    another invoice with even one different amount or item remains available.
+    """
+    seen: set[str] = set()
+    unique: List[str] = []
+    for text in texts:
+        signature = _page_signature(text)
+        if signature and signature in seen:
+            continue
+        if signature:
+            seen.add(signature)
+        unique.append(text)
+    return unique
 
 
 def _detect_copies(pdf, max_copies: int = 4) -> int:
@@ -1472,6 +1499,35 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 item[field] = _f(raw, confidence=0.3)
             else:
                 item[field] = _f(_num(_unwrapped_number(cell(field))))
+    # A crowded printed heading can join "Packing No Qty Qty Disc." into one
+    # column and "P.T.R. BOX Net Rate" into another. The heading mapper may
+    # treat the quantity cell as pack and leave quantity blank. Recover only
+    # when one printed quantity * one printed rate equals this row's amount;
+    # a guess based on column position alone could turn packing numbers into
+    # billed quantities on a different supplier's invoice.
+    if not (item.get("quantity") or {}).get("value") and (item.get("amount") or {}).get("value"):
+        amount_value = float(item["amount"]["value"])
+        numeric_tokens = re.compile(r"(?<![A-Za-z0-9])\d[\d,]*(?:\.\d+)?(?![A-Za-z0-9])")
+        qty_candidates = [float(token.replace(",", ""))
+                          for idx, heading in enumerate(header_row) if idx < len(row) and "qty" in _norm(heading)
+                          for token in numeric_tokens.findall(str(row[idx] or ""))]
+        rate_candidates = [float(token.replace(",", ""))
+                           for idx, heading in enumerate(header_row) if idx < len(row)
+                           and re.search(r"\brate\b|\bptr\b|p\.?\s*t\.?\s*r", _norm(heading))
+                           for token in numeric_tokens.findall(str(row[idx] or ""))]
+        matches = {(qty, rate) for qty in qty_candidates for rate in rate_candidates
+                   if qty > 0 and rate > 0 and abs(qty * rate - amount_value) <= 0.03}
+        if len(matches) == 1:
+            qty, rate = matches.pop()
+            item["quantity"] = _f(f"{qty:g}", confidence=0.9)
+            if not (item.get("rate") or {}).get("value"):
+                item["rate"] = _f(f"{rate:.2f}", confidence=0.9)
+    pack_at = cols.get("pack")
+    if pack_at is not None and "qty" in _norm(header_row[pack_at]):
+        for idx, heading in enumerate(header_row):
+            if idx < len(row) and _norm(heading) == "pack" and _clean(row[idx]):
+                item["pack"] = _f(_clean(row[idx]))
+                break
     # The unit printed beside the quantity in one cell: "Billed Qty / UoM" over
     # "120" and "ECH" (Piramal), "Qty. / UOM" over "252" and "BOT" (Lupin).
     if cols.get("uom") is None and cols.get("quantity") is not None:

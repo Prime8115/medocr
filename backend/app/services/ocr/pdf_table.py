@@ -750,6 +750,14 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
         the product above. (Alkem's line of prices under a name does carry
         the amount, and is joined to its row further on; a free-supply line
         has its own batch.)"""
+        # Crowded rows may put two figures in one amount cell. The combined
+        # cell fails _is_record_start's single-number test, even though a
+        # serial, description and amount clearly begin a new product row.
+        if (serial_col is not None
+                and re.fullmatch(r"\d{1,4}\.?,?", cells[serial_col].strip())
+                and cells[description_col].strip()
+                and any(re.search(r"\d[\d,.]*", cells[i]) for i in amount_cols)):
+            return True
         if not _is_record_start(cells, numeric_columns):
             return False
         # Its own serial number (Alkem's "54", whose batch sits under HSN), or

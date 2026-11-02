@@ -162,7 +162,7 @@ def _extract_one(provider: OCRProvider, data: bytes, content_type: str, doc_type
     return validate_fields(doc_type, raw)
 
 
-def _build_units(file_bytes: bytes, content_type: str):
+def _build_units(file_bytes: bytes, content_type: str, doc_type: str = None):
     """Split the document into work units [(bytes, content_type, n_pages), ...].
 
     Digital PDFs -> compact TEXT units (many pages/call, reliable, rate-friendly).
@@ -175,6 +175,13 @@ def _build_units(file_bytes: bytes, content_type: str):
     total = page_count(file_bytes)
     if is_digital_pdf(file_bytes):
         texts = extract_text_pages(file_bytes)
+        if doc_type == "invoice":
+            from app.services.ocr.invoice_parser import unique_invoice_copy_pages
+
+            unique = unique_invoice_copy_pages(texts)
+            if len(unique) != len(texts):
+                log.info("skipping %d repeated printed invoice pages in AI reading", len(texts) - len(unique))
+            texts = unique
         cs = settings.ocr_text_chunk_pages
         units = []
         for i in range(0, len(texts), cs):
@@ -262,7 +269,7 @@ def _extract_chunked(provider, file_bytes, content_type, doc_type, on_progress=N
     """
     import concurrent.futures as cf
 
-    units, total_pages, _ = _build_units(file_bytes, content_type)
+    units, total_pages, _ = _build_units(file_bytes, content_type, doc_type)
 
     # Fast path: a single unit — run inline and surface errors.
     if len(units) == 1:

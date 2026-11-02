@@ -11,6 +11,29 @@ def _col(*words):
             "label": " ".join(w["text"] for w in words)}
 
 
+def test_numbered_row_survives_when_amount_and_rate_cells_contain_two_figures():
+    """A crowded Soham-style row must not be appended to the prior name."""
+    words = [
+        _w("Sr.", 10, 24, 100), _w("Product", 50, 77, 100),
+        _w("Description", 80, 130, 100), _w("Batch", 170, 195, 100),
+        _w("Qty", 225, 240, 100), _w("Rate", 280, 300, 100),
+        _w("Amount", 350, 382, 100),
+    ]
+    for top, serial, name, batch, qty, rate, amount in [
+        (116, "1", "DRUG-A", "AB123", "10", "24.75", "247.50"),
+        (128, "2", "DRUG-B", "CD456", "12 0", "27.00 26.00", "312.00 312.00"),
+    ]:
+        words.extend([
+            _w(serial, 10, 20, top), _w(name, 50, 105, top),
+            _w(batch, 170, 196, top), _w(qty, 225, 250, top),
+            _w(rate, 280, 328, top), _w(amount, 350, 420, top),
+        ])
+    table = tables_from_words(words)[0]
+    assert len(table) == 3
+    assert "DRUG-A" in " ".join(table[1])
+    assert "DRUG-B" in " ".join(table[2])
+
+
 def test_two_columns_under_one_run_of_headings_are_split():
     """Glowderma: "Mfg.Dt / Exp.Dt" and "Qty / Free Qty" so close their
     headings read as one column; the rows show the empty channel between."""
