@@ -91,7 +91,7 @@ SAMPLE = {
 def test_profile_carries_every_column_the_client_asked_for():
     columns = PROFILES["client_full"]["invoice"]
     headers = [c["header"] for c in columns]
-    for name in CLIENT_HEADER_COLUMNS + CLIENT_LINE_COLUMNS + CLIENT_ADDED_COLUMNS:
+    for name in CLIENT_HEADER_COLUMNS + CLIENT_LINE_COLUMNS:
         assert name in headers, f"{name} is missing from the client profile"
 
 
@@ -99,7 +99,18 @@ def test_column_order_matches_the_specification():
     """Header block first, then the line block, in the order they were given."""
     headers = [c["header"] for c in PROFILES["client_full"]["invoice"]]
     assert headers[:len(CLIENT_HEADER_COLUMNS)] == CLIENT_HEADER_COLUMNS
-    assert headers[len(CLIENT_HEADER_COLUMNS):] == CLIENT_LINE_COLUMNS + CLIENT_ADDED_COLUMNS
+    assert headers[len(CLIENT_HEADER_COLUMNS):] == CLIENT_LINE_COLUMNS
+
+
+def test_dl4_profile_adds_columns_without_changing_the_existing_import():
+    original = [c["header"] for c in PROFILES["client_full"]["invoice"]]
+    extended = [c["header"] for c in PROFILES["client_full_dl4"]["invoice"]]
+    assert extended == original + CLIENT_ADDED_COLUMNS
+    out = render_csv(_payload(SAMPLE), {"profile": "client_full_dl4"})
+    header, first = list(csv.reader(io.StringIO(out)))[:2]
+    row = dict(zip(header, first))
+    assert row["CustomerDLNo4"] == "MH-TZ5-4444"
+    assert row["CustomerDLDate4"] == "01.01.2030"
 
 
 def test_every_column_resolves_to_a_real_value():
@@ -123,8 +134,6 @@ def test_customer_fields_carry_the_supplier_not_the_buyer():
     assert row["CustomerGSTINNO"] == "27AABCA1234B1ZH"
     assert row["CustomerPANNO"] == "AABCA1234B"
     assert row["CustomerDLNo1"] == "MH-TZ5-1111"
-    assert row["CustomerDLNo4"] == "MH-TZ5-4444"
-    assert row["CustomerDLDate4"] == "01.01.2030"
     # ...and the buyer stays on the Bill-to / Ship-to columns.
     assert row["BillToName"] == "SOME CHEMIST"
     assert row["BillToGSTINNO"] == "27AAECD7847H1ZC"

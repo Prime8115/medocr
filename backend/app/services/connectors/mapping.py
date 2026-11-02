@@ -310,10 +310,6 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "MfgName", "field": "manufacturer"},
             {"header": "Pack", "field": "pack"},
             {"header": "SchemeValue", "field": "scheme_value"},
-            # New optional columns stay at the end so existing import offsets
-            # keep their positions.
-            {"header": "CustomerDLNo4", "field": "dl_no_4"},
-            {"header": "CustomerDLDate4", "field": "dl_date_4"},
         ],
     },
     "marg": {  # Marg ERP purchase import (item-wise)
@@ -352,6 +348,15 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "Amount", "field": "amount"},
         ],
     },
+}
+
+# The original client_full CSV is an exact import contract. Shops wanting DL4
+# opt in to a version with two trailing columns; existing imports stay byte-
+# for-byte compatible in shape and order.
+PROFILES["client_full_dl4"] = {
+    "invoice": [*PROFILES["client_full"]["invoice"],
+                {"header": "CustomerDLNo4", "field": "dl_no_4"},
+                {"header": "CustomerDLDate4", "field": "dl_date_4"}],
 }
 
 

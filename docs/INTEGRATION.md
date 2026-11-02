@@ -118,7 +118,8 @@ entered; the pilot does not automate that reconciliation.
 | `generic` | A stable, minimal column set. **Its shape never changes** — safe to import against. |
 | `detailed` | Everything we extract: pack, free qty, MRP, PTR, PTS, rate + rate source, discount, HSN, GST. |
 | `marg` / `vyapar` / `tally` | Matched to those products' import layouts. |
-| `client_full` | 67 columns: 33 invoice-header fields repeated on every row, then 34 line fields, under an integrating client's own names (`CustomerName`, `BillToGSTINNO`, `SCGSTAmount`, ...). In this profile **`Customer*` means the SUPPLIER** - on a purchase import that is the party master your software needs, and the party whose drug licence numbers the invoice prints. Your own details are on `BillTo*` / `ShipTo*`. |
+| `client_full` | 68 columns: 33 original invoice-header fields, `TotalGSTAmount`, then 34 line fields, under an integrating client's own names (`CustomerName`, `BillToGSTINNO`, `SCGSTAmount`, ...). In this profile **`Customer*` means the SUPPLIER** - on a purchase import that is the party master your software needs, and the party whose drug licence numbers the invoice prints. Your own details are on `BillTo*` / `ShipTo*`. |
+| `client_full_dl4` | The same columns and order as `client_full`, followed by `CustomerDLNo4` and `CustomerDLDate4`. Select this profile only after the ERP importer accepts the two extra trailing columns. |
 
 **If your shop receives scheme goods (10+2), use `detailed` or add
 `free_quantity` to a custom `columns` list.** `generic` carries only the billed
