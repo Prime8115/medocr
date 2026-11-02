@@ -342,6 +342,109 @@ def test_fresh_reading_of_same_invoice_replays_saved_address_edit(client, mock_o
     assert "bill_to.address" in saved["payload"]["meta"]["exact_file_corrections"]
 
 
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_fresh_reading_replays_a_saved_line_item_name(client, mock_ocr, db_session, legacy_snapshot):
+    """Use & save changes the name, so the edited name cannot identify its old OCR row."""
+    headers = register_and_login(client)
+    data = sample_image("INVOICE")
+    first = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    first_url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(first_url, headers=headers).json()["payload"]["fields"]
+    fields["line_items"][0]["description"] = {"value": "Paracetamol 500mg", "confidence": 1}
+    assert client.patch(first_url, headers=headers, json={"fields": fields}).status_code == 200
+    if legacy_snapshot:
+        from copy import deepcopy
+        from app.models.document import Document
+
+        db = db_session()
+        try:
+            saved_doc = db.get(Document, first["document_id"])
+            old_payload = deepcopy(saved_doc.payload)
+            old_payload["meta"]["original_fields"] = None
+            saved_doc.payload = old_payload
+            db.commit()
+        finally:
+            db.close()
+
+    fresh = _upload(client, headers, data, "bill.png", "image/png",
+                    doc_type="invoice", allow_duplicate="true").json()
+    saved = client.get(f"/v1/documents/{fresh['document_id']}", headers=headers).json()["payload"]
+    assert saved["fields"]["line_items"][0]["description"]["value"] == "Paracetamol 500mg"
+    assert "line_items[0].description" in saved["meta"]["exact_file_corrections"]
+
+
+def test_edited_name_is_matched_against_the_arrival_snapshot():
+    from types import SimpleNamespace
+    from app.services.exact_replay import _same_line, _source_as_read
+
+    original = {"line_items": [{"description": {"value": "01-11 1 104 MM DARK GREEN"},
+                                "batch_no": {"value": "125"}}]}
+    corrected = {"line_items": [{"description": {"value": "104 MM DARK GREEN"},
+                                 "batch_no": {"value": "125"}}]}
+    source = SimpleNamespace(payload={"fields": corrected, "meta": {"original_fields": original}})
+    assert _same_line(_source_as_read(source), original, 0)
+    assert not _same_line(_source_as_read(source), {"line_items": [
+        {"description": {"value": "ANOTHER PRODUCT"}, "batch_no": {"value": "125"}}]}, 0)
+    from app.services.corrections import keep_original
+    from app.services.exact_replay import _source_as_read
+    legacy = SimpleNamespace(payload={"fields": corrected, "meta": {"original_fields": None}})
+    audit = SimpleNamespace(field="line.description", line=0,
+                            value_read="01-11 1 104 MM DARK GREEN")
+    assert _same_line(_source_as_read(legacy, audit), original, 0)
+    result = {"fields": original, "meta": {"original_fields": None}}
+    assert keep_original(result)["meta"]["original_fields"] == original
+
+
+def test_approved_item_name_reused_for_another_upload_from_supplier(client, mock_ocr):
+    headers = register_and_login(client)
+    first = _upload(client, headers, sample_image("INVOICE"), "one.png", "image/png",
+                    doc_type="invoice").json()
+    first_url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(first_url, headers=headers).json()["payload"]["fields"]
+    fields["line_items"][0]["description"] = {"value": "Paracetamol 500mg", "confidence": 1}
+    patched = client.patch(first_url, headers=headers, json={"fields": fields})
+    assert patched.status_code == 200
+    unapproved = _upload(client, headers, sample_image("INVOICE B"), "draft.png", "image/png",
+                         doc_type="invoice").json()
+    unapproved_payload = client.get(f"/v1/documents/{unapproved['document_id']}",
+                                    headers=headers).json()["payload"]
+    assert unapproved_payload["fields"]["line_items"][0]["description"]["value"] == "Paracetamol 500mg (MOCK)"
+    required = patched.json()["payload"]["meta"]["verification"]["checks"]
+    approved = client.post(first_url + "/approve", headers=headers,
+                           json={"acknowledged": [c["id"] for c in required if c["status"] == "fail"]})
+    assert approved.status_code == 200
+
+    # A different file hash takes the normal OCR path. The approved correction
+    # may teach this supplier's repeated raw product name, but not other data.
+    second = _upload(client, headers, sample_image("INVOICE C"), "two.png", "image/png",
+                     doc_type="invoice").json()
+    payload = client.get(f"/v1/documents/{second['document_id']}", headers=headers).json()["payload"]
+    assert payload["fields"]["line_items"][0]["description"]["value"] == "Paracetamol 500mg"
+    assert "line_items[0].description" in payload["meta"]["supplier_item_names_applied"]
+
+    other_shop = register_and_login(client, email="other@shop.com", shop="Shop B")
+    third = _upload(client, other_shop, sample_image("INVOICE D"), "other.png", "image/png",
+                    doc_type="invoice").json()
+    other_payload = client.get(f"/v1/documents/{third['document_id']}", headers=other_shop).json()["payload"]
+    assert other_payload["fields"]["line_items"][0]["description"]["value"] == "Paracetamol 500mg (MOCK)"
+
+
+def test_supplier_name_match_only_strips_numeric_table_prefix():
+    from app.services.supplier_item_names import _name_matches, _same_product_context, _supplier_matches
+
+    assert _name_matches("01-11 1 104 MM DARK GREEN", "01-11 1 104 MM DARK GREEN", "104 MM DARK GREEN")
+    assert _name_matches("12-25, 26-36 2 104 MM DARK GREEN", "01-11 1 104 MM DARK GREEN", "104 MM DARK GREEN")
+    assert not _name_matches("AMOXICILLIN 104 MM DARK GREEN", "01-11 1 104 MM DARK GREEN", "104 MM DARK GREEN")
+    assert not _same_product_context({"batch_no": {"value": "A"}, "product_code": {"value": "P1"}},
+                                     {"batch_no": {"value": "B"}, "product_code": {"value": "P2"}})
+    assert not _supplier_matches({"supplier": {"name": {"value": "SOHAM PHARMA SUPPLY"}}},
+                                 {"supplier": {"name": {"value": "ANOTHER SUPPLIER"}}})
+    assert not _supplier_matches({"supplier": {"name": {"value": "SOHAM PHARMA SUPPLY"},
+                                                "gstin": {"value": "24AAAAA0000A1Z1"}}},
+                                 {"supplier": {"name": {"value": "SOHAM PHARMA SUPPLY"},
+                                                "gstin": {"value": "27BBBBB0000B1Z1"}}})
+
+
 def test_fresh_reading_combines_edits_saved_on_separate_scans(client, mock_ocr, monkeypatch):
     from app.services import exact_replay
     headers = register_and_login(client)

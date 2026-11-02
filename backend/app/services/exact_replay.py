@@ -63,10 +63,11 @@ def has_unapplied(db: Session, target: Document) -> bool:
     latest = {}
     for correction, source in corrections:
         if _same_invoice(source, target, fields, include_self=True) and _safe_edit(correction.field, correction.value_corrected):
-            latest[(correction.field, correction.line)] = (correction.value_corrected, source)
-    for (path, index), (corrected, source) in latest.items():
+            latest[(correction.field, correction.line)] = (correction, source)
+    for (path, index), (correction, source) in latest.items():
+        corrected = correction.value_corrected
         if path.startswith("line."):
-            if index is not None and index >= 0 and _same_line((source.payload or {}).get("fields") or {}, fields, index):
+            if index is not None and index >= 0 and _same_line(_source_as_read(source, correction), fields, index):
                 leaf = (fields.get("line_items") or [])[index].get(path[5:])
                 current = str((leaf or {}).get("value") or "").strip() if isinstance(leaf, dict) else str(leaf or "").strip()
                 if current != str(corrected or "").strip():
@@ -92,6 +93,30 @@ def _same_line(source_fields: dict, target_fields: dict, index: int) -> bool:
     return True
 
 
+def _source_as_read(source: Document, correction: DocumentCorrection | None = None) -> dict:
+    """Match a correction to the OCR row before the reviewer changed its name.
+
+    Matching against source.payload.fields rejects a corrected description:
+    the fresh scan naturally contains the old OCR name, while the saved source
+    contains the new one. The arrival snapshot preserves the row's original
+    identity without relaxing the same-file, same-invoice and index guards.
+    """
+    payload = source.payload or {}
+    original = (payload.get("meta") or {}).get("original_fields")
+    if isinstance(original, dict) and isinstance(original.get("line_items"), list):
+        return original
+    fields = payload.get("fields") or {}
+    # Older readings have original_fields=null. Their correction audit row
+    # still retains the exact pre-edit value for this line and field.
+    if correction and correction.field.startswith("line.") and correction.line is not None:
+        rows = fields.get("line_items") or []
+        if 0 <= correction.line < len(rows):
+            fields = copy.deepcopy(fields)
+            fields["line_items"][correction.line][correction.field[5:]] = {
+                "value": correction.value_read}
+    return fields
+
+
 def apply(db: Session, target: Document, payload: dict) -> dict:
     if payload.get("doc_type") != "invoice" or not target.content_hash:
         return payload
@@ -114,7 +139,7 @@ def apply(db: Session, target: Document, payload: dict) -> dict:
         if path == "line_items":
             continue
         if path.startswith("line."):
-            if index is None or index < 0 or not _same_line((source.payload or {}).get("fields") or {}, fields, index):
+            if index is None or index < 0 or not _same_line(_source_as_read(source, correction), fields, index):
                 continue
             leaf = (fields.get("line_items") or [])[index]
             key = path[5:]
