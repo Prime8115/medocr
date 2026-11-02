@@ -1299,7 +1299,19 @@ def push_document(document_id: str, db: Session = Depends(get_db), user: User = 
             detail="No automatic connector is configured. Tally purchase XML must be downloaded and imported manually.",
         )
 
-    deliveries = connector_service.push_document(db, doc)
+    try:
+        deliveries = connector_service.push_document(db, doc)
+    except connector_service.DeliveredVersionChanged as exc:
+        db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.push_blocked",
+                        target=doc.id, detail={"reason": "changed_after_delivery",
+                                               "connector_id": exc.connector_id}))
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="This document changed after an earlier delivery was sent or queued. "
+                   "Check the receiving ERP entry before sending a corrected version; "
+                   "automatic amendment is not available yet.",
+        ) from exc
     db.add(AuditLog(shop_id=user.shop_id, actor_id=user.id, action="document.push_attempted", target=doc.id))
 
     if connector_service.all_ok(deliveries):
