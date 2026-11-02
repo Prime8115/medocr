@@ -69,7 +69,7 @@ def keep_original(result: dict) -> dict:
     """Store the reading as it arrived, once - the base every later correction
     is measured against."""
     meta = result.setdefault("meta", {})
-    if "original_fields" not in meta:
+    if not isinstance(meta.get("original_fields"), dict):
         meta["original_fields"] = copy.deepcopy(result.get("fields") or {})
     return result
 

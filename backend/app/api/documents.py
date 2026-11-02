@@ -232,6 +232,9 @@ def _save_result(db: Session, job_id: str, document_id: str, result: dict, cause
             from app.services.exact_replay import apply as replay_exact_file
             result = _improve(db, "exact-file corrections",
                               lambda r: replay_exact_file(db, doc, r), result)
+            from app.services.supplier_item_names import apply as apply_item_names
+            result = _improve(db, "approved supplier item names",
+                              lambda r: apply_item_names(db, doc, r), result)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
