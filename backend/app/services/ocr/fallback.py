@@ -178,7 +178,7 @@ def _invoice_fields(text: str) -> dict:
     # a field the bill does not print stays blank.
     supplier_pan = _standalone_pan(text)
 
-    licences = drug_licences(text)[:3]
+    licences = drug_licences(text)[:4]
     supplier = {
         "gstin": _leaf(supplier_gstin),
         "pan": _leaf(supplier_pan),

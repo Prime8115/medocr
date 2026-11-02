@@ -75,7 +75,7 @@ describe('every required invoice field is always shown', () => {
       'bill_to.name', 'ship_to.name', 'bill_to.gstin', 'ship_to.gstin',
       'invoice.total_gst_amount', 'invoice.total_utgst_amount', 'invoice.lr_date',
       'supplier.dl_no_1', 'supplier.dl_date_1', 'supplier.dl_no_2', 'supplier.dl_date_2',
-      'supplier.dl_no_3', 'supplier.dl_date_3', 'invoice.total_discount_amount',
+      'supplier.dl_no_3', 'supplier.dl_date_3', 'supplier.dl_no_4', 'supplier.dl_date_4', 'invoice.total_discount_amount',
       'bill_to.pan', 'ship_to.pan', 'supplier.email', 'invoice.po_date',
     ]) {
       expect(paths).toContain(path);

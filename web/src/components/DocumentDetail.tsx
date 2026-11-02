@@ -51,6 +51,7 @@ export default function DocumentDetail() {
   useEffect(() => { setRecheckPage(undefined); }, [id]);
   const [fields, setFields] = useState<Fields>({});
   const fieldsRef = useRef<Fields>({});
+  const saveInFlight = useRef(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
@@ -95,23 +96,54 @@ export default function DocumentDetail() {
   }, [id, apply]);
 
   async function save(next?: Fields): Promise<DocumentDto | null> {
+    if (saveInFlight.current) return null;
+    saveInFlight.current = true;
     setBusy('save');
+    const requested = next ?? fieldsRef.current;
     try {
-      const saved = await patchDocument(id, next ?? fieldsRef.current);
-      apply(saved);
+      const saved = await patchDocument(id, requested);
+      let persisted: DocumentDto;
+      try {
+        persisted = await getDocument(id);
+      } catch {
+        apply(saved);
+        setToast({ text: 'Saved, but could not verify. Reopen this invoice to confirm.', ok: false });
+        return saved;
+      }
+      const previous = doc?.payload?.fields ?? {};
+      const editablePaths = doc?.payload ? buildSections(doc.payload, requested).flatMap((s) => s.fields.map((f) => f.path)) : [];
+      const missing = editablePaths.find((path) =>
+        getLeaf(previous, path)?.value !== getLeaf(requested, path)?.value
+        && getLeaf(persisted.payload?.fields ?? {}, path)?.value !== getLeaf(requested, path)?.value);
+      const itemCount = (requested.line_items as unknown[] | undefined)?.length;
+      const persistedCount = (persisted.payload?.fields?.line_items as unknown[] | undefined)?.length;
+      if (missing || (itemCount !== undefined && itemCount !== persistedCount)) {
+        updateFields(requested);
+        setToast({ text: `${missing ?? 'Line item count'} was not saved by the server. Your edit is still on screen.`, ok: false });
+        return null;
+      }
+      apply(persisted);
       setToast({ text: 'Saved', ok: true });
-      return saved;
-    } catch {
-      setToast({ text: 'Save failed', ok: false });
+      return persisted;
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      setToast({ text: typeof detail === 'string' ? `Save failed: ${detail}` : 'Save failed', ok: false });
       return null;
     } finally {
+      saveInFlight.current = false;
       setBusy(null);
     }
   }
 
   async function acceptRecheck(path: string, value: string): Promise<boolean> {
-    const updated = setLeafValue(fieldsRef.current, path, value);
+    if (saveInFlight.current) return false;
+    const updated = updateFields((current) => setLeafValue(current, path, value));
     return (await save(updated)) !== null;
+  }
+
+  async function saveAndCloseItem() {
+    if (saveInFlight.current) return;
+    if (await save()) setEditItem(null);
   }
 
   // Approval confirms every failed check against the paper first. Saving
@@ -234,7 +266,7 @@ export default function DocumentDetail() {
   // A field the reviewer doubts can be asked about again (RecheckField).
   // Only values derived by the app or not printed on the bill are excluded.
   const canRecheck = (path: string): boolean =>
-    ['needs_review', 'approved'].includes(doc.status)
+    busy !== 'save' && ['needs_review', 'approved'].includes(doc.status)
     && !/rate_source|free_supply/.test(path);
   // What the bill itself says is payable - the figure on the paper.
   const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
@@ -429,7 +461,7 @@ export default function DocumentDetail() {
                     className="field-input"
                     style={{ borderLeftColor: accentFor(conf) }}
                     value={leaf?.value ?? ''}
-                    disabled={!editable}
+                    disabled={!editable || busy === 'save'}
                     onChange={(e) => updateFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
                   />
                   {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
@@ -463,6 +495,7 @@ export default function DocumentDetail() {
             {isInvoice && editable && (
               <button
                 className="btn-secondary"
+                disabled={busy === 'save'}
                 onClick={() => {
                   const next = addLineItem(fields);
                   updateFields(next.fields);
@@ -641,11 +674,11 @@ export default function DocumentDetail() {
 
       {/* Edit-a-single-item modal */}
       {editItem !== null && itemSections[editItem] && (
-        <div onClick={() => setEditItem(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+        <div onClick={() => { void saveAndCloseItem(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
           <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ width: 560, maxWidth: '90vw', maxHeight: '85vh', overflowY: 'auto', padding: 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
               <h3 style={{ margin: 0 }}>{itemSections[editItem].title}</h3>
-              <span style={{ cursor: 'pointer', color: 'var(--primary-color)' }} onClick={() => setEditItem(null)}>Done</span>
+              <button className="btn-secondary" disabled={busy != null} onClick={() => { void saveAndCloseItem(); }}>{busy === 'save' ? 'Saving…' : 'Save & close'}</button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
               {itemSections[editItem].fields.map((spec) => {
@@ -654,7 +687,7 @@ export default function DocumentDetail() {
                 return (
                   <div key={spec.path}>
                     <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>{spec.label}</label>
-                    <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable}
+                    <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable || busy === 'save'}
                       onChange={(e) => updateFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
                     {canRecheck(spec.path) && (
                       <RecheckField key={spec.path} docId={id} path={spec.path} revision={fields} page={recheckPage}

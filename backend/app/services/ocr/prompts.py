@@ -29,7 +29,7 @@ INVOICE_PROMPT = (
     "  supplier   = the company that ISSUED the invoice (its name is usually the largest "
     "text at the top). Fields: name, gstin, address, pan, email, and its drug licence "
     "numbers with any validity dates as dl_no_1/dl_date_1, dl_no_2/dl_date_2, "
-    "dl_no_3/dl_date_3. The supplier's licences are the D.L. numbers printed in the "
+    "dl_no_3/dl_date_3, dl_no_4/dl_date_4. The supplier's licences are the D.L. numbers printed in the "
     "supplier's OWN block, beside its GSTIN - never those under Billed To / Shipped To, and "
     "never a godown's or dispatch address's in the footer. A date printed with a licence "
     "(\"20B 254080 DT.01.01.18\") goes in its dl_date.\n"

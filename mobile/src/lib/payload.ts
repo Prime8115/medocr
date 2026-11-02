@@ -143,6 +143,8 @@ const INVOICE_SINGLE: Section[] = [
       { path: 'supplier.dl_date_2', label: 'Drug licence 2 date' },
       { path: 'supplier.dl_no_3', label: 'Drug licence 3' },
       { path: 'supplier.dl_date_3', label: 'Drug licence 3 date' },
+      { path: 'supplier.dl_no_4', label: 'Drug licence 4' },
+      { path: 'supplier.dl_date_4', label: 'Drug licence 4 date' },
     ],
   },
   {
