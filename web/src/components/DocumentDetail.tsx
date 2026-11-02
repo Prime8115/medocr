@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Flag, Save, Send } from 'lucide-react';
 
@@ -50,6 +50,7 @@ export default function DocumentDetail() {
   const [recheckPage, setRecheckPage] = useState<number | undefined>();
   useEffect(() => { setRecheckPage(undefined); }, [id]);
   const [fields, setFields] = useState<Fields>({});
+  const fieldsRef = useRef<Fields>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
@@ -65,10 +66,17 @@ export default function DocumentDetail() {
   const [rawTextOpen, setRawTextOpen] = useState(false);
   const [reportNote, setReportNote] = useState('');
 
+  const updateFields = useCallback((next: Fields | ((current: Fields) => Fields)): Fields => {
+    const updated = typeof next === 'function' ? next(fieldsRef.current) : next;
+    fieldsRef.current = updated;
+    setFields(updated);
+    return updated;
+  }, []);
+
   const apply = useCallback((d: DocumentDto) => {
     setDoc(d);
-    if (d.payload?.fields) setFields(d.payload.fields);
-  }, []);
+    if (d.payload?.fields) updateFields(d.payload.fields);
+  }, [updateFields]);
 
   useEffect(() => {
     if (doc && ['needs_review', 'approved', 'pushed'].includes(doc.status)) {
@@ -86,10 +94,10 @@ export default function DocumentDetail() {
     })();
   }, [id, apply]);
 
-  async function save(): Promise<DocumentDto | null> {
+  async function save(next?: Fields): Promise<DocumentDto | null> {
     setBusy('save');
     try {
-      const saved = await patchDocument(id, fields);
+      const saved = await patchDocument(id, next ?? fieldsRef.current);
       apply(saved);
       setToast({ text: 'Saved', ok: true });
       return saved;
@@ -99,6 +107,11 @@ export default function DocumentDetail() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function acceptRecheck(path: string, value: string): Promise<boolean> {
+    const updated = setLeafValue(fieldsRef.current, path, value);
+    return (await save(updated)) !== null;
   }
 
   // Approval confirms every failed check against the paper first. Saving
@@ -218,11 +231,11 @@ export default function DocumentDetail() {
   const matchFor = (i: number): MatchItem | undefined => (inv?.connected ? inv.items[i] : undefined);
 
   const isInvoice = doc.doc_type === 'invoice';
-  // A field the reviewer doubts can be asked about again (RecheckField) - not
-  // the few that are not printed values (licence dates, how a rate was chosen).
+  // A field the reviewer doubts can be asked about again (RecheckField).
+  // Only values derived by the app or not printed on the bill are excluded.
   const canRecheck = (path: string): boolean =>
     ['needs_review', 'approved'].includes(doc.status)
-    && !/dl_date_|rate_source|free_supply/.test(path);
+    && !/rate_source|free_supply/.test(path);
   // What the bill itself says is payable - the figure on the paper.
   const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
   const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
@@ -417,12 +430,12 @@ export default function DocumentDetail() {
                     style={{ borderLeftColor: accentFor(conf) }}
                     value={leaf?.value ?? ''}
                     disabled={!editable}
-                    onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
+                    onChange={(e) => updateFields((prev) => setLeafValue(prev, spec.path, e.target.value))}
                   />
                   {isLowConfidence(conf) && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>Please check</div>}
                   {canRecheck(spec.path) && (
                     <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage}
-                      onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
+                      onUse={(value) => acceptRecheck(spec.path, value)} />
                   )}
                 </div>
               );
@@ -452,7 +465,7 @@ export default function DocumentDetail() {
                 className="btn-secondary"
                 onClick={() => {
                   const next = addLineItem(fields);
-                  setFields(next.fields);
+                  updateFields(next.fields);
                   setEditItem(next.index);
                 }}
                 style={{ whiteSpace: 'nowrap' }}
@@ -642,10 +655,10 @@ export default function DocumentDetail() {
                   <div key={spec.path}>
                     <label className="text-muted" style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>{spec.label}</label>
                     <input className="field-input" style={{ borderLeftColor: accentFor(conf) }} value={leaf?.value ?? ''} disabled={!editable}
-                      onChange={(e) => setFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
+                      onChange={(e) => updateFields((prev) => setLeafValue(prev, spec.path, e.target.value))} />
                     {canRecheck(spec.path) && (
                       <RecheckField key={spec.path} docId={id} path={spec.path} revision={fields} page={recheckPage}
-                        onUse={(value) => setFields((prev) => setLeafValue(prev, spec.path, value))} />
+                        onUse={(value) => acceptRecheck(spec.path, value)} />
                     )}
                   </div>
                 );
@@ -658,7 +671,7 @@ export default function DocumentDetail() {
                   if (!window.confirm('Remove this item? It is taken off the invoice when you save.')) return;
                   const index = editItem;
                   setEditItem(null);
-                  setFields((prev) => removeLineItem(prev, index));
+                  updateFields((prev) => removeLineItem(prev, index));
                 }}
                 style={{ marginTop: 16, color: 'var(--danger, #e5484d)' }}
               >
@@ -717,7 +730,7 @@ export default function DocumentDetail() {
       <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
         {doc.status === 'needs_review' && (
           <>
-            <button className="btn-secondary" onClick={save} disabled={busy != null} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button className="btn-secondary" onClick={() => { void save(); }} disabled={busy != null} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <Save size={16} /> Save
             </button>
             <button className="btn-secondary" onClick={approve} disabled={busy != null} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

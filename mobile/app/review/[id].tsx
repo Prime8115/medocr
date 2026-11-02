@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useLocalSearchParams, router } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -64,6 +64,7 @@ export default function ReviewScreen() {
   const [recheckPage, setRecheckPage] = useState<number | undefined>();
   useEffect(() => { setRecheckPage(undefined); }, [id]);
   const [fields, setFields] = useState<Fields>({});
+  const fieldsRef = useRef<Fields>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -101,10 +102,17 @@ export default function ReviewScreen() {
     AsyncStorage.setItem(VIEW_MODE_KEY, mode).catch(() => {});
   };
 
+  const updateFields = useCallback((next: Fields | ((current: Fields) => Fields)): Fields => {
+    const updated = typeof next === 'function' ? next(fieldsRef.current) : next;
+    fieldsRef.current = updated;
+    setFields(updated);
+    return updated;
+  }, []);
+
   const applyDoc = useCallback((d: DocumentDto) => {
     setDoc(d);
-    if (d.payload?.fields) setFields(d.payload.fields);
-  }, []);
+    if (d.payload?.fields) updateFields(d.payload.fields);
+  }, [updateFields]);
 
   useEffect(() => {
     if (doc && ['needs_review', 'approved', 'pushed'].includes(doc.status)) {
@@ -167,18 +175,18 @@ export default function ReviewScreen() {
     };
   }, [id, applyDoc]);
 
-  const onChangeField = (path: string, value: string) => setFields((prev) => setLeafValue(prev, path, value));
-  // A field the reviewer doubts can be asked about again (RecheckField) - not
-  // the few that are not printed values (licence dates, how a rate was chosen).
+  const onChangeField = (path: string, value: string) => updateFields((prev) => setLeafValue(prev, path, value));
+  // A field the reviewer doubts can be asked about again (RecheckField).
+  // Only values derived by the app or not printed on the bill are excluded.
   const canRecheck = (path: string): boolean =>
     !!doc && ['needs_review', 'approved'].includes(doc.status)
-    && !/dl_date_|rate_source|free_supply/.test(path);
+    && !/rate_source|free_supply/.test(path);
 
   // A line the reading missed - or every line, on a document sent for manual
   // entry - is typed in here, then saved with the rest.
   function addItem() {
     const next = addLineItem(fields);
-    setFields(next.fields);
+    updateFields(next.fields);
     setEditIndex(next.index);
   }
 
@@ -190,16 +198,16 @@ export default function ReviewScreen() {
         style: 'destructive',
         onPress: () => {
           setEditIndex(null);
-          setFields((prev) => removeLineItem(prev, index));
+          updateFields((prev) => removeLineItem(prev, index));
         },
       },
     ]);
   }
 
-  async function save(): Promise<DocumentDto | null> {
+  async function save(next?: Fields): Promise<DocumentDto | null> {
     setSaving(true);
     try {
-      const saved = await patchDocument(id, fields);
+      const saved = await patchDocument(id, next ?? fieldsRef.current);
       applyDoc(saved);
       return saved;
     } catch {
@@ -208,6 +216,11 @@ export default function ReviewScreen() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function acceptRecheck(path: string, value: string): Promise<boolean> {
+    const updated = setLeafValue(fieldsRef.current, path, value);
+    return (await save(updated)) !== null;
   }
 
   // Approval confirms every failed check against the paper first. Saving
@@ -484,7 +497,7 @@ export default function ReviewScreen() {
                   hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                 />
                 {canRecheck(spec.path) && (
-                  <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => onChangeField(spec.path, v)} />
+                  <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => acceptRecheck(spec.path, v)} />
                 )}
               </Fragment>
             );
@@ -723,7 +736,7 @@ export default function ReviewScreen() {
       {doc.status !== 'pushed' ? (
         <View style={styles.bottomBar}>
           {doc.status === 'needs_review' && (
-            <Button title={t('save')} variant="secondary" onPress={save} loading={saving} style={styles.flexBtn} />
+            <Button title={t('save')} variant="secondary" onPress={() => { void save(); }} loading={saving} style={styles.flexBtn} />
           )}
           {doc.status === 'needs_review' && (
             <Button title={t('approve')} variant="success" onPress={approveOnly} loading={busy === 'approve'} style={styles.flexBtn} />
@@ -917,7 +930,7 @@ export default function ReviewScreen() {
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                       />
                       {canRecheck(spec.path) && (
-                        <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => onChangeField(spec.path, v)} />
+                        <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => acceptRecheck(spec.path, v)} />
                       )}
                     </Fragment>
                   );
@@ -974,7 +987,7 @@ export default function ReviewScreen() {
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
                       />
                       {canRecheck(spec.path) && (
-                        <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => onChangeField(spec.path, v)} />
+                        <RecheckField docId={id} path={spec.path} revision={fields} page={recheckPage} onUse={(v) => acceptRecheck(spec.path, v)} />
                       )}
                     </Fragment>
                   );

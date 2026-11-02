@@ -15,15 +15,29 @@ const found = {
 };
 
 describe('RecheckField', () => {
-  test('asks about the one field and uses the value found', async () => {
+  test('asks about the one field and saves the value found', async () => {
     vi.mocked(docsApi.recheckField).mockResolvedValue(found);
-    const onUse = vi.fn();
+    const onUse = vi.fn().mockResolvedValue(true);
     render(<RecheckField docId="d1" path="line_items[2].ptr" onUse={onUse} />);
     fireEvent.click(screen.getByText('Recheck'));
     await screen.findByText(/RETAILER RATE/);
     expect(docsApi.recheckField).toHaveBeenCalledWith('d1', 'line_items[2].ptr', undefined);
-    fireEvent.click(screen.getByText('Use this'));
-    expect(onUse).toHaveBeenCalledWith('90.75');
+    fireEvent.click(screen.getByText('Use & save'));
+    await waitFor(() => expect(onUse).toHaveBeenCalledWith('90.75'));
+    await waitFor(() => expect(screen.getByText('Recheck')).toBeTruthy());
+  });
+
+  test('keeps the proposed value available when saving fails', async () => {
+    vi.mocked(docsApi.recheckField).mockResolvedValue(found);
+    const onUse = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    render(<RecheckField docId="d1" path="line_items[2].ptr" onUse={onUse} />);
+    fireEvent.click(screen.getByText('Recheck'));
+    await screen.findByText(/RETAILER RATE/);
+    fireEvent.click(screen.getByText('Use & save'));
+    await screen.findByText('Could not save this value. Please try again.');
+    fireEvent.click(screen.getByText('Use & save'));
+    await waitFor(() => expect(onUse).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('Recheck')).toBeTruthy());
   });
 
   test('a value not on the bill is marked, and keeping mine changes nothing', async () => {
@@ -33,7 +47,7 @@ describe('RecheckField', () => {
     fireEvent.click(screen.getByText('Recheck'));
     await screen.findByText('not printed on the bill');
     expect(screen.queryByText('Use anyway')).toBeNull();
-    expect(screen.queryByText('Use this')).toBeNull();
+    expect(screen.queryByText('Use & save')).toBeNull();
     fireEvent.click(screen.getByText('Close'));
     expect(onUse).not.toHaveBeenCalled();
     expect(screen.getByText('Recheck')).toBeTruthy();
@@ -44,7 +58,7 @@ describe('RecheckField', () => {
     render(<RecheckField docId="d1" path="invoice.po_no" onUse={vi.fn()} />);
     fireEvent.click(screen.getByText('Recheck'));
     await screen.findByText('The AI reads the same');
-    expect(screen.queryByText('Use this')).toBeNull();
+    expect(screen.queryByText('Use & save')).toBeNull();
     fireEvent.click(screen.getByText('Close'));
 
     vi.mocked(docsApi.recheckField).mockRejectedValueOnce({ response: { data: { detail: 'AI is busy' } } });
@@ -61,7 +75,7 @@ describe('RecheckField', () => {
     view.rerender(<RecheckField docId="d1" path="line_items[2].ptr" revision={2} onUse={onUse} />);
     resolve(found);
     await waitFor(() => expect(screen.getByText('Recheck')).toBeTruthy());
-    expect(screen.queryByText('Use this')).toBeNull();
+    expect(screen.queryByText('Use & save')).toBeNull();
     expect(onUse).not.toHaveBeenCalled();
   });
 });
