@@ -62,6 +62,8 @@ _NAMES = {
     "supplier.email": ("mail", "email"),
     "supplier.dl_no_1": ("dl", "licence", "license", "drug"),
     "supplier.dl_no_2": ("dl", "licence", "license", "drug"),
+    "supplier.dl_no_3": ("dl", "licence", "license", "drug"),
+    "supplier.dl_no_4": ("dl", "licence", "license", "drug"),
     "supplier.gstin": ("gstin", "gst", "gstn", "tin"),
     "bill_to.gstin": ("gstin", "gst", "gstn", "tin", "uin"),
     "ship_to.gstin": ("gstin", "gst", "gstn", "tin", "uin"),

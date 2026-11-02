@@ -184,7 +184,7 @@ def postprocess_fields(doc_type: str, fields: dict) -> dict:
         for d_key in ("invoice_date", "due_date", "lr_date", "po_date"):
             _set_norm(inv.get(d_key), normalize_date((inv.get(d_key) or {}).get("value")))
         sup = fields.get("supplier") or {}
-        for dl_d_key in ("dl_date_1", "dl_date_2", "dl_date_3"):
+        for dl_d_key in ("dl_date_1", "dl_date_2", "dl_date_3", "dl_date_4"):
             _set_norm(sup.get(dl_d_key), normalize_date((sup.get(dl_d_key) or {}).get("value")))
         for item in fields.get("line_items", []) or []:
             if isinstance(item, dict):

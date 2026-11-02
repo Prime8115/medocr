@@ -65,6 +65,7 @@ export default function ReviewScreen() {
   useEffect(() => { setRecheckPage(undefined); }, [id]);
   const [fields, setFields] = useState<Fields>({});
   const fieldsRef = useRef<Fields>({});
+  const saveInFlight = useRef(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -179,7 +180,7 @@ export default function ReviewScreen() {
   // A field the reviewer doubts can be asked about again (RecheckField).
   // Only values derived by the app or not printed on the bill are excluded.
   const canRecheck = (path: string): boolean =>
-    !!doc && ['needs_review', 'approved'].includes(doc.status)
+    !!doc && !saving && ['needs_review', 'approved'].includes(doc.status)
     && !/rate_source|free_supply/.test(path);
 
   // A line the reading missed - or every line, on a document sent for manual
@@ -205,22 +206,60 @@ export default function ReviewScreen() {
   }
 
   async function save(next?: Fields): Promise<DocumentDto | null> {
+    if (saveInFlight.current) return null;
+    saveInFlight.current = true;
     setSaving(true);
+    const requested = next ?? fieldsRef.current;
     try {
-      const saved = await patchDocument(id, next ?? fieldsRef.current);
-      applyDoc(saved);
-      return saved;
-    } catch {
-      Alert.alert(t('errorGeneric'));
+      const saved = await patchDocument(id, requested);
+      // Read back the durable document. A successful HTTP response is not enough
+      // if an older server schema silently drops an edited field or line item.
+      let persisted: DocumentDto;
+      try {
+        persisted = await getDocument(id);
+      } catch {
+        applyDoc(saved);
+        Alert.alert('Saved, verification unavailable', 'The server accepted the edit, but the app could not reread it. Reopen this invoice to confirm.');
+        return saved;
+      }
+      const previous = doc?.payload?.fields ?? {};
+      const editablePaths = doc?.payload ? buildSections({ ...doc.payload, fields: requested }).flatMap((s) => s.fields.map((f) => f.path)) : [];
+      const missing = editablePaths.find((path) =>
+        getLeaf(previous, path)?.value !== getLeaf(requested, path)?.value
+        && getLeaf(persisted.payload?.fields ?? {}, path)?.value !== getLeaf(requested, path)?.value);
+      const itemCount = (requested.line_items as unknown[] | undefined)?.length;
+      const persistedCount = (persisted.payload?.fields?.line_items as unknown[] | undefined)?.length;
+      if (missing || (itemCount !== undefined && itemCount !== persistedCount)) {
+        updateFields(requested);
+        Alert.alert('Value was not saved', `${missing ?? 'Line item count'} was not kept by the server. Your edit remains on this screen; please retry or report this invoice.`);
+        return null;
+      }
+      applyDoc(persisted);
+      return persisted;
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      Alert.alert('Save failed', typeof detail === 'string' ? detail : t('errorGeneric'));
       return null;
     } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   }
 
   async function acceptRecheck(path: string, value: string): Promise<boolean> {
-    const updated = setLeafValue(fieldsRef.current, path, value);
+    if (saveInFlight.current) return false;
+    const updated = updateFields((current) => setLeafValue(current, path, value));
     return (await save(updated)) !== null;
+  }
+
+  async function saveAndCloseHeader() {
+    if (saveInFlight.current) return;
+    if (await save()) setHeaderOpen(false);
+  }
+
+  async function saveAndCloseItem() {
+    if (saveInFlight.current) return;
+    if (await save()) setEditIndex(null);
   }
 
   // Approval confirms every failed check against the paper first. Saving
@@ -491,7 +530,7 @@ export default function ReviewScreen() {
                 <Field
                   label={spec.label}
                   value={leaf?.value ?? ''}
-                  editable={editable}
+                  editable={editable && !saving}
                   onChangeText={(v) => onChangeField(spec.path, v)}
                   accentColor={confidenceColor(conf)}
                   hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
@@ -618,7 +657,7 @@ export default function ReviewScreen() {
         {isInvoice && (editable || meta?.raw_text) && (
           <View style={styles.manualRow}>
             {editable && (
-              <TouchableOpacity onPress={addItem} style={styles.manualBtn} accessibilityRole="button">
+              <TouchableOpacity onPress={addItem} disabled={saving} style={styles.manualBtn} accessibilityRole="button">
                 <Text style={styles.manualBtnText}>＋ Add line item</Text>
               </TouchableOpacity>
             )}
@@ -903,13 +942,13 @@ export default function ReviewScreen() {
       </Modal>
 
       {/* Supplier / invoice fields — reachable from the summary line in table mode */}
-      <Modal visible={headerOpen} animationType="slide" transparent onRequestClose={() => setHeaderOpen(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setHeaderOpen(false)} />
+      <Modal visible={headerOpen} animationType="slide" transparent onRequestClose={() => { void saveAndCloseHeader(); }}>
+        <Pressable style={styles.modalBackdrop} onPress={() => { void saveAndCloseHeader(); }} />
         <View style={styles.modalSheet}>
           <View style={styles.modalHead}>
             <Text style={styles.modalTitle}>{t('invoiceDetails')}</Text>
-            <TouchableOpacity onPress={() => setHeaderOpen(false)}>
-              <Text style={styles.modalDone}>Done</Text>
+            <TouchableOpacity onPress={() => { void saveAndCloseHeader(); }} disabled={saving}>
+              <Text style={styles.modalDone}>{saving ? 'Saving…' : 'Save & close'}</Text>
             </TouchableOpacity>
           </View>
           <ScrollView>
@@ -924,7 +963,7 @@ export default function ReviewScreen() {
                       <Field
                         label={spec.label}
                         value={leaf?.value ?? ''}
-                        editable={editable}
+                        editable={editable && !saving}
                         onChangeText={(v) => onChangeField(spec.path, v)}
                         accentColor={confidenceColor(conf)}
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}
@@ -961,15 +1000,15 @@ export default function ReviewScreen() {
       </Modal>
 
       {/* Edit-a-single-item modal */}
-      <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => setEditIndex(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setEditIndex(null)} />
+      <Modal visible={editIndex !== null} animationType="slide" transparent onRequestClose={() => { void saveAndCloseItem(); }}>
+        <Pressable style={styles.modalBackdrop} onPress={() => { void saveAndCloseItem(); }} />
         <View style={styles.modalSheet}>
           {editIndex !== null && itemSections[editIndex] && (
             <>
               <View style={styles.modalHead}>
                 <Text style={styles.modalTitle}>{itemSections[editIndex].title}</Text>
-                <TouchableOpacity onPress={() => setEditIndex(null)}>
-                  <Text style={styles.modalDone}>Done</Text>
+                <TouchableOpacity onPress={() => { void saveAndCloseItem(); }} disabled={saving}>
+                  <Text style={styles.modalDone}>{saving ? 'Saving…' : 'Save & close'}</Text>
                 </TouchableOpacity>
               </View>
               <ScrollView>
@@ -981,7 +1020,7 @@ export default function ReviewScreen() {
                       <Field
                         label={spec.label}
                         value={leaf?.value ?? ''}
-                        editable={editable}
+                        editable={editable && !saving}
                         onChangeText={(v) => onChangeField(spec.path, v)}
                         accentColor={confidenceColor(conf)}
                         hint={isLowConfidence(conf) ? `${t('lowConfidence')} (${confidencePercent(conf)})` : undefined}

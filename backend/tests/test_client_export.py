@@ -34,6 +34,7 @@ CLIENT_LINE_COLUMNS = [
     "IGSTAmount", "CGSTAmount", "SCGSTAmount", "UTGSTAmount", "UOM", "MfgDate",
     "NetAmount", "MfgName", "Pack", "SchemeValue",
 ]
+CLIENT_ADDED_COLUMNS = ["CustomerDLNo4", "CustomerDLDate4"]
 
 
 def _payload(fields):
@@ -47,6 +48,7 @@ SAMPLE = {
         "dl_no_1": {"value": "MH-TZ5-1111"}, "dl_date_1": {"value": "01.01.2030"},
         "dl_no_2": {"value": "MH-TZ5-2222"}, "dl_date_2": {"value": None},
         "dl_no_3": {"value": None}, "dl_date_3": {"value": None},
+        "dl_no_4": {"value": "MH-TZ5-4444"}, "dl_date_4": {"value": "01.01.2030"},
     },
     "bill_to": {"name": {"value": "SOME CHEMIST"}, "gstin": {"value": "27AAECD7847H1ZC"},
                 "pan": {"value": "AAECD7847H"}},
@@ -98,6 +100,17 @@ def test_column_order_matches_the_specification():
     headers = [c["header"] for c in PROFILES["client_full"]["invoice"]]
     assert headers[:len(CLIENT_HEADER_COLUMNS)] == CLIENT_HEADER_COLUMNS
     assert headers[len(CLIENT_HEADER_COLUMNS):] == CLIENT_LINE_COLUMNS
+
+
+def test_dl4_profile_adds_columns_without_changing_the_existing_import():
+    original = [c["header"] for c in PROFILES["client_full"]["invoice"]]
+    extended = [c["header"] for c in PROFILES["client_full_dl4"]["invoice"]]
+    assert extended == original + CLIENT_ADDED_COLUMNS
+    out = render_csv(_payload(SAMPLE), {"profile": "client_full_dl4"})
+    header, first = list(csv.reader(io.StringIO(out)))[:2]
+    row = dict(zip(header, first))
+    assert row["CustomerDLNo4"] == "MH-TZ5-4444"
+    assert row["CustomerDLDate4"] == "01.01.2030"
 
 
 def test_every_column_resolves_to_a_real_value():
@@ -307,6 +320,16 @@ def test_a_drug_licence_date_is_read_when_printed():
         "20B-MH-MZ4-373004", "25.11.2029")
     # An unrelated date further along the line is not the licence's validity.
     assert drug_licences("DL NO:MH-TZ5-379188 , MH-TZ5-379189 Order Date : 21.08.2025")[0][1] is None
+
+
+def test_four_supplier_licences_and_their_dates_are_retained():
+    from app.services.ocr.invoice_header import supplier_extras
+
+    text = ("DL No: 20B-MH-MZ5-190671 28.05.2030, 21B-MH-MZ5-190672 29.05.2030, "
+            "20B-MH-MZ5-190673 30.05.2030, 21B-MH-MZ5-190674 31.05.2030")
+    out = supplier_extras(text)
+    assert out["dl_no_4"] == "21B-MH-MZ5-190674"
+    assert out["dl_date_4"] == "31.05.2030"
 
 
 def test_lr_date_survives_a_number_between_label_and_date():

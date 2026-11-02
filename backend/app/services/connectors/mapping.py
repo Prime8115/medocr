@@ -81,7 +81,7 @@ def flatten_rows(payload: dict) -> List[Dict[str, str]]:
             "ship_to_gstin": _v(ship_to.get("gstin")),
             "ship_to_pan": _v(ship_to.get("pan")),
         }
-        for i in (1, 2, 3):
+        for i in (1, 2, 3, 4):
             header[f"dl_no_{i}"] = _v(sup.get(f"dl_no_{i}"))
             header[f"dl_date_{i}"] = _v(sup.get(f"dl_date_{i}"))
         for key in ("due_date", "irn", "eway_bill_no", "lr_no", "lr_date", "transport",
@@ -348,6 +348,15 @@ PROFILES: Dict[str, Dict[str, List[dict]]] = {
             {"header": "Amount", "field": "amount"},
         ],
     },
+}
+
+# The original client_full CSV is an exact import contract. Shops wanting DL4
+# opt in to a version with two trailing columns; existing imports stay byte-
+# for-byte compatible in shape and order.
+PROFILES["client_full_dl4"] = {
+    "invoice": [*PROFILES["client_full"]["invoice"],
+                {"header": "CustomerDLNo4", "field": "dl_no_4"},
+                {"header": "CustomerDLDate4", "field": "dl_date_4"}],
 }
 
 

@@ -37,12 +37,12 @@ def test_the_question_names_the_field_and_points_out_the_line():
     assert "Customer PO" in prompt     # how suppliers print it
 
 
-@pytest.mark.parametrize("index", (1, 2, 3))
+@pytest.mark.parametrize("index", (1, 2, 3, 4))
 def test_supplier_drug_licence_dates_can_be_rechecked(index):
     fields = _fields()
     fields["supplier"][f"dl_no_{index}"] = {"value": f"DL-{index}"}
     prompt, _, kind = recheck.question(fields, f"supplier.dl_date_{index}")
-    assert f"{('first', 'second', 'third')[index - 1]} drug licence" in prompt
+    assert f"{('first', 'second', 'third', 'fourth')[index - 1]} drug licence" in prompt
     assert f"drug licence 'DL-{index}'" in prompt
     assert "not a bill-to, ship-to or invoice date" in prompt
     assert kind == "date"
@@ -161,6 +161,8 @@ def test_header_recheck_values_survive_patch_and_reload(client, db_session):
         "supplier.dl_date_2": "21/02/2025",
         "supplier.dl_no_3": "20B-124567-113",
         "supplier.dl_date_3": "21/02/2025",
+        "supplier.dl_no_4": "21B-124567-114",
+        "supplier.dl_date_4": "21/02/2025",
         "supplier.address": "2nd floor, Soham Square, Ahmedabad",
         "bill_to.gstin": "29ATMPA5693E1ZF",
         "bill_to.address": "Unit 505, Bengaluru",
@@ -173,6 +175,7 @@ def test_header_recheck_values_survive_patch_and_reload(client, db_session):
     for path, value in expected.items():
         section, key = path.split(".")
         corrected[section][key] = {"value": value, "confidence": 1.0}
+    corrected["line_items"][0]["description"] = {"value": "Corrected export invoice item", "confidence": 1.0}
 
     response = client.patch(f"/v1/documents/{doc_id}", json={"fields": corrected}, headers=headers)
     assert response.status_code == 200, response.text
@@ -182,11 +185,15 @@ def test_header_recheck_values_survive_patch_and_reload(client, db_session):
         section, key = path.split(".")
         assert response.json()["payload"]["fields"][section][key]["value"] == value
         assert reloaded.json()["payload"]["fields"][section][key]["value"] == value
+    assert reloaded.json()["payload"]["fields"]["line_items"][0]["description"]["value"] == "Corrected export invoice item"
 
     s = db_session()
     try:
-        changes = {row.field for row in s.query(DocumentCorrection).filter_by(document_id=doc_id).all()}
+        rows = s.query(DocumentCorrection).filter_by(document_id=doc_id).all()
+        changes = {row.field for row in rows}
         assert set(expected) <= changes
+        assert any(row.field == "line.description" and row.line == 0 and
+                   row.value_corrected == "Corrected export invoice item" for row in rows)
     finally:
         s.close()
 

@@ -133,10 +133,10 @@ def _without_buyer_licences(fields: dict, data: bytes, theirs: Optional[set] = N
     theirs = _buyer_serials(fields, data) if theirs is None else theirs
     if not theirs or not isinstance(supplier, dict):
         return
-    kept = [(supplier.get(f"dl_no_{n}"), supplier.get(f"dl_date_{n}")) for n in (1, 2, 3)
+    kept = [(supplier.get(f"dl_no_{n}"), supplier.get(f"dl_date_{n}")) for n in (1, 2, 3, 4)
             if str((supplier.get(f"dl_no_{n}") or {}).get("value") or "").strip()
             and _serial(str(supplier[f"dl_no_{n}"]["value"])) not in theirs]
-    for n in (1, 2, 3):
+    for n in (1, 2, 3, 4):
         number, date = kept[n - 1] if n <= len(kept) else ({"value": None, "confidence": None},
                                                             {"value": None, "confidence": None})
         supplier[f"dl_no_{n}"] = number
@@ -161,12 +161,12 @@ def apply_supplier_licences(fields: dict, data: bytes) -> List[str]:
         for p in ("bill_to", "ship_to")}
     theirs = _buyer_serials(fields, data)
     found = [] if gstin.upper() in buyers else [
-        (n, d) for n, d in licences_beside(data, gstin) if _serial(n) not in theirs][:3]
+        (n, d) for n, d in licences_beside(data, gstin) if _serial(n) not in theirs][:4]
     if not found:
         _without_buyer_licences(fields, data, theirs)
         return []
-    read = [str((supplier.get(f"dl_no_{n}") or {}).get("value") or "").strip() for n in (1, 2, 3)]
-    for n in (1, 2, 3):
+    read = [str((supplier.get(f"dl_no_{n}") or {}).get("value") or "").strip() for n in (1, 2, 3, 4)]
+    for n in (1, 2, 3, 4):
         number, date = found[n - 1] if n <= len(found) else (None, None)
         supplier[f"dl_no_{n}"] = {"value": number, "confidence": 1.0 if number else None}
         supplier[f"dl_date_{n}"] = {"value": date, "confidence": 1.0 if date else None}

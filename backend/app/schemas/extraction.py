@@ -101,7 +101,7 @@ class Supplier(BaseModel):
     address: Field = Field()
     pan: Field = Field()
     email: Field = Field()
-    # Pharma invoices print two or three drug licence numbers, sometimes with
+    # Pharma invoices print several drug licence numbers, sometimes with
     # their own validity dates.
     dl_no_1: Field = Field()
     dl_date_1: Field = Field()
@@ -109,6 +109,8 @@ class Supplier(BaseModel):
     dl_date_2: Field = Field()
     dl_no_3: Field = Field()
     dl_date_3: Field = Field()
+    dl_no_4: Field = Field()
+    dl_date_4: Field = Field()
 
 
 class Party(BaseModel):

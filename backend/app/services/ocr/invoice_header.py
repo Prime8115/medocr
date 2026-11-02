@@ -980,7 +980,7 @@ _DL_LESS_COMMON = re.compile(
 
 
 def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
-    """Up to three (licence number, validity date) pairs from a party's block."""
+    """Licence number and validity-date pairs from a party's block."""
     out: List[Tuple[Optional[str], Optional[str]]] = []
     seen = set()
     # Some bills print the validity FIRST: Abbott's "DL No.-20B11.09.2027/
@@ -1017,7 +1017,7 @@ def drug_licences(text: str) -> List[Tuple[Optional[str], Optional[str]]]:
         )
         out.append((number, date.group(1) if date else None))
         # More than three are collected on purpose: the caller drops any that
-        # belong to another party, and then takes the first three that remain.
+        # belong to another party, and then takes the first four that remain.
         if len(out) == 12:
             break
     return out
@@ -1076,6 +1076,6 @@ def supplier_extras(text: str, exclude: Optional[str] = None,
             index += 1
             out[f"dl_no_{index}"] = number
             out[f"dl_date_{index}"] = date
-            if index == 3:
+            if index == 4:
                 return out
     return out

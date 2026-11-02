@@ -57,6 +57,7 @@ def test_the_supplier_gets_its_own_licences_and_dates():
     assert [s["dl_no_1"]["value"], s["dl_date_1"]["value"], s["dl_no_2"]["value"], s["dl_date_2"]["value"]] == \
         ["20B 254080", "01.01.18", "21B 254081", "01.01.18"]
     assert s["dl_no_3"]["value"] is None
+    assert s["dl_no_4"]["value"] is None
     assert "F20B TZ5-24902" in warning
 
 

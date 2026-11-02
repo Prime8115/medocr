@@ -35,6 +35,8 @@ _MEANING = {
     "supplier.dl_date_2": "the date printed with the supplier's second drug licence number",
     "supplier.dl_no_3": "the supplier's third drug licence number",
     "supplier.dl_date_3": "the date printed with the supplier's third drug licence number",
+    "supplier.dl_no_4": "the supplier's fourth drug licence number",
+    "supplier.dl_date_4": "the date printed with the supplier's fourth drug licence number",
     "bill_to.name": "the buyer's (bill-to party's) name",
     "bill_to.gstin": "the buyer's (bill-to) GSTIN",
     "bill_to.pan": "the buyer's (bill-to) PAN",
