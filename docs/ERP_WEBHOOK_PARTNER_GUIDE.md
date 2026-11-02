@@ -44,6 +44,10 @@ The shop owner creates a **Webhook (HTTP)** connector in Settings with the endpo
 
 The document status **pushed** means every enabled **automatic** connector confirmed delivery. The manual Tally XML pilot is tracked separately and never counts as a successful push. The delivery state gives the stronger meaning: **queued** (waiting for desktop agent), **file_written** (written to a folder, ERP import unconfirmed), **received** (webhook accepted, ERP import unconfirmed), **imported** (ERP supplied a voucher reference), or **failed**. If one automatic connector fails, the document remains approved and its successful deliveries stay recorded.
 
+### Correcting an already sent invoice
+
+The current receiver contract has no amendment or reversal event. If the approved purchase data changes after a delivery was sent or queued, MediScan rejects another Send with HTTP `409` instead of treating the old delivery as a success. An operator must check the receiving ERP voucher and reconcile the correction there. Repeat sends of unchanged data remain idempotent. Do not build an ERP receiver that interprets a second copy of the same `document_id` with different values as a new purchase; a versioned amendment contract is required before automatic correction posting.
+
 ## Tally and folder alternatives
 
 The current Tally purchase pilot produces XML for **manual TallyPrime import** after a purchase-specific preflight. A downloaded XML file is not proof Tally accepted or posted a voucher. An external Tally integrator can instead build the HTTPS receiver above and translate the approved JSON into its validated Tally import flow, returning `imported` only after Tally provides a voucher reference. For software that watches files, MediScan's file-export connector requires an output folder reachable by the **MediScan server**. For a shop PC folder, install the desktop agent; its acknowledgement confirms local file writing, not ERP import.
