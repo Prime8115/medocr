@@ -238,7 +238,7 @@ def _read_on_recorded_answers(entry: dict) -> dict:
             # old answer-to-question mapping for this historical output pin;
             # per-page behavior has separate synthetic tests. Re-record this
             # invoice before using it to grade the new page-level model path.
-            def recorded_units(file_bytes, content_type):
+            def recorded_units(file_bytes, content_type, doc_type=None):
                 pictures = ocr.image_only_pdf(file_bytes)
                 parts = ocr.split_pdf(pictures, settings.ocr_pdf_chunk_pages)
                 return [(part, "application/pdf", ocr.page_count(part)) for part in parts], ocr.page_count(file_bytes), True

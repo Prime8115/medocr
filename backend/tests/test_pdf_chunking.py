@@ -77,6 +77,32 @@ def test_small_pdf_single_pass(monkeypatch):
     assert len(result["fields"]["line_items"]) == 1  # single chunk
 
 
+def test_invoice_ai_units_skip_printed_copies_without_losing_source_page_count(monkeypatch):
+    import app.services.ocr as ocr_mod
+
+    page = "Invoice INV-1\nORIGINAL FOR RECIPIENT\nDrug A 12 386.10"
+    texts = [
+        page,
+        page.replace("ORIGINAL FOR RECIPIENT", "DUPLICATE FOR TRANSPORTER"),
+        "Invoice INV-1\nPage 2\nDrug B 28 12375.00",
+    ]
+    monkeypatch.setattr(ocr_mod, "page_count", lambda data: len(texts))
+    monkeypatch.setattr(ocr_mod, "is_digital_pdf", lambda data: True)
+    monkeypatch.setattr(ocr_mod, "extract_text_pages", lambda data: texts)
+    monkeypatch.setattr(settings, "ocr_text_chunk_pages", 10)
+
+    units, pages, _ = ocr_mod._build_units(b"pdf", "application/pdf", "invoice")
+    assert pages == 3
+    assert len(units) == 1
+    assert units[0][2] == 2
+    assert units[0][1] == "text/plain"
+    assert units[0][0].decode().count("Drug A") == 1
+    assert units[0][0].decode().count("Drug B") == 1
+
+    prescription_units, _, _ = ocr_mod._build_units(b"pdf", "application/pdf", "prescription")
+    assert prescription_units[0][2] == 3
+
+
 def test_parallel_preserves_order_and_reports_progress(monkeypatch):
     """Chunks processed concurrently must merge in page order (even when they
     finish out of order), and progress must be reported."""
