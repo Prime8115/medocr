@@ -1410,8 +1410,13 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         while start > 1 and not re.search(r"\d", lines[start - 1]):
             start -= 1
         block = " ".join(lines[start:])
-        if block and re.search(r"pharma|\bltd\b|limited|\blab|health|biotech|remed|drugs|industries|"
-                               r"\bcorp|\binc\b|[A-Z]{3,}-[A-Z]{3,}", block, re.I):
+        # ...or a maker's name cut short in capitals: Sanofi's "WINDLAS" (for
+        # Windlas Biotech) - never a dosage word wrapped from the name.
+        short_maker = bool(re.fullmatch(r"[A-Z][A-Z.&-]{3,}(?: [A-Z][A-Z.&-]+)?", block)) and not re.search(
+            r"\b(?:TABS?|TABLETS?|CAPS?|CAPSULES?|SYRUP|SUSPENSION|INJ\w*|CREAM|GEL|DROPS?|SACHETS?|LOTION|"
+            r"SPRAY|POWDER|STRIPS?|BOTTLES?|VIALS?|SOLUTION|EMULSION|ORAL|NEW|IN|BL|BT)\b", block)
+        if block and (short_maker or re.search(r"pharma|\bltd\b|limited|\blab|health|biotech|remed|drugs|industries|"
+                                               r"\bcorp|\binc\b|[A-Z]{3,}-[A-Z]{3,}", block, re.I)):
             maker_below = _clean(block)
             desc = _clean(" ".join(lines[:start]))
     # The end of a long heading wrapped onto the first item: Torrent's
@@ -1461,7 +1466,10 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
     # The last word of the name run into the HSN column: Raptakos's
     # "THREPTIN DISKETTES JUNIOR 250 G" left "G 21069099" as its HSN.
     spill = re.fullmatch(r"([A-Za-z.]{1,4})\s+(\d{4}(?:\d{2}){0,2})", (item.get("hsn") or {}).get("value") or "")
-    if spill:
+    hsn_heading = _norm(header_row[cols["hsn"]]) if cols.get("hsn") is not None and cols["hsn"] < len(header_row) else ""
+    # ...unless the heading names a category or maker column there: Cipla's
+    # "Mfg Cat HSN" prints "S 30049082", its category "S", not a name's end.
+    if spill and not re.search(r"cat|mfg", hsn_heading):
         item["hsn"] = _f(spill.group(2))
         item["description"] = _f(f"{desc} {spill.group(1)}")
     # Name over HSN in one heading set narrower than the name: Dr. Reddy's
@@ -2150,6 +2158,16 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             item["hsn"] = _f(in_name.group(1))
         desc = desc[:in_name.start()].strip()
         item["description"] = _f(desc)
+    # A category letter from a column merged into the name's: Sun heads "CAT"
+    # 5 pt left of "Product Description" and prints "N" under it for some
+    # products, read as "N GLUCORED FORTE".
+    name_col = cols.get("description")
+    name_heading = str(header_row[name_col] or "") if name_col is not None and name_col < len(header_row) else ""
+    if re.search(r"\bcat\b", name_heading, re.I):
+        lead = re.match(r"([A-Z])\s+(\S.*)$", desc)
+        if lead:
+            desc = lead.group(2).strip()
+            item["description"] = _f(desc)
     maker = _MAKER_IN_DESC.search(desc)
     if maker and maker.start() > 0:
         # "NIGRILOW CREAM 50GM Mfg : MAXNOVA HEALTHCARE" (Cosmin): the maker,
@@ -2462,7 +2480,9 @@ def _continued_from_last_page(row, cols: dict, header_row) -> Optional[dict]:
     if any(cell(cols.get(k)) for k in ("quantity", "batch_no", "amount")):
         return None
     out: dict = {}
-    if cell(cols.get("description")):
+    # ...never a page's letterhead label: Cipla's page 2 opens with "STATE
+    # CODE : 27", which ended its last product's name.
+    if cell(cols.get("description")) and not re.search(r"[A-Za-z]\s*:\s*\S", cell(cols.get("description"))):
         out["description"] = _clean(cell(cols.get("description")))
     for idx, heading in enumerate(header_row):
         order = _stacked_fields(heading)

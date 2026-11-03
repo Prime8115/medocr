@@ -53,7 +53,10 @@ _FOOTER = re.compile(
     r"once\s*sold|signator|authorised|"
     # Wockhardt's "Total number of cases , Customer ref. number : ORDER NO-
     # 4819" ran onto its last product's name.
-    r"total\s*number\s*of\s*cases)\b"
+    r"total\s*number\s*of\s*cases|"
+    # ...and Cipla's "Pending Items:" list of what is still to be supplied,
+    # read onto its last product as "RESTYL 0.5 TABLETS 15S 60 MD 3 , CRESAR".
+    r"pending\s*items)\b"
     r"|\bIRN\s*[:#]"
     # "Total of CARDIMAXX 0.00 0.00 211488.25 ..." (IPCA): a division's total
     # row, with the tax summary under it.
@@ -88,6 +91,9 @@ WORD_TOLERANCE = 1.5
 _COLUMN_GAP = 5.0
 # A line this much nearer the next row than its own is still a tie: the name wraps down.
 _WRAP_TIE = 1.0
+# A pack size or strength in a name: "250GM", "10X10`S", "500 MG", "60ml".
+_SIZE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:X\s*\d+\s*)?(?:[`'’]?S\b|GMS?\b|G\b|MG\b|MCG\b|ML\b|KG\b|LTR?\b)",
+                   re.I)
 
 
 Word = Dict[str, object]
@@ -439,6 +445,18 @@ def _channel_edges(columns: List[dict], body: List[Line], edges: List[float]) ->
     out = list(edges)
     for i in range(1, len(edges) - 1):
         left, right = columns[i - 1], columns[i]
+        if _NAME_COLUMN.search(right.get("label") or "") and _figures_only(left):
+            # A price column holds no words: Cipla Limited prints names from
+            # left of "Product Description", and "8X CREAM" lost its "8X" to
+            # the retail price as "270.19 8X". The name starts after the
+            # figures.
+            mine = [w for _, row in body for w in row
+                    if out[i - 1] <= (float(w["x0"]) + float(w["x1"])) / 2.0 < edges[i]]
+            figures = [float(w["x1"]) for w in mine if re.fullmatch(r"[\d,.\-/%()]+", str(w["text"]))]
+            words = [float(w["x0"]) for w in mine if re.search(r"[A-Za-z]", str(w["text"]))]
+            if figures and max(figures) > out[i - 1] and any(x0 > max(figures) + 1 for x0 in words):
+                out[i] = max(figures) + 1.0
+                continue
         # ...a name column's right edge must not fall between two of its words.
         name_edge = bool(_NAME_COLUMN.search(left.get("label") or ""))
         ok = ((lambda x, s=right["x0"]: clear(x) and not splits_a_name(x, s)) if name_edge else clear)
@@ -894,8 +912,17 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                     hang = row_tops[-1]
                 # ...a line starting with a hyphen ends the word above it: J.B.'s
                 # "...ALU" / "-BLISTER" became the next product's first word.
+                # ...a size the line above lacks and the next already has goes
+                # up: AIOCD's "LACTARE GRANULES" over "250GM(ELAICHI)", 12 pt
+                # down and 8 pt above "MIFIACT-10 TABS 10X10`S".
+                size_up = bool(rows and _SIZE.match(otext) and not _SIZE.search(above)
+                               and _SIZE.search(cells[description_col]))
+                # ...and a maker printed under a product still without one:
+                # Sanofi's "ENTEROGERMINA CAPS" / "4'S" / "WINDLAS".
+                size_up = size_up or bool(rows and maker_below and "\n" not in above
+                                          and re.fullmatch(r"[A-Z][A-Z .&()-]+", otext))
                 if rows and (abs(otop - hang) <= abs(otop - top) + _WRAP_TIE or _DETAIL_LINE.match(otext)
-                             or otext.startswith("-")
+                             or otext.startswith("-") or size_up
                              or above.count("(") > above.count(")")):
                     give(rows[-1], otext, ovals, before=False)
                     hang = otop
@@ -921,7 +948,18 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             row_tops.append(top)
         else:
             extra = cells[description_col].strip()
+            # ...or the pack at the end of a name printed from left of its
+            # heading: IPCA's names start under "Prod Code", and the "15s"
+            # wrapped onto a line of its own was dropped as a code.
+            if (not extra and description_col > 0
+                    and re.fullmatch(r"\d+\s*(?:'?s|tabs?|caps?|ml|gm?|mg)\.?", cells[description_col - 1].strip(), re.I)
+                    and not any(c.strip() for j, c in enumerate(cells) if j != description_col - 1)):
+                extra = cells[description_col - 1].strip()
             values = {i: cells[i].strip() for i in continuation_cols if cells[i].strip()}
+            # A lone "Sale" / "Free" / "Sample" under a product marks the kind
+            # of supply, not its name (J.B.'s "Nano Leo Total Sachets 10x3gm").
+            if re.fullmatch(r"sale|free|sample", extra, re.I) and not values:
+                extra = ""
             if extra or values:
                 orphans.append((line[0], extra, values))
 

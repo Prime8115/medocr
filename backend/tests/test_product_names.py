@@ -58,3 +58,11 @@ def test_a_name_carried_onto_the_next_page_goes_back():
     rejoin_hyphen_wraps(items)
     assert [i["description"]["value"] for i in items] == ["METROGYL TABS 200MG 20's -BLISTER",
                                                          "METROGYL-O TABLETS 10'S BLISTER"]
+
+
+def test_a_lone_digit_after_the_dosage_form_is_dropped():
+    # Cipla prints the name's "170 ML" over the pack's, read "EMULSION 1".
+    assert _v(_tidy("EASYLAX PLUS ORAL EMULSION 1"), "description") == "EASYLAX PLUS ORAL EMULSION"
+    # ...a digit that is the name's own stays.
+    for name in ("GLYCOMET GP 1", "LACTODEX 3"):
+        assert _v(_tidy(name), "description") == name

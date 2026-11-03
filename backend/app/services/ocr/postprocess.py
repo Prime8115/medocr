@@ -153,6 +153,11 @@ def tidy_line(item: dict) -> None:
         before = name[:tail.start()].split()[-1:] if tail else []
         if tail and before and _DOSAGE_WORD.fullmatch(before[0].strip(".,")):
             name = name[:tail.start()].strip()
+        # ...or a lone digit left after its dosage form by an overprinted pack:
+        # Cipla prints the name's "170 ML" over the pack's, read "EMULSION 1".
+        stray = re.match(r"^(.*\b(?:" + _DOSAGE + r"|EMULSION|SOLUTION|LIQUID))\s+\d$", name, re.I)
+        if stray:
+            name = stray.group(1).strip()
         if name and name != desc["value"].strip():
             desc["value"] = name
     # Two dates in the expiry cell, side by side: IPCA heads the column "MFG.
