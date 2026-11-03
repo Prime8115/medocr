@@ -592,3 +592,22 @@ def test_exact_file_edits_never_cross_shops(client, mock_ocr):
     payload = client.get(f"/v1/documents/{other['document_id']}", headers=b).json()["payload"]
     assert "bill_to.address" not in payload["meta"].get("exact_file_corrections", [])
     assert (payload["fields"]["bill_to"].get("address") or {}).get("value") != "Shop A private address"
+
+
+def test_trying_again_keeps_the_values_the_reviewer_saved(client, mock_ocr):
+    """A customer accepted a Recheck value, saved it, pressed Scan again on the
+    same document - and the new reading brought the old value back: the
+    replay only looked at OTHER uploads, corrected before this one."""
+    headers = register_and_login(client)
+    data = sample_image("INVOICE")
+    first = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(url, headers=headers).json()["payload"]["fields"]
+    fields["invoice"]["po_no"] = {"value": "PO-FROM-RECHECK", "confidence": 1}
+    assert client.patch(url, headers=headers, json={"fields": fields}).status_code == 200
+
+    assert client.post(f"{url}/retry", headers=headers).status_code == 200
+    again = client.get(url, headers=headers).json()
+    assert again["status"] == "needs_review"
+    assert again["payload"]["fields"]["invoice"]["po_no"]["value"] == "PO-FROM-RECHECK"
+    assert "invoice.po_no" in again["payload"]["meta"]["exact_file_corrections"]

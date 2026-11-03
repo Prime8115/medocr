@@ -7,6 +7,7 @@ identical source file, while the new scan's checks still run after replay.
 import copy
 import re
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.document import Document
@@ -126,13 +127,20 @@ def apply(db: Session, target: Document, payload: dict) -> dict:
                   .filter(DocumentCorrection.shop_id == target.shop_id,
                           Document.shop_id == target.shop_id,
                           Document.content_hash == target.content_hash,
-                          Document.id != target.id,
-                          Document.created_at <= target.created_at,
-                          DocumentCorrection.created_at <= target.created_at)
+                          or_(
+                              # An earlier upload of the same file, corrected before this one.
+                              and_(Document.id != target.id,
+                                   Document.created_at <= target.created_at,
+                                   DocumentCorrection.created_at <= target.created_at),
+                              # ...and this document's OWN corrections, when it is read
+                              # again ("Try again"): a value the reviewer saved - typed or
+                              # accepted from a recheck - must survive the new reading.
+                              Document.id == target.id))
                   .order_by(DocumentCorrection.created_at.asc(), DocumentCorrection.id.asc()).all())
     latest = {}
     for correction, source in candidates:
-        if _same_invoice(source, target, fields) and _safe_edit(correction.field, correction.value_corrected):
+        if (_same_invoice(source, target, fields, include_self=source.id == target.id)
+                and _safe_edit(correction.field, correction.value_corrected)):
             latest[(correction.field, correction.line)] = (correction, source)
     applied = []
     for (path, index), (correction, source) in latest.items():
