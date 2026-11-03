@@ -172,6 +172,7 @@ const INVOICE_SINGLE: Section[] = [
       { path: 'invoice.invoice_no', label: 'Invoice no' },
       { path: 'invoice.invoice_date', label: 'Date' },
       { path: 'invoice.total_amount', label: 'Total' },
+      { path: 'invoice.amount_payable', label: 'Amount payable' },
       { path: 'invoice.due_date', label: 'Due date' },
       { path: 'invoice.total_taxable_amount', label: 'Taxable total' },
       { path: 'invoice.total_gst_amount', label: 'GST total' },

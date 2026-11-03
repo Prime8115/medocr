@@ -459,6 +459,18 @@ def _finalize(resolved_type, fields, pipeline, pages, failed_pages=0, hints=None
             page_text=hints.get("document_text") or hints.get("party_text"),
             slab_summary=hints.get("slab_summary"),
         )
+        # The invoice's value is its total, not the payable after a credit
+        # note it settles; checked again against the value.
+        from app.services.ocr.invoice_checks import apply_invoice_value
+
+        note = apply_invoice_value(fields, report)
+        if note:
+            report = reconcile_invoice(
+                fields, hints.get("stated_item_count"), hints.get("total_in_words"),
+                page_text=hints.get("document_text") or hints.get("party_text"),
+                slab_summary=hints.get("slab_summary"),
+            )
+            check_warnings.append(note)
         check_warnings.extend(report.pop("warnings", []))
         integrity.update(report)
 

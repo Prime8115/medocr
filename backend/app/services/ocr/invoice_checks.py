@@ -665,13 +665,6 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
                     # what it asks for - which is what its words spell out.
                     built_from_lines = printed_total + (hit[1] - figure)
                     invoice_value = figure
-                    warnings.append(
-                        f"The bill's lines and tax come to {_fmt(figure)}, which it prints as its "
-                        f"invoice value; the amount payable is {_fmt(printed_total)} - "
-                        f"{_fmt(abs(figure - printed_total))} the bill itself "
-                        f"{'deducts' if figure > printed_total else 'adds'} (a credit note, advance "
-                        "or other adjustment). Please confirm it."
-                    )
                     break
 
         if not reconciles and slab_summary and slab_summary.get("lines_amount"):
@@ -734,6 +727,10 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         # bill makes: MAX RELIEF spells out 11,767 - its lines and tax - and
         # asks 3,984 after two credit notes. Both are the bill's own figures.
         and not (invoice_value and abs(spelled - invoice_value) <= _WORDS_TOLERANCE)
+        # ...or the words spell what the bill asks to be paid, the total being
+        # its value (apply_invoice_value): AIOCD spells out its 95,055 payable.
+        and not (_num(invoice.get("amount_payable")) is not None
+                 and abs(spelled - _num(invoice.get("amount_payable"))) <= _WORDS_TOLERANCE)
     )
     if words_disagrees and page_text:
         # The bill may spell out what is left after the TDS the BUYER deducts:
@@ -754,6 +751,12 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         for note in credit_notes_set_off(page_text):
             if abs(spelled - (built_from_lines - note)) <= _WORDS_TOLERANCE:
                 words_disagrees = False
+                # The figure read as the total is that payable: the invoice's
+                # value is the payable plus the note (apply_invoice_value).
+                if (invoice_value is None and printed_total is not None
+                        and abs(printed_total - spelled) <= _WORDS_TOLERANCE
+                        and abs(printed_total + note - built_from_lines) <= _WORDS_TOLERANCE):
+                    invoice_value = round(printed_total + note, 2)
                 warnings.append(
                     f"The bill spells out {_fmt(spelled)}: its value {_fmt(built_from_lines)} less "
                     f"{_fmt(note)}, a debit/credit note it settles on this invoice. Please confirm it.")
@@ -778,11 +781,37 @@ def reconcile_invoice(fields: dict, stated_item_count: Optional[int] = None,
         "total_built_from_lines": _fmt(built_from_lines) if built_from_lines is not None else None,
         "total_reconciles": reconciles,
         "total_reconciled_by": reconciled_by,
+        # The invoice value the lines build up to, where the figure read as the
+        # total is the smaller payable after the bill's own credit note or TDS
+        # (apply_invoice_value makes it the total).
+        "invoice_value": _fmt(invoice_value) if invoice_value is not None else None,
         "stated_item_count": stated_item_count,
         # Kept with the reading, so a re-check after an edit still has it.
         "slab_summary": slab_summary,
         "warnings": warnings,
     }
+
+
+def apply_invoice_value(fields: dict, report: dict) -> Optional[str]:
+    """Make the invoice's own value its total, keeping what the bill asks to be
+    paid as `amount_payable`, where the reconciler found the payable read as the
+    total to be the value less the bill's own credit note, advance or TDS.
+
+    The total is what a purchase entry posts and what the lines build up to; a
+    credit note set off on the bill is a payment matter, not the invoice's value
+    (and can make the payable nil or negative). Returns a note for the reviewer.
+    """
+    value = report.get("invoice_value")
+    invoice = fields.setdefault("invoice", {})
+    payable = _num(invoice.get("total_amount"))
+    if value is None or payable is None or abs(float(value) - payable) < 0.01:
+        return None
+    invoice["amount_payable"] = {"value": _fmt(payable), "confidence": 1.0}
+    invoice["total_amount"] = {"value": value, "confidence": 1.0}
+    gap = float(value) - payable
+    return (f"Total is the invoice value, {value}. The bill asks for {_fmt(payable)}: it "
+            f"{'deducts' if gap > 0 else 'adds'} {_fmt(abs(gap))} itself (a credit note, advance "
+            "or TDS) - kept as the amount payable. Please confirm it.")
 
 
 _PARTY_LABELS = {"supplier": "supplier", "bill_to": "Bill-to", "ship_to": "Ship-to"}

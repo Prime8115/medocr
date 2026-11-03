@@ -165,7 +165,15 @@ def test_a_credit_note_the_bill_applies_itself_is_reconciled_and_said():
     page = "CN Ref : 259104 Total Amt : 99230.21\nIn Words Rupees : NINETY-FIVE THOUSAND FIFTY-FIVE ONLY."
     report = reconcile_invoice(bill, page_text=page)
     assert report["total_reconciles"] is True
-    assert any("invoice value" in w for w in report["warnings"])
+    # The invoice value becomes the total; the 95,055 asked for is the payable.
+    assert report["invoice_value"] == "99230.21"
+    from app.services.ocr.invoice_checks import apply_invoice_value
+
+    import copy
+
+    swapped = copy.deepcopy(bill)
+    assert "amount payable" in apply_invoice_value(swapped, report)
+    assert (_v(swapped["invoice"], "total_amount"), _v(swapped["invoice"], "amount_payable")) == ("99230.21", "95055.00")
     # A page SUB-total never stands in - it matches a partial reading.
     assert reconcile_invoice(bill, page_text="Sub Total Amt : 99230.21")["total_reconciles"] is False
 
@@ -449,7 +457,11 @@ def test_a_credit_note_the_bill_sets_off_is_reconciled_and_said():
         "total_sgst_amount": _leaf("10753.07")}}
     r = reconcile_invoice(fields, page_text="Add:DebitNotes 0.00\nLess:CreditNotes 3,509.00-\n")
     assert r["total_reconciles"] is True and "140984.00" in r["total_reconciled_by"]
-    assert any("credit note" in w for w in r["warnings"])
+    from app.services.ocr.invoice_checks import apply_invoice_value
+
+    assert "credit note" in apply_invoice_value(fields, r)
+    assert fields["invoice"]["total_amount"]["value"] == "140984.00"
+    assert fields["invoice"]["amount_payable"]["value"] == "137475.00"
 
 
 def test_the_gst_total_is_its_printed_heads_only_when_all_are_printed():

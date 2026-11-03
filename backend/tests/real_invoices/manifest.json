@@ -232,7 +232,7 @@
       "total_reconciles": true,
       "has_ruled_table": true,
       "reconciles_gst_inclusive": true,
-      "expected_warnings": ["a debit/credit note it settles on this invoice"],
+      "expected_warnings": ["kept as the amount payable"],
       "supplier_name": "Abbott Healthcare Pvt. Ltd",
       "supplier_gstin": "27AAACK3935D1ZS",
       "invoice_no": "3168532914",

@@ -1562,6 +1562,26 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             item["hsn"] = _f(hsn_text + mrp_text[0])
             item["mrp"] = _f(mrp_text[1:])
 
+    # A batch long enough to run into the expiry, and the expiry into the MRP:
+    # Cosmin prints batch "M25TN036,37", expiry "10/26" and MRP "1799.00" with
+    # no space between, read as "M25TN036,3710/2" and MRP "61799.00". Taken
+    # apart only when the expiry is blank, the batch ends in a month and the
+    # start of a year, the MRP's first digit(s) complete that year, and the
+    # MRP left over sits above the trade prices where the read one could not.
+    batch_text = (item.get("batch_no") or {}).get("value") or ""
+    mrp_text = (item.get("mrp") or {}).get("value") or ""
+    glued = re.fullmatch(r"(.*\S)((?:0?[1-9]|1[0-2])/(\d{1,3}))", batch_text)
+    if glued and not (item.get("expiry") or {}).get("value") and re.fullmatch(r"\d{2,}\.\d{2}", mrp_text):
+        year_start = glued.group(3)
+        missing = (2 if len(year_start) < 2 else 4) - len(year_start)
+        rest = mrp_text[missing:] if 0 < missing < len(mrp_text.split(".")[0]) else None
+        trade = [float(v) for v in (_num((item.get(k) or {}).get("value")) for k in ("ptr", "pts", "rate")) if v]
+        if rest and trade and float(rest) >= max(trade) and float(mrp_text) > 10 * max(trade) \
+                and float(rest) <= 10 * max(trade):
+            item["batch_no"] = _f(glued.group(1))
+            item["expiry"] = _f(glued.group(2) + mrp_text[:missing])
+            item["mrp"] = _f(rest)
+
     # A column stacking two fields carries one value per line, in the order its
     # heading names them: Overseas's "Mfg.Dt / Exp.Dt" holds "Aug-25" then
     # "Jul-27", Menarini's "Batch No / Mfg.Date" holds the batch then the mfg

@@ -128,8 +128,13 @@ class InvoiceMeta(BaseModel):
     document_title: Field = Field()
     invoice_no: Field = Field()
     invoice_date: Field = Field()
-    # The final payable amount printed at the foot of the bill.
+    # The invoice's own value: its lines, discounts, tax and round-off - what a
+    # purchase entry posts and what its lines must build up to.
     total_amount: Field = Field()
+    # What the bill asks to be paid, where it differs from its value: a credit
+    # note, advance or TDS it settles on the same bill (Aristo's "Amount
+    # Payable: -90.00" after a 6,667 credit note; Graciera's "TOPAY 12479.00").
+    amount_payable: Field = Field()
     due_date: Field = Field()
 
     # --- statutory / transport references a pharmacy has to keep ---

@@ -260,3 +260,40 @@ def test_the_gap_is_named_short_when_the_lines_fall_below_the_total():
     report = reconcile_invoice(_fields([_item("A")], "500.00"))
     warning = next(w for w in report["warnings"] if "add up to" in w)
     assert "short by 300.00" in warning
+
+
+def _bill(total):
+    from app.services.ocr.invoice_checks import _fmt
+
+    line = {"description": {"value": "MED A"}, "quantity": {"value": "10"}, "rate": {"value": "100.00"},
+            "amount": {"value": "1000.00"}}
+    return {"line_items": [line], "invoice": {
+        "total_amount": {"value": _fmt(total), "confidence": 1.0},
+        "total_cgst_amount": {"value": "60.00"}, "total_sgst_amount": {"value": "60.00"}}}
+
+
+def test_the_total_is_the_invoice_value_and_the_payable_is_kept():
+    """Graciera, Medley, Raptakos: the bill's value is its lines and tax; a
+    credit note it sets off makes a smaller payable, which is kept beside it."""
+    from app.services.ocr.invoice_checks import apply_invoice_value, reconcile_invoice
+
+    fields = _bill(820.00)
+    page = "Invoice Value 1,120.00\nLess:CreditNotes 300.00-\nNet Amount Payable 820.00"
+    report = reconcile_invoice(fields, page_text=page)
+    assert report["invoice_value"] == "1120.00"
+    note = apply_invoice_value(fields, report)
+    assert fields["invoice"]["total_amount"]["value"] == "1120.00"
+    assert fields["invoice"]["amount_payable"]["value"] == "820.00"
+    assert "820.00" in note
+    # Checked again against the value, the bill reconciles on its own figures.
+    assert reconcile_invoice(fields, page_text=page)["total_reconciles"] is True
+
+
+def test_a_bill_without_an_adjustment_keeps_its_total():
+    from app.services.ocr.invoice_checks import apply_invoice_value, reconcile_invoice
+
+    fields = _bill(1120.00)
+    report = reconcile_invoice(fields, page_text="Grand Total 1,120.00")
+    assert report["invoice_value"] is None
+    assert apply_invoice_value(fields, report) is None
+    assert "amount_payable" not in fields["invoice"]
