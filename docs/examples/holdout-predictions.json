@@ -1,0 +1,42 @@
+{
+  "cases": [
+    {
+      "id": "synthetic-format-example",
+      "status": "needs_review",
+      "source_manifest": {
+        "input_pages": 2,
+        "page_map": [1, 2],
+        "removed_pages": []
+      },
+      "payload": {
+        "fields": {
+          "supplier": {
+            "name": {"value": "Sample Pharma"},
+            "gstin": {"value": null},
+            "address": {"value": "1 Sample Road"}
+          },
+          "bill_to": {"address": {"value": "2 Test Road"}},
+          "ship_to": {"address": {"value": null}},
+          "invoice": {
+            "invoice_no": {"value": "S-001"},
+            "invoice_date": {"value": "2026-10-16"},
+            "total_amount": {"value": "100"}
+          },
+          "line_items": [
+            {
+              "description": {"value": "Sample tablets"},
+              "batch_no": {"value": "B-01"},
+              "expiry": {"value": "03/2028"},
+              "pack": {"value": "10 tablets"},
+              "quantity": {"value": "10"},
+              "free_quantity": {"value": null},
+              "rate": {"value": "10"},
+              "amount": {"value": "100.00"},
+              "gst_percent": {"value": "0"}
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
