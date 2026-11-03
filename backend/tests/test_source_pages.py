@@ -47,6 +47,45 @@ def test_two_page_pdf_source_preview_reports_both_pages(client, mock_ocr):
     assert shown.json()["page"] == 2 and shown.json()["pages"] == 2
 
 
+def test_ocr_page_count_disagreement_requires_review_even_after_edit(client, mock_ocr, monkeypatch):
+    from app.api import documents as documents_api
+
+    process = documents_api.process_document
+
+    def first_page_only(*args, **kwargs):
+        result = process(*args, **kwargs)
+        result["meta"]["pages"] = 1
+        return result
+
+    monkeypatch.setattr(documents_api, "process_document", first_page_only)
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=(595, 842))
+    for n in (1, 2):
+        pdf.drawString(40, 800, f"Invoice page {n} of 2")
+        pdf.showPage()
+    pdf.save()
+    owner = register_and_login(client)
+    uploaded = client.post("/v1/documents/", headers=owner,
+                           files={"file": ("two.pdf", buf.getvalue(), "application/pdf")},
+                           data={"doc_type": "invoice"})
+    assert uploaded.status_code == 200, uploaded.text
+    doc_id = uploaded.json()["document_id"]
+    url = f"/v1/documents/{doc_id}"
+    detail = client.get(url, headers=owner).json()
+    assert detail["source_manifest"]["processed_pages"] == 2
+    meta = detail["payload"]["meta"]
+    assert meta["source_page_mismatch"] == {"expected": 2, "observed": 1}
+    assert any(c["id"] == "source_page_integrity"
+               for c in meta["verification"]["review_requirements"])
+    blocked = client.post(f"{url}/approve", headers=owner)
+    assert blocked.status_code == 409
+    assert any(c["id"] == "source_page_integrity" for c in blocked.json()["detail"]["open_checks"])
+    edited = client.patch(url, headers=owner, json={"fields": detail["payload"]["fields"]})
+    assert edited.status_code == 200, edited.text
+    assert any(c["id"] == "source_page_integrity"
+               for c in edited.json()["payload"]["meta"]["verification"]["review_requirements"])
+
+
 def test_original_is_optional_and_processed_preview_still_works(client, mock_ocr, monkeypatch):
     monkeypatch.setattr(settings, "source_encryption_keys", "")
     owner = register_and_login(client)

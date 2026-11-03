@@ -32,7 +32,7 @@ The existing application has Android capture and offline queue, PDF/photo intake
 | Gap | Present state | Required proof before sale |
 | --- | --- | --- |
 | Accuracy | Private regression corpus exists; most fields have not been human-labelled | Blind, stratified holdout with field, row, page and accepted-voucher metrics |
-| Photos and handwriting | Extraction and review exist | Image-quality feedback, retake flow, supervised prescription gate; separate photo and handwriting cohorts |
+| Photos and handwriting | Extraction and review exist; intake now warns conservatively about severe defocus and small print | Add glare/clipping feedback, pre-upload retake flow and a supervised prescription gate; measure photo and handwriting cohorts separately |
 | Supplier learning | Exact replay and scoped lessons exist | New-invoice holdout, evidence-backed promotion, conflict abstention and rollback |
 | ERP acceptance | Webhook has signed envelope and import acknowledgement | Witness SohamERP receiver creating a purchase voucher; reconcile every row and total |
 | Amendments | One delivery key per document/connector protects against duplicate send | Versioned correction/reversal protocol with receiver acknowledgement; first increment blocks reuse of a stale success |
@@ -91,7 +91,7 @@ Report denominators, confidence intervals where useful, and unresolved exception
 
 1. **Safety increment (shipped).** Block stale delivery reuse after approved content changes; repeat unchanged sends remain idempotent, changed sends return 409 before any connector posts.
 2. **Partner self-hosting package (built, server acceptance pending).** Publish the [server runbook](SOHAMERP_SELF_HOSTING.md), Compose stack, HTTPS routing, web image and environment preflight in both repositories. Exit: SohamERP runs it on its server, verifies DNS/TLS, live OCR, encrypted backup and a restore drill.
-3. **Evidence and benchmark.** Complete annotations for a blind holdout, add source coordinates and photo-quality signals. Exit: published cohort metrics and zero silent critical errors in the release holdout.
+3. **Evidence and benchmark.** The upload manifest and OCR page counts now have an explicit review check when they disagree, and severe photo defocus has an advisory warning. Complete annotations for a blind holdout, source coordinates, glare/clipping signals and a retake flow. Exit: published cohort metrics and zero silent critical errors in the release holdout.
 4. **SohamERP integration pilot.** Implement receiver in the selected SohamERP product, run synthetic conformance tests, then witnessed real purchase entries. Exit: voucher IDs, line/batch/tax reconciliation, duplicate and failure drills.
 5. **Amendment protocol.** Introduce approved document versions, correction/reversal events and receiver acknowledgements. Exit: a corrected imported invoice changes the intended ERP entry once, with audit and no duplicate stock.
 6. **Commercial readiness.** Add metering, support tools, retention/restore drill and contracts; run paid pilot and compare time saved and accepted-entry cost against quoted alternatives. Exit: owner signs off on unit economics, SLA and onboarding checklist.

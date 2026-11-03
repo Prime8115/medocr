@@ -121,6 +121,29 @@ def _open_image(data: bytes, kind: str):
         raise UploadRejected(MSG_BAD_IMAGE, "image_unreadable")
 
 
+def _focus_warning(img) -> Optional[str]:
+    """Warn on strongly blurred, text-bearing photos without rejecting them.
+
+    Compare an image with a slightly softened copy at a bounded resolution.
+    Clean printed edges survive that comparison; severe defocus does not. The
+    threshold is intentionally conservative because low-contrast invoices and
+    handwriting should remain available for review, not be refused at upload.
+    """
+    from PIL import ImageChops, ImageFilter, ImageStat
+
+    if min(img.size) < 900:
+        return None  # the small-print warning already covers these captures
+    grey = img.convert("L")
+    grey.thumbnail((1200, 1200))
+    if ImageStat.Stat(grey).stddev[0] < 12:
+        return None  # too little visible structure for a focus estimate
+    detail = ImageChops.difference(grey, grey.filter(ImageFilter.GaussianBlur(1)))
+    if ImageStat.Stat(detail).mean[0] < 0.8:
+        return ("This photo may be out of focus. Compare small print with the source; "
+                "retake it if medicine names, batches or quantities are unclear.")
+    return None
+
+
 def _prepare_image(data: bytes, kind: str, notes: List[str], quality_warnings: List[str]):
     from PIL import ImageOps, ImageStat
 
@@ -145,6 +168,9 @@ def _prepare_image(data: bytes, kind: str, notes: List[str], quality_warnings: L
     grey = img.convert("L")
     if ImageStat.Stat(grey).stddev[0] < _BLANK_STDDEV:
         raise UploadRejected(MSG_BLANK_IMAGE, "image_blank")
+    focus = _focus_warning(img)
+    if focus:
+        quality_warnings.append(focus)
 
     longest = settings.upload_max_image_side
     if longest and max(img.size) > longest:

@@ -1,5 +1,5 @@
 """Transcription review requirements; no clinical dosing or prescribing rules."""
-from app.services.ocr.coverage import summarize, _value, _present
+from app.services.ocr.coverage import summarize, _value, _present, source_page_requirement
 
 
 def verify_prescription(fields, report):
@@ -18,6 +18,9 @@ def verify_prescription(fields, report):
                  "label": "Confirm prescription transcription",
                  "message": "A pharmacist must compare every medicine and instruction with the source. "
                             "Do not guess unclear text; confirm it with the prescriber before use.", "fields": []}]
+    page_check = source_page_requirement(report)
+    if page_check:
+        required.append(page_check)
     if missing:
         required.append({"id": "prescription_coverage", "status": "fail",
                          "label": "Prescription fields need review",
