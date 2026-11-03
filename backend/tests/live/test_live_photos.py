@@ -61,9 +61,10 @@ def _read(image: bytes) -> Optional[dict]:
         try:
             return process_document("live-photo", image, "image/jpeg", "invoice")
         except OCRError as exc:
+            # Busy, a timeout or an unreadable answer: not scored, but said.
+            _BUSY.append(f"{exc.kind}: {str(exc)[:200]}")
             if exc.kind != "busy":
-                raise
-            _BUSY.append(str(exc)[:200])
+                return None
     return None
 
 
@@ -125,9 +126,9 @@ class Score:
         parts = ", ".join(f"{f} {self.right[f]}/{self.asked[f]}" for f in sorted(self.asked))
         out = sys.__stdout__
         out.write(f"::notice title={self.name}::{self.rate():.1%} of fields right ({parts}); "
-                  f"{self.unread} not read (AI busy)\n")
+                  f"{self.unread} not read (AI error)\n")
         for reason in sorted(set(_BUSY))[:5]:
-            out.write(f"::warning title={self.name} AI busy::{reason}\n")
+            out.write(f"::warning title={self.name} AI error::{reason}\n")
         _BUSY.clear()
         if show_misses:
             for m in self.misses[:40]:
