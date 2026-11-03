@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "id": "synthetic-format-example",
+      "split": "example",
+      "verified": "example only",
+      "cohort": "printed_pdf",
+      "source_pages": 2,
+      "content_pages": [1, 2],
+      "expect": {
+        "supplier.name": "Sample Pharma",
+        "supplier.gstin": null,
+        "supplier.address": "1 Sample Road",
+        "bill_to.address": "2 Test Road",
+        "ship_to.address": null,
+        "invoice.invoice_no": "S-001",
+        "invoice.invoice_date": "16-10-2026",
+        "invoice.total_amount": "100.00"
+      },
+      "lines": {"count": 1},
+      "line_expect": [
+        {
+          "description": "Sample tablets",
+          "batch_no": "B-01",
+          "expiry": "03-2028",
+          "pack": "10 tablets",
+          "quantity": "10",
+          "free_quantity": null,
+          "rate": "10.00",
+          "amount": "100.00",
+          "gst_percent": "0"
+        }
+      ]
+    }
+  ]
+}

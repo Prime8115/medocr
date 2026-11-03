@@ -34,6 +34,7 @@ it never fabricates medical data.
 
 ## Quick links
 - **Current product requirements and release gates:** [docs/INDEPENDENT_PRODUCT_PRD.md](docs/INDEPENDENT_PRODUCT_PRD.md)
+- **Human-labelled invoice accuracy protocol:** [docs/ACCURACY_HOLDOUT.md](docs/ACCURACY_HOLDOUT.md)
 - **Earlier product spec:** [docs/PRD.md](docs/PRD.md)
 - **Build plan:** [docs/SDLC_PLAN.md](docs/SDLC_PLAN.md)
 - **Integrate your software:** [ERP endpoint guide and example JSON](docs/ERP_WEBHOOK_PARTNER_GUIDE.md) · [full integration contract](docs/INTEGRATION.md)
