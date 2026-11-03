@@ -54,6 +54,8 @@ def _read(image: bytes) -> Optional[dict]:
 
     from app.services.ocr import process_document
 
+    # The real AI, never the stand-in a developer's .env may switch on.
+    settings.allow_mock_ocr = False
     for attempt in range(3):
         time.sleep(8 if attempt == 0 else 45)
         try:
@@ -72,6 +74,8 @@ def _v(node, key):
 
 def _num(text) -> Optional[float]:
     text = re.sub(r"[^\d.,-]", "", str(text or ""))
+    # A currency prefix leaves its dot behind: "Rp. 91,000", "Rs.118.000".
+    text = re.sub(r"^[^\d-]+", "", text)
     if not text:
         return None
     # "17.500" / "17,500" (thousands) and "1,234.50" (decimals) alike.
