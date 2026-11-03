@@ -36,7 +36,7 @@ The existing application has Android capture and offline queue, PDF/photo intake
 | Supplier learning | Exact replay and scoped lessons exist | New-invoice holdout, evidence-backed promotion, conflict abstention and rollback |
 | ERP acceptance | Webhook has signed envelope and import acknowledgement | Witness SohamERP receiver creating a purchase voucher; reconcile every row and total |
 | Amendments | One delivery key per document/connector protects against duplicate send | Versioned correction/reversal protocol with receiver acknowledgement; first increment blocks reuse of a stale success |
-| Operations | Basic audit and deployment exist | Restore drill, incident runbook, tenant isolation check, usage/cost visibility and support SLA |
+| Operations | Basic audit and deployment exist; the partner self-hosting package has Compose, HTTPS routing, env preflight and a web image | Complete a server-specific restore drill, incident runbook, tenant isolation check, usage/cost visibility and support SLA |
 | Commercial | No validated plan or conversion data | Paid pilot, per-shop economics, support burden and repeatable onboarding |
 
 ## 4. Functional requirements
@@ -89,15 +89,17 @@ Report denominators, confidence intervals where useful, and unresolved exception
 
 ## 7. Phased delivery and exit criteria
 
-1. **Safety increment (current PR).** Block stale delivery reuse after approved content changes; add regression tests and product documentation. Exit: repeat unchanged sends remain idempotent, changed sends return 409 before any connector posts, no existing tests regress.
-2. **Evidence and benchmark.** Complete annotations for a blind holdout, add source coordinates and photo-quality signals. Exit: published cohort metrics and zero silent critical errors in the release holdout.
-3. **SohamERP integration pilot.** Implement receiver in the selected SohamERP product, run synthetic conformance tests, then witnessed real purchase entries. Exit: voucher IDs, line/batch/tax reconciliation, duplicate and failure drills.
-4. **Amendment protocol.** Introduce approved document versions, correction/reversal events and receiver acknowledgements. Exit: a corrected imported invoice changes the intended ERP entry once, with audit and no duplicate stock.
-5. **Commercial readiness.** Add metering, support tools, retention/restore drill and contracts; run paid pilot and compare time saved and accepted-entry cost against quoted alternatives. Exit: owner signs off on unit economics, SLA and onboarding checklist.
+1. **Safety increment (shipped).** Block stale delivery reuse after approved content changes; repeat unchanged sends remain idempotent, changed sends return 409 before any connector posts.
+2. **Partner self-hosting package (built, server acceptance pending).** Publish the [server runbook](SOHAMERP_SELF_HOSTING.md), Compose stack, HTTPS routing, web image and environment preflight in both repositories. Exit: SohamERP runs it on its server, verifies DNS/TLS, live OCR, encrypted backup and a restore drill.
+3. **Evidence and benchmark.** Complete annotations for a blind holdout, add source coordinates and photo-quality signals. Exit: published cohort metrics and zero silent critical errors in the release holdout.
+4. **SohamERP integration pilot.** Implement receiver in the selected SohamERP product, run synthetic conformance tests, then witnessed real purchase entries. Exit: voucher IDs, line/batch/tax reconciliation, duplicate and failure drills.
+5. **Amendment protocol.** Introduce approved document versions, correction/reversal events and receiver acknowledgements. Exit: a corrected imported invoice changes the intended ERP entry once, with audit and no duplicate stock.
+6. **Commercial readiness.** Add metering, support tools, retention/restore drill and contracts; run paid pilot and compare time saved and accepted-entry cost against quoted alternatives. Exit: owner signs off on unit economics, SLA and onboarding checklist.
 
 ## 8. Dependencies and decisions
 
 - SohamERP must nominate the first receiving product, a technical owner, sandbox HTTPS endpoint, authentication/secret exchange, voucher mapping and import validation rules. This has not been decided yet.
+- SohamERP selected an existing HTTPS reverse proxy for hosting. API/web domain names, server access and the first receiving product are still to be supplied; the self-hosting package binds its upstreams to loopback.
 - A source-code repository is a delivery artifact, not an IP assignment or deployment. Access and commercial rights require a separate agreement.
 - The partner copy uses a fresh private Git history with source and synthetic examples only. Production secrets, private invoice corpus and live deploy configuration stay outside it. Additional GitHub users receive access only when the owner supplies usernames.
-- No production deployment or customer-facing accuracy claim follows from this PRD alone.
+- A packaged server stack is not a completed SohamERP deployment or a customer-facing accuracy claim. A witnessed partner install and accepted ERP import remain required.

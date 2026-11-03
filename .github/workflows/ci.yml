@@ -101,3 +101,28 @@ jobs:
       - name: Unit tests
         working-directory: ./web
         run: npm test
+
+  partner-deployment:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check environment validation
+        run: python -m unittest discover -s partner-deploy -p 'test_*.py' -v
+      - name: Validate both Compose modes
+        run: |
+          cp partner-deploy/testdata/valid.env partner-deploy/.env
+          python partner-deploy/check_env.py partner-deploy/.env
+          docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml --profile standalone config --quiet
+          docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml -f partner-deploy/compose.existing-proxy.yaml config --quiet
+      - name: Build and smoke-test the containers
+        run: |
+          docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml up -d --build --wait db backend web
+          docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml exec -T backend python -c "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'))['status'] == 'ok'"
+          docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml exec -T web wget -q -O /dev/null http://127.0.0.1/
+          docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml down
+      - name: Validate HTTPS routing
+        run: |
+          docker run --rm -e API_DOMAIN=api.pilot-pharmacy.in -e WEB_DOMAIN=app.pilot-pharmacy.in -v "$PWD/partner-deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

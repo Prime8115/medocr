@@ -1,0 +1,9 @@
+{$WEB_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy web:80
+}
+
+{$API_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy backend:8080
+}

@@ -1,5 +1,7 @@
 # Connect an external ERP to MediScan
 
+For a separate MediScan installation on a SohamERP server, use the [self-hosting and environment guide](SOHAMERP_SELF_HOSTING.md). The receiver described here is implemented inside the chosen ERP product and has its own deployment.
+
 MediScan **sends** a reviewed and approved document to an HTTPS endpoint that your ERP team hosts. Your ERP does not need to poll MediScan. The shop owner enters the endpoint URL and a shared signing secret in MediScan Settings, then selects **Approve and send** on a document. This is a purchase/import integration; an ERP must still decide whether a document is an invoice, credit note, or prescription before posting it to accounts or inventory.
 
 ## Working example files

@@ -1,0 +1,9 @@
+# Add this file when a host reverse proxy already terminates HTTPS. Only the
+# host's loopback interface can reach MediScan; proxy these ports explicitly.
+services:
+  backend:
+    ports:
+      - "127.0.0.1:${MEDISCAN_API_PORT:-8090}:8080"
+  web:
+    ports:
+      - "127.0.0.1:${MEDISCAN_WEB_PORT:-8091}:80"
