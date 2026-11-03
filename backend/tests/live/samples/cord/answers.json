@@ -1,0 +1,280 @@
+{
+ "source": "naver-clova-ix/cord-v2, test split (CC BY 4.0)",
+ "receipts": [
+  {
+   "file": "cord-test-001.jpg",
+   "source_index": 1,
+   "total": "91000",
+   "lines": [
+    {
+     "name": "J.STB PROMO",
+     "qty": null,
+     "price": "17500"
+    },
+    {
+     "name": "Y.B.BAT",
+     "qty": null,
+     "price": "46000"
+    },
+    {
+     "name": "Y.BASO PROM",
+     "qty": null,
+     "price": "27500"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-004.jpg",
+   "source_index": 4,
+   "total": "174,600",
+   "lines": [
+    {
+     "name": "ICE BLACKCOFFE",
+     "qty": "2",
+     "price": "82,000"
+    },
+    {
+     "name": "AVOCADO COFFEE",
+     "qty": "1",
+     "price": "61,000"
+    },
+    {
+     "name": "CHIKEN KATSU FF",
+     "qty": "1",
+     "price": "51,000"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-006.jpg",
+   "source_index": 6,
+   "total": "46,000",
+   "lines": [
+    {
+     "name": "EGG TART",
+     "qty": "1",
+     "price": "13,000"
+    },
+    {
+     "name": "CHOCO CUS ARD PASTRY",
+     "qty": "2",
+     "price": "24,000"
+    },
+    {
+     "name": "REDBEAN BREAD",
+     "qty": "1",
+     "price": "9,000"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-014.jpg",
+   "source_index": 14,
+   "total": "281,435",
+   "lines": [
+    {
+     "name": "RedVelvet Cheese Slc",
+     "qty": "1",
+     "price": "38,000"
+    },
+    {
+     "name": "Chicken Baked Rice",
+     "qty": "1",
+     "price": "55,000"
+    },
+    {
+     "name": "Fish n Chips",
+     "qty": "1",
+     "price": "65,000"
+    },
+    {
+     "name": "Mushroom Soup",
+     "qty": "1",
+     "price": "35,000"
+    },
+    {
+     "name": "Chamomile",
+     "qty": "1",
+     "price": "25,000"
+    },
+    {
+     "name": "Iced Tea",
+     "qty": "1",
+     "price": "20,000"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-017.jpg",
+   "source_index": 17,
+   "total": "Rp. 91,000",
+   "lines": [
+    {
+     "name": "Goblin's Mace",
+     "qty": "1",
+     "price": "25,000"
+    },
+    {
+     "name": "Mozarella Hot Dog",
+     "qty": "2",
+     "price": "38,000"
+    },
+    {
+     "name": "Chili Pepper Croquette",
+     "qty": "1",
+     "price": "14,000"
+    },
+    {
+     "name": "Cheese Croquette",
+     "qty": "1",
+     "price": "14,000"
+    },
+    {
+     "name": "Plastik Amook",
+     "qty": "1",
+     "price": "0"
+    },
+    {
+     "name": "Plastik Putih Take Away",
+     "qty": "1",
+     "price": "0"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-020.jpg",
+   "source_index": 20,
+   "total": "377,859",
+   "lines": [
+    {
+     "name": "cashew nuts chkn",
+     "qty": "1",
+     "price": "64,500"
+    },
+    {
+     "name": "garlic pepper beef",
+     "qty": "1",
+     "price": "79,500"
+    },
+    {
+     "name": "red curry beef",
+     "qty": "1",
+     "price": "69,500"
+    },
+    {
+     "name": "phad thai",
+     "qty": "1",
+     "price": "64,500"
+    },
+    {
+     "name": "steamed rice",
+     "qty": "4",
+     "price": "47,600"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-024.jpg",
+   "source_index": 24,
+   "total": "Rp.118.000",
+   "lines": [
+    {
+     "name": "5001-Corn Flakes Cookies",
+     "qty": "x1",
+     "price": "Rp.56.000"
+    },
+    {
+     "name": "5003-Chokoreto Cookies",
+     "qty": "x1",
+     "price": "Rp.62.000"
+    },
+    {
+     "name": "6002-Plastic Bag Medium",
+     "qty": "x1",
+     "price": "Rp.0"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-025.jpg",
+   "source_index": 25,
+   "total": "43,000",
+   "lines": [
+    {
+     "name": "TWIST STRAWBERRY DONUT",
+     "qty": "1",
+     "price": "10,000"
+    },
+    {
+     "name": "TLJ CROQUETTE",
+     "qty": "1",
+     "price": "17,000"
+    },
+    {
+     "name": "POTATO PEPPER BAGEL",
+     "qty": "1",
+     "price": "16,000"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-028.jpg",
+   "source_index": 28,
+   "total": "426,195",
+   "lines": [
+    {
+     "name": "SAMGYOPSAL",
+     "qty": "2",
+     "price": "194,000"
+    },
+    {
+     "name": "SUL LUNG TANG",
+     "qty": "1",
+     "price": "75,000"
+    },
+    {
+     "name": "MAKOLI",
+     "qty": "1",
+     "price": "100,000"
+    }
+   ]
+  },
+  {
+   "file": "cord-test-029.jpg",
+   "source_index": 29,
+   "total": "145,900",
+   "lines": [
+    {
+     "name": "COLD OCHA",
+     "qty": "1",
+     "price": "10,909"
+    },
+    {
+     "name": "BCA PROMO",
+     "qty": "1",
+     "price": "54,455"
+    },
+    {
+     "name": "SKEWERED SHUMAI",
+     "qty": "1",
+     "price": "12,727"
+    },
+    {
+     "name": "SKEWERED TOFU ROLL",
+     "qty": "1",
+     "price": "12,727"
+    },
+    {
+     "name": "EBI TEMPURA",
+     "qty": "1",
+     "price": "13,636"
+    },
+    {
+     "name": "KITSUNE UDON (KIDS)",
+     "qty": "1",
+     "price": "28,182"
+    }
+   ]
+  }
+ ]
+}
