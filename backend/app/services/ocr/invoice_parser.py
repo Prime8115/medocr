@@ -1036,7 +1036,7 @@ _NUMERIC_FIELDS = ("quantity", "free_quantity", "total_quantity", "mrp", "ptr", 
 # Piramal stacks "Product Code/ HSN": "400016002" over "30045090". Never a bare
 # "HSN Code" - Sanofi wraps its HSN "300490" over "69" in that one field.
 _STACKABLE = (("batch_no", r"batch|lot"), ("mfg_date", r"mfg|mfd"), ("expiry", r"exp"),
-              ("product_code", r"(?:prod(?:uct)?|item)\.?\s*code"), ("hsn", r"hsn"),
+              ("product_code", r"(?:prod(?:uct)?|item|ean)\.?\s*code"), ("hsn", r"hsn"),
               # Bayer: "P.T.R. / M.R.P. / P.T.S" over "1,067.86 / 1,495.00 / 961.07".
               ("ptr", r"p\.?\s*t\.?\s*r\b"), ("mrp", r"m\.?\s*r\.?\s*p\b"), ("pts", r"p\.?\s*t\.?\s*s\b"))
 
@@ -1591,6 +1591,20 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
             continue
         parts = [p.strip() for p in str(row[idx] or "").split("\n") if p.strip()]
         order = _stacked_fields(heading)
+        # Its first value not printed (pdf_table keeps the line's place): the
+        # value under it is the heading's second field.
+        if str(row[idx] or "").startswith("\n") and len(order) == 2 and len(parts) == 1:
+            item[order[1]] = _f(_strip_stray(_clean(parts[0])).lstrip("/ ").strip())
+            if (item.get(order[0]) or {}).get("value") == item[order[1]]["value"]:
+                item[order[0]] = _f(None, None)
+            continue
+        # "Description" over "Lot #" (H&H): the name, then the lot on its own line.
+        if (idx == cols.get("description") and order == ["batch_no"] and len(parts) == 2
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/-]{2,}", parts[1])
+                and not (item.get("batch_no") or {}).get("value")):
+            item["description"] = _f(_clean(parts[0]))
+            item["batch_no"] = _f(parts[1])
+            continue
         # ...or three, one per line: Prabodhan's "Batch No/ Mfg Dt./ Expiry Dt."
         # holds "PLMT2505", "02/25", "01/28".
         if len(parts) < 2 or not (len(order) == 2 or len(order) == len(parts) == 3):

@@ -83,6 +83,8 @@ WORD_TOLERANCE = 1.5
 # Tuned on real invoices: JB prints "Mfg Cd." and "Total Qty.EA" 6pt apart, so
 # anything looser welds the manufacturer code onto the quantity.
 _COLUMN_GAP = 5.0
+# A line this much nearer the next row than its own is still a tie: the name wraps down.
+_WRAP_TIE = 1.0
 
 
 Word = Dict[str, object]
@@ -451,6 +453,24 @@ def _channel_edges(columns: List[dict], body: List[Line], edges: List[float]) ->
     return out
 
 
+_CODE_HEADING = re.compile(r"\bhsn|\bean\b|(?:prod(?:uct)?|item)\.?\s*code", re.I)
+_DATE_HEADING = re.compile(r"mfg|mfd|\bexp", re.I)
+
+
+def _code_over_date(col: dict) -> bool:
+    """A heading set over two lines, a code on one and a date on the other:
+    H&H's "HSN Code" over "Exp. Date" and "EAN Code" over "Mfg. Date". On one
+    line ("HSN ... Batch Mfg. Exp.", Sanofi) they are separate columns."""
+    lines: Dict[int, str] = {}
+    for w in col["words"]:
+        top = round(float(w["top"]))
+        key = next((k for k in lines if abs(k - top) <= 2), top)
+        lines[key] = f"{lines.get(key, '')} {w['text']}"
+    texts = list(lines.values())
+    return any(_CODE_HEADING.search(a) and _DATE_HEADING.search(b) and not _DATE_HEADING.search(a)
+               and not _CODE_HEADING.search(b) for a in texts for b in texts if a is not b)
+
+
 def _assign(line: Line, edges: List[float], n: int) -> List[str]:
     cells: List[List[str]] = [[] for _ in range(n)]
     for word in line[1]:
@@ -685,6 +705,9 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
         i for i, col in enumerate(columns)
         if sum(bool(re.search(p, col["label"], re.I))
                for p in (r"batch|lot", r"mfg|mfd", r"exp")) >= 2
+        # ...or a code over a date: H&H heads "HSN Code / Exp. Date" and
+        # "EAN Code / Mfg. Date", one value per line.
+        or _code_over_date(col)
         # ...or prices, one per line: Bayer heads "P.T.R. / M.R.P. / P.T.S".
         or sum(bool(re.search(p, col["label"], re.I))
                for p in (r"p\.?\s*t\.?\s*r", r"m\.?\s*r\.?\s*p", r"p\.?\s*t\.?\s*s")) >= 2
@@ -709,10 +732,15 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
     # a line of its own for the reader to tell apart.
     maker_below = bool(re.search(r"/\s*(?:manufacturer|mfr|mfg|maker)",
                                  columns[description_col]["label"] if columns else "", re.I))
+    # "Description" over "Lot #" (H&H): the lot is printed under the name.
+    lot_below = bool(re.search(r"\b(?:lot|batch)\b", columns[description_col]["label"] if columns else "", re.I))
 
     def give(record: List[str], otext: str, ovals: Dict[int, str], before: bool) -> None:
         if otext:
-            if maker_below and not before and record[description_col] and "\n" not in record[description_col]:
+            if (lot_below and not before and record[description_col] and "\n" not in record[description_col]
+                    and any(c in stacked for c in ovals)):
+                record[description_col] = f"{record[description_col]}\n{otext}"
+            elif maker_below and not before and record[description_col] and "\n" not in record[description_col]:
                 record[description_col] = f"{record[description_col]}\n{otext}"
             else:
                 record[description_col] = (f"{otext} {record[description_col]}" if before
@@ -733,6 +761,10 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             elif not before and record[col] and record[col].count("\n") < (2 if col in stacked else 1):
                 # A stacked heading names up to three values, one per line.
                 record[col] = f"{record[col]}\n{val}"
+            elif not before and col in stacked and not record[col]:
+                # ...its first value not printed: the line under it is still
+                # the second (H&H's "EAN Code / Mfg. Date" with no EAN).
+                record[col] = f"\n{val}"
 
     batch_cols = [i for i, col in enumerate(columns) if re.search(r"batch|\blot\b", col["label"], re.I)]
     serial_col = 0 if columns and re.fullmatch(r"s\.?\s*r\.?(?:\s*no\.?)?|s\.?\s*no\.?|sl\.?\s*no\.?|#",
@@ -812,6 +844,7 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             sealed = False
             top = line[0]
             # Decide where the orphans between the last record and this one go.
+            hang = row_tops[-1] if rows else None   # the last line given to the row above
             for otop, otext, ovals in orphans:
                 # "Mfg : JAIN LIFECARE" (Cosmin) is a detail printed UNDER its
                 # product, however close it sits to the next one - as a prefix
@@ -820,9 +853,16 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 # wraps "(Old MRP:98.00, Old" / "GST:12.00%)" - the tail sat
                 # nearer the next product and became the start of its name.
                 above = rows[-1][description_col] if rows else ""
-                if rows and (abs(otop - row_tops[-1]) <= abs(otop - top) or _DETAIL_LINE.match(otext)
+                # ...and on an even grid, where a line sits as near the next
+                # row as its own, a name wraps DOWN onto the line under it:
+                # Kanchan's "ENDOFORMIN SR" over "500" (11.4pt down, 11.3pt
+                # to the next row) - "500" became the next product's start.
+                if rows and hang is None:
+                    hang = row_tops[-1]
+                if rows and (abs(otop - hang) <= abs(otop - top) + _WRAP_TIE or _DETAIL_LINE.match(otext)
                              or above.count("(") > above.count(")")):
                     give(rows[-1], otext, ovals, before=False)
+                    hang = otop
                 elif not rows and ovals and not carried:
                     # Figures above a page's first line are the end of the
                     # previous page's last line (Mankind's line 7): a row of
