@@ -75,6 +75,8 @@ curl --fail http://127.0.0.1:8090/health
 
 Configure the host proxy so `https://<api-domain>` forwards to `127.0.0.1:8090` and `https://<web-domain>` forwards to `127.0.0.1:8091`. Preserve the incoming `Host` header and forward HTTPS scheme information. Change `MEDISCAN_API_PORT` and `MEDISCAN_WEB_PORT` in `.env` if those local ports are occupied. Keep them bound to `127.0.0.1`, and verify the public HTTPS URLs after the proxy is configured.
 
+These loopback addresses assume the existing reverse proxy runs on the **host**. If SohamERP's proxy is itself a container, `127.0.0.1` inside that container is different. Connect the proxy to a shared Docker network and proxy to the `backend:8080` and `web:80` service names, or have the infrastructure team provide a private host-gateway route. Do not change the override to a public `0.0.0.0` bind to solve that routing issue.
+
 ## 5. First-use checks and SohamERP handoff
 
 1. Create a test shop and owner through the app. Upload a **synthetic** invoice, confirm all pages and rows, save a correction, reopen it from a second browser/device, then approve it.
