@@ -42,7 +42,8 @@ certbot --nginx -d <your-domain>  # issues TLS + adds HTTP->HTTPS redirect
 ```bash
 cd web
 VITE_BASE=admin VITE_API_URL=https://<your-domain> npm run build   # or: npx vite build
-# copy web/dist/* to /opt/mediscan/web-admin/  -> served at https://<your-domain>/admin/
+# Normally nothing to do: every CI deploy builds it into backend/admin_ui, and
+# nginx serves /admin/ from /opt/mediscan/backend/admin_ui/ (nginx.example.conf).
 ```
 > Note: pass `VITE_BASE` without slashes (the vite config normalizes it). On
 > Git Bash, a slashed value gets path-mangled.

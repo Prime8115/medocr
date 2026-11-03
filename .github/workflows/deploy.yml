@@ -162,6 +162,15 @@ jobs:
           done
           curl -fsS --max-time 10 "https://$DEPLOY_HOST/health"; echo
           curl -fsS --max-time 10 "https://$DEPLOY_HOST/admin/" | grep -q '<div id="root"'
+          # ...and that it is THIS build of the admin, not a copy served from
+          # elsewhere: production's nginx once served a hand-copied 11 Aug admin
+          # from /opt/mediscan/web-admin long after every deploy shipped a new one.
+          BUILT=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' backend/admin_ui/index.html | head -1)
+          if curl -fsS --max-time 10 "https://$DEPLOY_HOST/admin/" | grep -q "$BUILT"; then
+            echo "admin console: serving this build ($BUILT)"
+          else
+            echo "::warning title=Web admin is stale::/admin/ is not serving this build ($BUILT). Point nginx's /admin/ alias at /opt/mediscan/backend/admin_ui/ (deploy/nginx.example.conf)."
+          fi
           # Confirm it is genuinely the new build, not a stale container that
           # merely answers /health - this is the check that would have caught
           # production sitting six weeks behind.
