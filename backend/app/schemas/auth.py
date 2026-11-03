@@ -17,6 +17,7 @@ class UserOut(BaseModel):
     email: EmailStr
     role: str
     shop_id: str
+    is_platform_admin: bool = False
 
     model_config = {"from_attributes": True}
 

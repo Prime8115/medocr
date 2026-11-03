@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { Settings as SettingsIcon, FileText, LogOut, Boxes, Truck } from 'lucide-react';
+import { Settings as SettingsIcon, FileText, LogOut, Boxes, Truck, Flag } from 'lucide-react';
 import './index.css';
 
 import ReviewQueue from './components/ReviewQueue';
@@ -8,6 +8,7 @@ import Settings from './components/Settings';
 import Inventory from './components/Inventory';
 import Suppliers from './components/Suppliers';
 import Login from './components/Login';
+import ProblemReports from './components/ProblemReports';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 
 function Shell() {
@@ -42,6 +43,11 @@ function Shell() {
             <SettingsIcon size={18} /> Integrations
           </div>
         </NavLink>
+        {user?.is_platform_admin && <NavLink to="/admin/reports" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Flag size={18} /> Customer reports
+          </div>
+        </NavLink>}
 
         <div style={{ marginTop: 'auto' }}>
           <div className="text-muted" style={{ padding: '0 16px', fontSize: 12, marginBottom: 8 }}>{user?.email}</div>
@@ -61,6 +67,7 @@ function Shell() {
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/admin/reports" element={user?.is_platform_admin ? <ProblemReports /> : <Navigate to="/queue" replace />} />
           <Route path="*" element={<Navigate to="/queue" replace />} />
         </Routes>
       </main>

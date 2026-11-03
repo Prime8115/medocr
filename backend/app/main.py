@@ -1,15 +1,19 @@
 """MediScan OCR Connect API — application entrypoint."""
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app import models  # noqa: F401  (populate SQLAlchemy metadata)
-from app.api import agent, auth, connectors, documents, inventory
+from app.api import agent, auth, connectors, documents, inventory, problem_reports
 from app.config import settings
 from app.database import SessionLocal
 from app.services.recovery import recover_stuck_documents
@@ -81,6 +85,29 @@ app.include_router(documents.router, prefix="/v1/documents", tags=["Documents"])
 app.include_router(connectors.router, prefix="/v1/connectors", tags=["Connectors"])
 app.include_router(inventory.router, prefix="/v1/inventory", tags=["Inventory"])
 app.include_router(agent.router, prefix="/v1/agent", tags=["Desktop Agent"])
+app.include_router(problem_reports.router, prefix="/v1/admin", tags=["Platform reports"])
+
+# The source production deploy packages the web console here. Partner Compose
+# serves the same web app separately, so this mount stays optional in dev.
+_admin_ui = Path(__file__).resolve().parent.parent / "admin_ui"
+if (_admin_ui / "index.html").is_file():
+    class _AdminSPA(StaticFiles):
+        async def get_response(self, path, scope):
+            try:
+                response = await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code != 404 or "." in path.rsplit("/", 1)[-1]:
+                    raise
+                return await super().get_response("index.html", scope)
+            if response.status_code == 404 and "." not in path.rsplit("/", 1)[-1]:
+                return await super().get_response("index.html", scope)
+            return response
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_redirect():
+        return RedirectResponse("/admin/")
+
+    app.mount("/admin", _AdminSPA(directory=str(_admin_ui), html=True), name="admin-ui")
 
 
 @app.get("/health")

@@ -5,6 +5,7 @@ export interface User {
   email: string;
   role: string;
   shop_id: string;
+  is_platform_admin: boolean;
 }
 
 export async function login(email: string, password: string): Promise<string> {

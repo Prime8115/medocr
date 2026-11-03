@@ -149,6 +149,24 @@ The detailed scope and proposed release metrics are in the [independent product 
 
 ## 6. Operations
 
+### Customer problem reports
+
+The backend keeps every **Report a problem** event as a support case. After the
+first deployment, register the support operator's MediScan login, then grant
+that specific existing account platform access from the server:
+
+```bash
+docker compose --env-file partner-deploy/.env -f partner-deploy/compose.yaml -f partner-deploy/compose.existing-proxy.yaml exec backend python -m scripts.set_platform_admin admin@example.com --grant
+```
+
+Use the same command with `--revoke` when access ends. The web console shows a
+**Customer reports** section for platform admins only. Search by customer
+email, shop or document ID, compare the saved extraction with the source pages,
+record the resolution and close the case. Reports from before the dashboard
+appear automatically because the original audit events are retained. A shop
+owner has no cross-customer access unless explicitly granted this platform
+role. Do not grant it to a customer account.
+
 - **Updates:** back up database and source storage, note the current commit, `git pull` the reviewed release, then run the same `docker compose ... up -d --build` command. Backend startup applies Alembic migrations. A code rollback may require restoring the matching database backup; do not assume a schema downgrade is safe.
 - **Backups:** schedule a PostgreSQL custom-format dump (`pg_dump -Fc`) and a snapshot of the Compose `source_storage` volume. Keep backups encrypted outside the server along with any `SOURCE_ENCRYPTION_KEYS`, and practice restoring both to a staging instance. A source backup without its encryption key cannot recover exact originals.
 - **Monitoring:** check `docker compose ... ps`, backend and Caddy logs, `/health`, OCR job failures, low disk space, database backup age, and failed ERP deliveries. Restrict log access; never copy raw invoice data or secrets into support tickets.

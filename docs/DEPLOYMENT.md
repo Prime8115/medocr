@@ -50,6 +50,13 @@ Put that host's URL into the backend's `CORS_ORIGINS`.
 - **Backups:** enable managed Postgres backups on your host.
 - **Migrations:** ship schema changes as Alembic revisions; the container runs
   `alembic upgrade head` on every deploy.
+- **Customer reports:** after the report-queue migration, grant one trusted,
+  existing login access from the backend shell with
+  `python -m scripts.set_platform_admin admin@example.com --grant`. The web
+  console is served at `https://mediscan.maxxcom.in/admin/` and then shows
+  **Customer reports**. Search the reporter's email or
+  document ID to inspect older and recent complaints. The queue reads existing
+  `document.reported` audit events, so no complaint import is required.
 - **Storage:** default `local` disk works for a single instance. For multiple
   instances or durability, set `STORAGE_BACKEND=s3` + S3 vars.
 - **Original uploads:** to compare with the exact received photo/PDF, use

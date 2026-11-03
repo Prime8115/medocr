@@ -6,6 +6,7 @@ from app.models.document import Document
 from app.models.connector import Connector
 from app.models.push_delivery import PushDelivery
 from app.models.audit_log import AuditLog
+from app.models.problem_report_review import ProblemReportReview
 from app.models.inventory import InventoryItem
 from app.models.job import OcrJob
 from app.models.supplier_choice import SupplierChoice
@@ -15,6 +16,6 @@ from app.models.supplier_column_lesson import SupplierColumnLesson
 from app.models.tally_export import TallyExport
 
 __all__ = [
-    "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "InventoryItem", "OcrJob", "SupplierChoice",
+    "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "ProblemReportReview", "InventoryItem", "OcrJob", "SupplierChoice",
     "SupplierLabel", "DocumentCorrection", "SupplierColumnLesson", "TallyExport",
 ]

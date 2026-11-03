@@ -31,19 +31,15 @@ def _safe_edit(path: str, value) -> bool:
     return not (path.endswith(".address") and value and _FOREIGN_ADDRESS_LABEL.search(str(value)))
 
 
-def _same_invoice(source: Document, target: Document, fields: dict, include_self: bool = False) -> bool:
+def _same_invoice(source: Document, target: Document, include_self: bool = False) -> bool:
     if source.doc_type != "invoice" or (source.id == target.id and not include_self):
         return False
-    if (source.part_no or 1) != (target.part_no or 1) or (source.part_pages or "") != (target.part_pages or ""):
-        return False
-    prior = (source.payload or {}).get("fields") or {}
-    a, b = _value(prior, "supplier", "gstin"), _value(fields, "supplier", "gstin")
-    if a and b and a != b:
-        return False
-    # OCR may miss a number, but it must never apply a correction to a
-    # *different* invoice in a PDF that was split differently on another run.
-    a, b = _value(prior, "invoice", "invoice_no"), _value(fields, "invoice", "invoice_no")
-    return not (a and b and a != b)
+    # The bytes and page span identify the physical invoice. Comparing the
+    # *corrected* invoice number/GSTIN with a fresh OCR error made the very
+    # corrections reviewers saved impossible to replay.
+    return bool(source.content_hash and source.content_hash == target.content_hash
+                and (source.part_no or 1) == (target.part_no or 1)
+                and (source.part_pages or "") == (target.part_pages or ""))
 
 
 def has_unapplied(db: Session, target: Document) -> bool:
@@ -63,7 +59,7 @@ def has_unapplied(db: Session, target: Document) -> bool:
                    .order_by(DocumentCorrection.created_at.asc(), DocumentCorrection.id.asc()).all())
     latest = {}
     for correction, source in corrections:
-        if _same_invoice(source, target, fields, include_self=True) and _safe_edit(correction.field, correction.value_corrected):
+        if _same_invoice(source, target, include_self=True) and _safe_edit(correction.field, correction.value_corrected):
             latest[(correction.field, correction.line)] = (correction, source)
     for (path, index), (correction, source) in latest.items():
         corrected = correction.value_corrected
@@ -139,7 +135,7 @@ def apply(db: Session, target: Document, payload: dict) -> dict:
                   .order_by(DocumentCorrection.created_at.asc(), DocumentCorrection.id.asc()).all())
     latest = {}
     for correction, source in candidates:
-        if (_same_invoice(source, target, fields, include_self=source.id == target.id)
+        if (_same_invoice(source, target, include_self=source.id == target.id)
                 and _safe_edit(correction.field, correction.value_corrected)):
             latest[(correction.field, correction.line)] = (correction, source)
     applied = []

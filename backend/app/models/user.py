@@ -14,5 +14,6 @@ class User(Base, TimestampMixin):
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(32), default="staff", nullable=False)  # "owner" | "staff"
     is_active = Column(Boolean, default=True, nullable=False)
+    is_platform_admin = Column(Boolean, default=False, nullable=False)
 
     shop = relationship("Shop", back_populates="users")
