@@ -3,7 +3,7 @@ upload with a plain reason - never a "Failed" scan later."""
 import io
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from app.config import settings
 from app.services import intake
@@ -93,6 +93,24 @@ def test_a_huge_photo_is_scaled_down(monkeypatch):
     monkeypatch.setattr(settings, "upload_max_image_side", 1000)
     out = intake.prepare(_photo(size=(4000, 3000)), "image/jpeg", "p.jpg")
     assert Image.open(io.BytesIO(out.data)).size == (1000, 750)
+
+
+def test_strongly_blurred_large_invoice_photo_warns_without_refusing():
+    image = Image.new("RGB", (1200, 1600), "white")
+    draw = ImageDraw.Draw(image)
+    for y in range(80, 1450, 30):
+        draw.text((60, y), "PARACETAMOL 500MG  BATCH ABC123  QTY 24  RATE 83.50", fill="black")
+
+    def upload(photo):
+        buffer = io.BytesIO()
+        photo.save(buffer, format="JPEG", quality=95)
+        return intake.prepare(buffer.getvalue(), "image/jpeg", "bill.jpg")
+
+    sharp = upload(image)
+    blurred = upload(image.filter(ImageFilter.GaussianBlur(2)))
+    assert not any("out of focus" in warning for warning in sharp.quality_warnings)
+    assert any("out of focus" in warning for warning in blurred.quality_warnings)
+    assert blurred.content_type == "image/jpeg" and blurred.data
 
 
 def test_a_blank_photo_is_refused():

@@ -15,6 +15,57 @@ def _present(value):
     return value is not None and str(value).strip() != ""
 
 
+def source_page_requirement(report):
+    mismatch = report.get("source_page_mismatch")
+    if not isinstance(mismatch, dict):
+        return None
+    expected, observed = mismatch.get("expected"), mismatch.get("observed")
+    return {
+        "id": "source_page_integrity", "status": "fail",
+        "label": "Source and reading page counts differ",
+        "message": f"The upload contains {expected} retained page(s), but the reading reports "
+                   f"{observed if observed is not None else 'no'} page count. View every source page "
+                   "and check its contents before approval.",
+        "fields": [],
+    }
+
+
+def record_source_page_count(result, manifest):
+    """Compare the stored upload manifest with the OCR result before review.
+
+    OCR may return a plausible table after silently dropping a page. This check
+    remains in metadata and is recreated after a reviewer edits the fields.
+    """
+    expected = (manifest or {}).get("processed_pages")
+    if type(expected) is not int or expected < 1:
+        return result
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        result["meta"] = meta
+    observed = meta.get("pages")
+    if type(observed) is int and observed == expected:
+        return result
+    meta["source_page_mismatch"] = {
+        "expected": expected,
+        "observed": observed if type(observed) is int else None,
+    }
+    check = source_page_requirement(meta)
+    verification = meta.get("verification")
+    if not isinstance(verification, dict):
+        verification = {"checks": [], "review_requirements": [], "acknowledged": []}
+        meta["verification"] = verification
+    required = [r for r in verification.get("review_requirements") or []
+                if r.get("id") != "source_page_integrity"]
+    required.append(check)
+    verification["review_requirements"] = required
+    summarize(verification)
+    warning = f"{check['label']}: {check['message']}"
+    if warning not in (meta.get("warnings") or []):
+        meta["warnings"] = [warning, *(meta.get("warnings") or [])]
+    return result
+
+
 def requirements(fields, report):
     from app.services.ocr.postprocess import is_pack_expression
 
@@ -35,6 +86,9 @@ def requirements(fields, report):
         if not any(_present(_value(item, key)) for key in ("amount", "net_amount", "gross_amount")):
             missing.append(f"line_items[{n}].amount")
     checks = []
+    page_check = source_page_requirement(report)
+    if page_check:
+        checks.append(page_check)
     ambiguous = [f"line_items[{n}].{key}" for n, item in enumerate(items)
                  for key in ("quantity", "free_quantity", "total_quantity")
                  if is_pack_expression(_value(item, key))]

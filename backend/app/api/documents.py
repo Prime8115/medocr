@@ -235,6 +235,9 @@ def _save_result(db: Session, job_id: str, document_id: str, result: dict, cause
             from app.services.supplier_item_names import apply as apply_item_names
             result = _improve(db, "approved supplier item names",
                               lambda r: apply_item_names(db, doc, r), result)
+        from app.services.ocr.coverage import record_source_page_count
+
+        result = record_source_page_count(result, doc.source_manifest)
         doc.payload = result
         doc.doc_type = result.get("doc_type", doc.doc_type)
         doc.overall_confidence = (result.get("meta") or {}).get("overall_confidence")
