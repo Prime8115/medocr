@@ -366,6 +366,9 @@ def _boundaries(columns: List[dict]) -> List[float]:
 
 # Resolution, in points, at which the empty channels between columns are found.
 _CHANNEL_STEP = 0.5
+# Narrower than this, a gap between two words is the space inside one value.
+_WORD_SPACE = 4.5
+_NAME_COLUMN = re.compile(r"desc|product|\bitem\b(?!\s*code)|particular|goods|\bname\b", re.I)
 
 
 _TEXT_HEADING = re.compile(r"batch|lot|exp|pack|pkg|hsn|desc|product|item|mfg|mfd|mfr|code|name|"
@@ -401,7 +404,11 @@ def _channel_edges(columns: List[dict], body: List[Line], edges: List[float]) ->
     Conservative by design: a boundary already clear of every word is kept, and
     so is one with no clear channel that respects both headings.
     """
-    words = [w for _, row in body for w in row]
+    # A single word wider than any cell is no cell's value: Tax Invoice-261's
+    # page footer prints its 700-pt web address across every column, and with
+    # it no channel anywhere was ever clear.
+    widest = max((c["x1"] - c["x0"] for c in columns), default=0) + 120.0
+    words = [w for _, row in body for w in row if float(w["x1"]) - float(w["x0"]) <= widest]
     if len(body) < 2 or not words:
         return edges
     spans = [(float(w["x0"]), float(w["x1"])) for w in words]
@@ -409,14 +416,31 @@ def _channel_edges(columns: List[dict], body: List[Line], edges: List[float]) ->
     def clear(x: float) -> bool:
         return not any(x0 < x < x1 for x0, x1 in spans)
 
+    # Two words of one name a space apart, either side of x: Adroit's
+    # "FORTISIL SUNSCREEN SPF 50", its "50" 4 pt after "SPF" and 11 pt before
+    # the pack "1X50G" - a boundary in that space filed "50" as the pack.
+    pairs = []
+    for _, row in body:
+        row = sorted(row, key=lambda w: float(w["x0"]))
+        pairs += [(float(a["x1"]), float(b["x0"])) for a, b in zip(row, row[1:])
+                  if 0 <= float(b["x0"]) - float(a["x1"]) < _WORD_SPACE]
+
+    def splits_a_name(x: float, next_starts: float) -> bool:
+        # ...never a word printed from under the next column's heading: Tax
+        # Invoice-261's pack "60 ml" starts 1 pt after its name's "[EIPW]".
+        return any(a <= x <= b and b < next_starts - 1 for a, b in pairs)
+
     def under(col: dict, x0: float, x1: float) -> bool:
         return x1 > col["x0"] and x0 < col["x1"]
 
     out = list(edges)
     for i in range(1, len(edges) - 1):
-        if clear(edges[i]):
-            continue
         left, right = columns[i - 1], columns[i]
+        # ...a name column's right edge must not fall between two of its words.
+        name_edge = bool(_NAME_COLUMN.search(left.get("label") or ""))
+        ok = ((lambda x, s=right["x0"]: clear(x) and not splits_a_name(x, s)) if name_edge else clear)
+        if ok(edges[i]):
+            continue
         if _figures_only(left) and _figures_only(right):
             # Between two columns of figures the cells are split by their own
             # rules downstream (merged "CGST AMOUNT %" headings, rate and
@@ -436,13 +460,19 @@ def _channel_edges(columns: List[dict], body: List[Line], edges: List[float]) ->
         steps = int((hi - lo) / _CHANNEL_STEP)
         for k in range(steps + 1):
             x = lo + k * _CHANNEL_STEP
-            if clear(x):
+            if ok(x):
                 start = x if start is None else start
             elif start is not None:
                 runs.append((start, x - _CHANNEL_STEP))
                 start = None
         if start is not None:
             runs.append((start, hi))
+        if not runs and name_edge and hi > edges[i] and splits_a_name(edges[i], right["x0"]):
+            # No empty channel at all: Tax Invoice-261 prints its pack "60 ml"
+            # touching its name's last word "[EIPW]". Words go to a cell by
+            # their centre, so just before the next column's first value is
+            # where the name ends.
+            runs = [(hi - 1.0, hi - 1.0)]
         if not runs:
             continue
         a, b = min(runs, key=lambda r: abs((r[0] + r[1]) / 2.0 - edges[i]))
@@ -859,7 +889,10 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 # to the next row) - "500" became the next product's start.
                 if rows and hang is None:
                     hang = row_tops[-1]
+                # ...a line starting with a hyphen ends the word above it: J.B.'s
+                # "...ALU" / "-BLISTER" became the next product's first word.
                 if rows and (abs(otop - hang) <= abs(otop - top) + _WRAP_TIE or _DETAIL_LINE.match(otext)
+                             or otext.startswith("-")
                              or above.count("(") > above.count(")")):
                     give(rows[-1], otext, ovals, before=False)
                     hang = otop

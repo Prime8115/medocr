@@ -96,6 +96,19 @@ def _two_dates(value) -> Optional[Tuple[str, str]]:
     return (tokens[0], tokens[1]) if when[0] < when[1] else (tokens[1], tokens[0])
 
 
+_HSN_IN_NAME = re.compile(r"\s*\(\s*HSN\s*[-:]?\s*(\d{4}(?:\d{2}){0,2})\s*\)\s*$", re.I)
+_DOSAGE = r"TABS?|TABLETS?|CAPS?|CAPSULES?|SYP|SYRUP|SUSP(?:ENSION)?|INJ(?:ECTION)?|CREAM|GEL|OINT(?:MENT)?|" \
+          r"DROPS?|SACHETS?|LOTION|SPRAY|SOAP|POWDER|STRIPS?|BOTTLES?|VIALS?|AMP(?:OULES?)?"
+_DOSAGE_WORD = re.compile(_DOSAGE, re.I)
+# A company after the pack: the name ends in a figure ("10'S", "40MG", "1X10"),
+# then one to four words ending Ltd / Limited / Pvt Ltd / LLP / Inc.
+_MAKER_AFTER_PACK = re.compile(
+    r"^(?P<name>.*\d\S*)\s+(?P<maker>(?P<first>[A-Za-z][\w&.'-]*)(?:\s+[A-Za-z][\w&.'-]*){0,3}?\s+"
+    r"(?:Pvt\.?\s+Ltd|Private\s+Limited|Ltd|Limited|LLP|Inc)\.?)$", re.I)
+# The last words of a maker line run into the name column, after a dosage word.
+_MAKER_TAIL = re.compile(r"(?<=\S)\s+(?:PRIVATE\s+)?(?:LIMITED|LTD)\.?(?:\s*\([A-Z]{2,6}\))?$")
+
+
 def tidy_line(item: dict) -> None:
     """Values one cell printed in a shape the stock software cannot take."""
     # A batch is keyed in as printed, with a plain hyphen: MAX RELIEF draws
@@ -117,6 +130,31 @@ def tidy_line(item: dict) -> None:
             and re.fullmatch(r"\d+\s*(?:'?s|[x*]\s*\d+\S*|\s*(?:ml|gm?|kg|mg|tabs?|caps?|nos?)\.?)",
                              uom["value"].strip(), re.I):
         item["pack"] = {"value": uom["value"].strip(), "confidence": uom.get("confidence")}
+    # A product name carrying what is not its name.
+    desc = item.get("description")
+    if isinstance(desc, dict) and isinstance(desc.get("value"), str):
+        name = desc["value"].strip()
+        # ...its HSN, "OLMETIME-H 20 TABLETS(HSN- 30049079)" (Mankind).
+        hsn_in = _HSN_IN_NAME.search(name)
+        if hsn_in and hsn_in.start() > 0:
+            if not (item.get("hsn") or {}).get("value"):
+                item["hsn"] = {"value": hsn_in.group(1), "confidence": desc.get("confidence")}
+            name = name[:hsn_in.start()].strip()
+        # ...its maker, printed after the pack: "JUPIROS EZ 40 TABLET 10'S
+        # Windlass Biotech Ltd" (Alkem).
+        maker = _MAKER_AFTER_PACK.match(name)
+        if maker and not _DOSAGE_WORD.fullmatch(maker.group("first")):
+            if not (item.get("manufacturer") or {}).get("value"):
+                item["manufacturer"] = {"value": maker.group("maker").strip(), "confidence": desc.get("confidence")}
+            name = maker.group("name").strip()
+        # ...or the end of the maker line under it: "LEXATAL-5C TAB LIMITED.
+        # (CNS)" (Parshva prints "SEPTALYST LIFESCIENCES PRIVATE LIMITED. (CNS)").
+        tail = _MAKER_TAIL.search(name)
+        before = name[:tail.start()].split()[-1:] if tail else []
+        if tail and before and _DOSAGE_WORD.fullmatch(before[0].strip(".,")):
+            name = name[:tail.start()].strip()
+        if name and name != desc["value"].strip():
+            desc["value"] = name
     # Two dates in the expiry cell, side by side: IPCA heads the column "MFG.
     # Expiry" and prints "03/25 08/26". A medicine expires after it is made, so
     # the later date is the expiry and the earlier the manufacturing date.
@@ -192,5 +230,41 @@ def postprocess_fields(doc_type: str, fields: dict) -> dict:
             _set_norm(item.get("expiry"), normalize_date((item.get("expiry") or {}).get("value")))
             for key in ("quantity", "free_quantity", "total_quantity"):
                 _set_norm(item.get(key), normalize_quantity((item.get(key) or {}).get("value")))
+        drop_flag_column(fields.get("line_items") or [])
+        rejoin_hyphen_wraps(fields.get("line_items") or [])
         fill_single_slab(fields)
     return fields
+
+
+def rejoin_hyphen_wraps(items: list) -> None:
+    """The end of a name carried onto the next page: J.B.'s last product on
+    page 1 is "METROGYL TABS 200MG 20's" and page 2 opens with its "-BLISTER"
+    (as "METROGYL IP 400MG 20T -BLISTER" prints it whole) over the next
+    product, read as "-BLISTER METROGYL-O TABLETS". The fragment goes back."""
+    for prev, item in zip(items, items[1:]):
+        if not (isinstance(prev, dict) and isinstance(item, dict)):
+            continue
+        d, p = item.get("description"), prev.get("description")
+        if not (isinstance(d, dict) and isinstance(p, dict) and isinstance(d.get("value"), str)
+                and isinstance(p.get("value"), str) and p["value"].strip()):
+            continue
+        m = re.match(r"(-[A-Za-z][\w'.]*)\s+(\S.*)$", d["value"].strip())
+        if m:
+            p["value"] = f'{p["value"].rstrip()} {m.group(1)}'
+            d["value"] = m.group(2)
+
+
+def drop_flag_column(items: list) -> None:
+    """A one-letter flag column read into every name: Sun prints "N" (its
+    scheme marker) just left of each product, giving "N GLUCORED FORTE". Only
+    when nearly every line of the bill starts with the same lone letter."""
+    names = [(it.get("description") or {}) for it in items if isinstance(it, dict)]
+    names = [d for d in names if isinstance(d, dict) and isinstance(d.get("value"), str) and d["value"].strip()]
+    if len(names) < 3:
+        return
+    firsts = [re.match(r"([A-Z])\s+\S", d["value"].strip()) for d in names]
+    letters = {m.group(1) for m in firsts if m}
+    if 1 <= len(letters) <= 2 and sum(1 for m in firsts if m) >= 0.9 * len(names):
+        for d, m in zip(names, firsts):
+            if m:
+                d["value"] = d["value"].strip()[2:].strip()
