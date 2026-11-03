@@ -1277,7 +1277,10 @@ _NOT_A_PRODUCT = re.compile(
 _PAGE_FURNITURE = re.compile(
     r"\s(?:printed\s+(?:date|on|by)\s*:|page\s+\d+\s+of\s+\d+|\d[\d.]*\s*\*\s*\d+(?:\.\d+)?\s*\+\s*\d+(?:\.\d+)?\s*%\s*=)",
     re.I)
-_MAKER_IN_DESC = re.compile(r"\s(?:mfg|mfr|mkt|marketed\s+by|manufactured\s+by)(?:\s*name)?\s*[.:]\s*(?!(?:date|dt)\b)(\S.*)$",
+_MAKER_IN_DESC = re.compile(r"\s(?:mfg|mfr|mkt|marketed\s+by|manufactured\s+by"
+                            # ...or "MFG" drawn over another word: Glowderma prints
+                            # "New" on "MFG", read "NMeFwG Name :Dermalogics".
+                            r"|[A-Za-z]?M[a-z]F[a-z]G)(?:\s*name)?\s*[.:]\s*(?!(?:date|dt)\b)(\S.*)$",
                             re.I)
 # Where footer text starts when it runs onto the last product's description.
 _FOOTER_IN_DESC = re.compile(r"\s(?:scheme\s+discount|discount\s+sgst|rupees|=====|value\s*:|"
@@ -2153,7 +2156,7 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         # printed on the line under the name, is not part of the name.
         if not (item.get("manufacturer") or {}).get("value"):
             item["manufacturer"] = _f(maker.group(1).strip())
-        desc = desc[:maker.start()].strip()
+        desc = desc[:maker.start()].strip().rstrip("-").strip()
         item["description"] = _f(desc)
     junk_text = _NOT_A_PRODUCT.search(desc)
     if junk_text or re.fullmatch(r"[\s₹$.,:\d/-]*", desc) or desc.strip(" :.").lower() in _HEADING_WORDS:

@@ -50,7 +50,10 @@ _FOOTER = re.compile(
     # unrecognised, its prose was parsed as line items - and one of them
     # harvested the invoice's own total, nearly doubling the line sum.
     r"hereby|warranty|contravene|properly\s*packed|responsible\s*for|certified|"
-    r"once\s*sold|signator|authorised)\b"
+    r"once\s*sold|signator|authorised|"
+    # Wockhardt's "Total number of cases , Customer ref. number : ORDER NO-
+    # 4819" ran onto its last product's name.
+    r"total\s*number\s*of\s*cases)\b"
     r"|\bIRN\s*[:#]"
     # "Total of CARDIMAXX 0.00 0.00 211488.25 ..." (IPCA): a division's total
     # row, with the tax summary under it.
@@ -906,6 +909,11 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                         lead[col] = val
                     rows.append(lead)
                     row_tops.append(otop)
+                elif not rows and re.search(r"\(\s*\d{5,}\s*\)\s*$", otext):
+                    # A division's sub-heading over a page's first product:
+                    # Wockhardt's "Wockhardt Merind (19211315)" - its code in
+                    # brackets - is no part of that product's name.
+                    continue
                 else:
                     give(cells, otext, {c: v for c, v in ovals.items() if c in pack_cols}, before=True)
             orphans = []
