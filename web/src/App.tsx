@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { Settings as SettingsIcon, FileText, LogOut, Boxes, Truck, Flag } from 'lucide-react';
+import { Settings as SettingsIcon, FileText, LogOut, Boxes, Truck, Flag, Building2, Users } from 'lucide-react';
 import './index.css';
 
 import ReviewQueue from './components/ReviewQueue';
@@ -9,6 +9,9 @@ import Inventory from './components/Inventory';
 import Suppliers from './components/Suppliers';
 import Login from './components/Login';
 import ProblemReports from './components/ProblemReports';
+import Organization from './components/Organization';
+import PlatformOrgs from './components/PlatformOrgs';
+import WorkspaceSwitcher from './components/WorkspaceSwitcher';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 
 function Shell() {
@@ -22,6 +25,7 @@ function Shell() {
           </h2>
           <div className="text-muted" style={{ fontSize: 12 }}>Admin Console</div>
         </div>
+        {user && <WorkspaceSwitcher user={user} />}
 
         <NavLink to="/queue" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -43,6 +47,16 @@ function Shell() {
             <SettingsIcon size={18} /> Integrations
           </div>
         </NavLink>
+        <NavLink to="/organization" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Users size={18} /> Organization
+          </div>
+        </NavLink>
+        {user?.is_platform_admin && <NavLink to="/admin/orgs" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Building2 size={18} /> Organizations
+          </div>
+        </NavLink>}
         {user?.is_platform_admin && <NavLink to="/admin/reports" className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Flag size={18} /> Customer reports
@@ -67,6 +81,8 @@ function Shell() {
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/organization" element={<Organization />} />
+          <Route path="/admin/orgs" element={user?.is_platform_admin ? <PlatformOrgs /> : <Navigate to="/queue" replace />} />
           <Route path="/admin/reports" element={user?.is_platform_admin ? <ProblemReports /> : <Navigate to="/queue" replace />} />
           <Route path="*" element={<Navigate to="/queue" replace />} />
         </Routes>

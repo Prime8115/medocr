@@ -6,6 +6,17 @@ export interface User {
   role: string;
   shop_id: string;
   is_platform_admin: boolean;
+  /** The organisation, the workspace the user is in, and the ones they may open. */
+  org_id?: string | null;
+  org_name?: string | null;
+  workspace_name?: string | null;
+  workspaces?: { id: string; name: string }[];
+}
+
+/** Work in another workspace: every screen follows (POST /v1/auth/workspace). */
+export async function switchWorkspace(workspaceId: string): Promise<User> {
+  const res = await api.post('/v1/auth/workspace', { workspace_id: workspaceId });
+  return res.data as User;
 }
 
 export async function login(email: string, password: string): Promise<string> {
