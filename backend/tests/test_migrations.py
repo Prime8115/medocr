@@ -5,7 +5,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
-EXPECTED_TABLES = {"shops", "users", "documents", "connectors", "push_deliveries", "audit_log"}
+EXPECTED_TABLES = {"shops", "users", "documents", "connectors", "push_deliveries", "audit_log", "problem_report_reviews"}
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -70,4 +70,24 @@ def test_delivery_upgrade_reclassifies_old_generated_only_exports(tmp_path):
     with engine.connect() as connection:
         assert connection.execute(text("SELECT status, delivery_state FROM push_deliveries WHERE id='p'")).one() == ("failed", "failed")
         assert connection.execute(text("SELECT status FROM documents WHERE id='d'")).scalar_one() == "approved"
+    engine.dispose()
+
+
+def test_report_upgrade_preserves_existing_complaints(tmp_path):
+    from sqlalchemy import text
+
+    cfg = _alembic_config(f"sqlite:///{tmp_path / 'reports.db'}")
+    command.upgrade(cfg, "9b7c2d5e4f10")
+    engine = create_engine(cfg.get_main_option("sqlalchemy.url"))
+    with engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO audit_log (id, action, target, detail, created_at, updated_at)
+            VALUES ('old-report', 'document.reported', 'doc-old',
+                    '{"note":"Customer report before the dashboard"}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """))
+    command.upgrade(cfg, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT detail FROM audit_log WHERE id='old-report'")).scalar_one()
+        assert connection.execute(text("SELECT COUNT(*) FROM problem_report_reviews")).scalar_one() == 0
+        assert "is_platform_admin" in {c["name"] for c in inspect(engine).get_columns("users")}
     engine.dispose()

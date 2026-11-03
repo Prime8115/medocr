@@ -31,6 +31,7 @@ on:
     branches: [main]
     paths:
       - 'backend/**'
+      - 'web/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -105,6 +106,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build production admin console
+        working-directory: ./web
+        env:
+          VITE_API_URL: https://mediscan.maxxcom.in
+          VITE_BASE: admin
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../backend/admin_ui
+          cp -a dist/. ../backend/admin_ui/
+
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
@@ -120,6 +137,7 @@ jobs:
             --exclude='storage' --exclude='tests/real_invoices/*.pdf' \
             --exclude='*.db' --exclude='*.sqlite3' \
             backend
+          test -f backend/admin_ui/index.html
           echo "archive: $(du -h backend.tar.gz | cut -f1)"
           # Fail loudly rather than shipping a secret or a customer's invoice.
           if tar -tzf backend.tar.gz | grep -qiE '\.pdf$|/\.env$|\.venv/|/venv/'; then
@@ -143,6 +161,7 @@ jobs:
             echo "health not ready yet ($i)"; sleep 5
           done
           curl -fsS --max-time 10 "https://$DEPLOY_HOST/health"; echo
+          curl -fsS --max-time 10 "https://$DEPLOY_HOST/admin/" | grep -q '<div id="root"'
           # Confirm it is genuinely the new build, not a stale container that
           # merely answers /health - this is the check that would have caught
           # production sitting six weeks behind.

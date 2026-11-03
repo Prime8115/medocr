@@ -52,3 +52,26 @@ pytest -q
 
 All `/v1/documents` endpoints require a bearer token and are **scoped to the
 caller's shop** (multi-tenant isolation).
+
+## Customer problem reports
+
+`POST /v1/documents/{id}/report` records a customer's complaint as an audit
+event. The web console's **Customer reports** page lists all such events,
+including reports made before the dashboard was introduced. The queue supports
+search by customer email, shop, or document ID; status changes (`open`,
+`in_progress`, `closed`); source-page review; resolution notes; and an audit
+history. Closing a report requires a resolution note. The customer-visible
+document and its saved extraction are not changed by closing a support case.
+
+Only an account explicitly granted platform access can use `/v1/admin/reports`.
+After `alembic upgrade head`, the server operator should register the intended
+account normally, then grant access from the backend container or shell:
+
+```bash
+python -m scripts.set_platform_admin admin@example.com --grant
+python -m scripts.set_platform_admin admin@example.com --revoke
+```
+
+There is no public admin-grant endpoint. A shop owner does not gain access by
+owning a shop. Admin access can expose customer invoices and prescriptions, so
+grant it only to authorized support staff and revoke it when no longer needed.

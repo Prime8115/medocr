@@ -760,10 +760,15 @@ def source_page(document_id: str, page: int = Query(1, ge=1),
                 view: Literal["processed", "original"] = "processed",
                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """An owned document's bounded page image for checking the OCR reading."""
+    doc = _get_owned_document(document_id, db, user)
+    return render_source_page(doc, page, view)
+
+
+def render_source_page(doc: Document, page: int, view: Literal["processed", "original"] = "processed"):
+    """Render an already-authorized document; callers enforce their own scope."""
     from app.services import source
     from starlette.responses import JSONResponse
 
-    doc = _get_owned_document(document_id, db, user)
     if not doc.image_ref:
         raise HTTPException(status_code=410, detail="The source file is unavailable.")
     manifest = doc.source_manifest or {}

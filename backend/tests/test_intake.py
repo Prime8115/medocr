@@ -360,6 +360,42 @@ def test_fresh_reading_of_same_invoice_replays_saved_address_edit(client, mock_o
     assert "bill_to.address" in saved["payload"]["meta"]["exact_file_corrections"]
 
 
+def test_retry_of_same_document_preserves_saved_recheck_edits(client, mock_ocr):
+    """A fresh OCR pass on the same ID must retain its own accepted corrections."""
+    headers = register_and_login(client)
+    first = _upload(client, headers, sample_image("INVOICE"), "bill.png", "image/png", doc_type="invoice").json()
+    doc_id = first["document_id"]
+    url = f"/v1/documents/{doc_id}"
+    fields = client.get(url, headers=headers).json()["payload"]["fields"]
+    fields["bill_to"]["address"] = {"value": "Correct buyer address", "confidence": 1}
+    fields["invoice"]["invoice_no"] = {"value": "CORRECT-INV-104", "confidence": 1}
+    fields["line_items"][0]["description"] = {"value": "Correct medicine name", "confidence": 1}
+    assert client.patch(url, headers=headers, json={"fields": fields}).status_code == 200
+    assert client.post(url + "/retry", headers=headers).status_code == 200
+    saved = client.get(url, headers=headers).json()
+    assert saved["status"] == "needs_review"
+    assert saved["payload"]["fields"]["bill_to"]["address"]["value"] == "Correct buyer address"
+    assert saved["payload"]["fields"]["invoice"]["invoice_no"]["value"] == "CORRECT-INV-104"
+    assert saved["payload"]["fields"]["line_items"][0]["description"]["value"] == "Correct medicine name"
+    assert set(saved["payload"]["meta"]["exact_file_corrections"]) >= {
+        "bill_to.address", "invoice.invoice_no", "line_items[0].description"}
+
+
+def test_new_copy_of_same_bytes_preserves_corrected_invoice_number(client, mock_ocr):
+    headers = register_and_login(client)
+    data = sample_image("INVOICE")
+    first = _upload(client, headers, data, "bill.png", "image/png", doc_type="invoice").json()
+    url = f"/v1/documents/{first['document_id']}"
+    fields = client.get(url, headers=headers).json()["payload"]["fields"]
+    fields["invoice"]["invoice_no"] = {"value": "CORRECT-INV-104", "confidence": 1}
+    assert client.patch(url, headers=headers, json={"fields": fields}).status_code == 200
+    fresh = _upload(client, headers, data, "bill.png", "image/png",
+                    doc_type="invoice", allow_duplicate="true").json()
+    saved = client.get(f"/v1/documents/{fresh['document_id']}", headers=headers).json()["payload"]
+    assert saved["fields"]["invoice"]["invoice_no"]["value"] == "CORRECT-INV-104"
+    assert "invoice.invoice_no" in saved["meta"]["exact_file_corrections"]
+
+
 @pytest.mark.parametrize("legacy_snapshot", [False, True])
 def test_fresh_reading_replays_a_saved_line_item_name(client, mock_ocr, db_session, legacy_snapshot):
     """Use & save changes the name, so the edited name cannot identify its old OCR row."""
