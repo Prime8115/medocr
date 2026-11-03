@@ -224,9 +224,13 @@ export default function ReviewScreen() {
       }
       const previous = doc?.payload?.fields ?? {};
       const editablePaths = doc?.payload ? buildSections({ ...doc.payload, fields: requested }).flatMap((s) => s.fields.map((f) => f.path)) : [];
+      // Not saved = the server still holds the OLD value. A value it tidied
+      // (an HSN typed "3004 90 99" is kept as "30049099") was saved.
+      const valueAt = (f: Fields, path: string) => getLeaf(f, path)?.value ?? null;
       const missing = editablePaths.find((path) =>
-        getLeaf(previous, path)?.value !== getLeaf(requested, path)?.value
-        && getLeaf(persisted.payload?.fields ?? {}, path)?.value !== getLeaf(requested, path)?.value);
+        valueAt(previous, path) !== valueAt(requested, path)
+        && valueAt(persisted.payload?.fields ?? {}, path) !== valueAt(requested, path)
+        && valueAt(persisted.payload?.fields ?? {}, path) === valueAt(previous, path));
       const itemCount = (requested.line_items as unknown[] | undefined)?.length;
       const persistedCount = (persisted.payload?.fields?.line_items as unknown[] | undefined)?.length;
       if (missing || (itemCount !== undefined && itemCount !== persistedCount)) {
