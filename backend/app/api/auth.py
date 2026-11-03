@@ -1,4 +1,5 @@
-"""Authentication endpoints: register a shop+owner, login, current user."""
+"""Authentication endpoints: register an organisation with its first
+workspace and admin, login, current user, switch workspace."""
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +11,7 @@ from app.core.deps import get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.database import get_db
 from app.models.audit_log import AuditLog
+from app.models.organization import Organization
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.auth import PasswordChange, Token, UserCreate, UserOut
@@ -19,11 +21,16 @@ router = APIRouter()
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
-    """Create a new shop and its owner account."""
+    """Create an organisation (Starter plan), its first workspace and its admin."""
+    from app.services import licensing
+
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    shop = Shop(name=payload.shop_name)
+    org = Organization(name=payload.shop_name, plan=licensing.DEFAULT_PLAN, is_active=True)
+    db.add(org)
+    db.flush()
+    shop = Shop(name=payload.shop_name, org_id=org.id)
     db.add(shop)
     db.flush()  # assign shop.id
 
@@ -31,9 +38,12 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         email=payload.email,
         hashed_password=hash_password(payload.password),
         shop_id=shop.id,
+        org_id=org.id,
         role="owner",
     )
     db.add(user)
+    db.flush()
+    licensing.set_workspaces(db, user, [shop.id])
     db.add(AuditLog(shop_id=shop.id, actor_id=user.id, action="shop.registered", target=shop.id))
     db.commit()
     db.refresh(user)
@@ -47,13 +57,47 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
+    org = db.get(Organization, user.org_id) if user.org_id else None
+    if org and not org.is_active and not user.is_platform_admin:
+        raise HTTPException(status_code=403, detail="This organisation is inactive. Contact MediScan support.")
     token = create_access_token(user.id, user.shop_id, user.role)
     return Token(access_token=token)
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: User = Depends(get_current_user)):
-    return user
+def me(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The user, their organisation, the workspace they are in and the ones
+    they may open."""
+    from app.services import licensing
+
+    org = db.get(Organization, user.org_id) if user.org_id else None
+    spaces = licensing.accessible_workspaces(db, user)
+    current = next((s for s in spaces if s.id == user.shop_id), None) or db.get(Shop, user.shop_id)
+    return UserOut(id=user.id, email=user.email, role=user.role, shop_id=user.shop_id,
+                   is_platform_admin=bool(user.is_platform_admin), org_id=user.org_id,
+                   org_name=org.name if org else None, workspace_name=current.name if current else None,
+                   workspaces=[{"id": s.id, "name": s.name} for s in spaces])
+
+
+class WorkspaceSwitch(BaseModel):
+    workspace_id: str
+
+
+@router.post("/workspace", response_model=UserOut)
+def switch_workspace(body: WorkspaceSwitch, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Work in another of the user's workspaces: every screen and API follows."""
+    from app.services import licensing
+
+    if body.workspace_id not in {s.id for s in licensing.accessible_workspaces(db, user)}:
+        raise HTTPException(status_code=403, detail="You do not have access to that workspace.")
+    if body.workspace_id != user.shop_id:
+        previous, user.shop_id = user.shop_id, body.workspace_id
+        db.add(AuditLog(shop_id=body.workspace_id, actor_id=user.id, action="user.workspace_switched",
+                        target=user.id, detail={"from": previous}))
+        db.commit()
+        db.refresh(user)
+    return me(db, user)
 
 
 @router.post("/change-password")

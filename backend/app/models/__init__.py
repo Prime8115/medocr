@@ -1,5 +1,6 @@
 """Import all models so SQLAlchemy's metadata is fully populated
 (needed for create_all and Alembic autogenerate)."""
+from app.models.organization import Organization, UserWorkspace
 from app.models.shop import Shop
 from app.models.user import User
 from app.models.document import Document
@@ -16,6 +17,6 @@ from app.models.supplier_column_lesson import SupplierColumnLesson
 from app.models.tally_export import TallyExport
 
 __all__ = [
-    "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "ProblemReportReview", "InventoryItem", "OcrJob", "SupplierChoice",
+    "Organization", "UserWorkspace", "Shop", "User", "Document", "Connector", "PushDelivery", "AuditLog", "ProblemReportReview", "InventoryItem", "OcrJob", "SupplierChoice",
     "SupplierLabel", "DocumentCorrection", "SupplierColumnLesson", "TallyExport",
 ]

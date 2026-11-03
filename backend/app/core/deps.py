@@ -31,6 +31,13 @@ def get_current_user(
     user = db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()
     if not user:
         raise _CRED_EXC
+    if user.org_id and not user.is_platform_admin:
+        from app.models.organization import Organization
+
+        org = db.get(Organization, user.org_id)
+        if org is not None and not org.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="This organisation is inactive. Contact MediScan support.")
     return user
 
 

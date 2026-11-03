@@ -1,3 +1,5 @@
+from typing import List, Optional
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -18,6 +20,11 @@ class UserOut(BaseModel):
     role: str
     shop_id: str
     is_platform_admin: bool = False
+    # The organisation, the current workspace and the ones the user may open.
+    org_id: Optional[str] = None
+    org_name: Optional[str] = None
+    workspace_name: Optional[str] = None
+    workspaces: List[dict] = []
 
     model_config = {"from_attributes": True}
 

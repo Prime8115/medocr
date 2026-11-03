@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app import models  # noqa: F401  (populate SQLAlchemy metadata)
-from app.api import agent, auth, connectors, documents, inventory, problem_reports
+from app.api import agent, auth, connectors, documents, inventory, org, platform_orgs, problem_reports
 from app.config import settings
 from app.database import SessionLocal
 from app.services.recovery import recover_stuck_documents
@@ -86,6 +86,8 @@ app.include_router(connectors.router, prefix="/v1/connectors", tags=["Connectors
 app.include_router(inventory.router, prefix="/v1/inventory", tags=["Inventory"])
 app.include_router(agent.router, prefix="/v1/agent", tags=["Desktop Agent"])
 app.include_router(problem_reports.router, prefix="/v1/admin", tags=["Platform reports"])
+app.include_router(org.router, prefix="/v1/org", tags=["Organisation"])
+app.include_router(platform_orgs.router, prefix="/v1/platform/orgs", tags=["Platform organisations"])
 
 # The source production deploy packages the web console here. Partner Compose
 # serves the same web app separately, so this mount stays optional in dev.
