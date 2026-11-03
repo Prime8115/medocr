@@ -43,16 +43,26 @@ import photo_kit  # noqa: E402
 
 # ------------------------------------------------------------------ helpers
 
+_BUSY: List[str] = []   # why the AI refused, reported once per set
+
+
 def _read(image: bytes) -> Optional[dict]:
-    """The whole pipeline on a photo; None when the AI is busy (not scored)."""
+    """The whole pipeline on a photo; None when the AI stays busy (not scored).
+    Paced and retried: one photo is several AI calls, and a burst of them
+    trips a key's per-minute limit."""
+    import time
+
     from app.services.ocr import process_document
 
-    try:
-        return process_document("live-photo", image, "image/jpeg", "invoice")
-    except OCRError as exc:
-        if exc.kind == "busy":
-            return None
-        raise
+    for attempt in range(3):
+        time.sleep(8 if attempt == 0 else 45)
+        try:
+            return process_document("live-photo", image, "image/jpeg", "invoice")
+        except OCRError as exc:
+            if exc.kind != "busy":
+                raise
+            _BUSY.append(str(exc)[:200])
+    return None
 
 
 def _v(node, key):
@@ -112,6 +122,9 @@ class Score:
         out = sys.__stdout__
         out.write(f"::notice title={self.name}::{self.rate():.1%} of fields right ({parts}); "
                   f"{self.unread} not read (AI busy)\n")
+        for reason in sorted(set(_BUSY))[:5]:
+            out.write(f"::warning title={self.name} AI busy::{reason}\n")
+        _BUSY.clear()
         if show_misses:
             for m in self.misses[:40]:
                 out.write(f"::warning title={self.name} miss::{m[:300]}\n")
