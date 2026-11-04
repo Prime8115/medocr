@@ -6,6 +6,7 @@
 import logging
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from typing import List
 
 from app.config import settings
@@ -603,6 +604,39 @@ def _parse_is_trustworthy_enough(parsed: dict, document_id: str) -> bool:
     return False
 
 
+def _table_matches_printed_item_amount(result: dict, page_text: str) -> bool:
+    """Keep source rows when their arithmetic matches an independent printed subtotal.
+
+    A bill can add freight, tax, and other adjustments after its item amount.
+    Failure to reconstruct the grand total does not make the product table
+    wrong. Replacing such rows with an AI reading can change stock quantities,
+    batches, and prices even when the AI happens to make the grand total fit.
+    """
+    printed = set(re.findall(
+        r"(?<![A-Za-z])Item\s+Amount\s*[:\-]?\s*([\d,]+\.\d{2})(?![\d.])",
+        page_text or "", re.I,
+    ))
+    if len(printed) != 1:
+        return False
+    items = (result.get("fields") or {}).get("line_items") or []
+    if not items:
+        return False
+    try:
+        subtotal = Decimal(next(iter(printed)).replace(",", ""))
+        total = Decimal("0")
+        for item in items:
+            def number(key):
+                return Decimal(str(item[key]["value"]).replace(",", ""))
+
+            quantity, rate, amount = (number(key) for key in ("quantity", "rate", "amount"))
+            if quantity <= 0 or abs(quantity * rate - amount) > Decimal("0.05"):
+                return False
+            total += amount
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        return False
+    return abs(total - subtotal) <= Decimal("0.05")
+
+
 @pdf_session()
 def process_document(document_id: str, file_bytes: bytes, content_type: str, doc_type=None, on_progress=None,
                      own_gstins=None, lessons=None) -> dict:
@@ -698,6 +732,13 @@ def _process_document(document_id: str, file_bytes: bytes, content_type: str, do
                     # pages skipped. Read every page and keep whichever result
                     # reconciles. Costs time only on an invoice already suspect.
                     meta = result["meta"]
+                    if _table_matches_printed_item_amount(result, hints.get("document_text", "")):
+                        log.info(
+                            "document %s: source rows match printed Item Amount; "
+                            "keeping the table and flagging grand-total differences",
+                            document_id,
+                        )
+                        return result
                     if (meta.get("copies_detected") or 1) > 1 and meta.get("total_reconciles") is False:
                         log.warning(
                             "document %s: %d copies assumed but the total does not "

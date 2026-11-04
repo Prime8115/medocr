@@ -777,6 +777,12 @@ def _buyer_boundary(words, page_height: float) -> Optional[float]:
         if _BUYER_HEADING.match(phrase):
             x0 = float(word["x0"])
             boundary = x0 if boundary is None else min(boundary, x0)
+    if boundary is None:
+        # No "Bill to": a bare "To," heading over the buyer's column (Soham ERP).
+        from app.services.ocr.invoice_header import is_to_heading
+
+        boundary = next((float(w["x0"]) for i, w in enumerate(words)
+                         if float(w["top"]) <= limit and is_to_heading(words, i)), None)
     # A heading hard against the left edge leaves nothing safe to cut.
     return boundary if boundary and boundary >= 40 else None
 
@@ -832,6 +838,17 @@ def _clean_name(line: str) -> str:
     return re.sub(r"\s+", " ", name).strip(" -|:,.")
 
 
+# A supplier line that is only the tail of a wrapped name: an optional word or
+# two before the legal suffix ("SOLUTIONS PRIVATE LIMITED").
+_NAME_TAIL_ONLY = re.compile(
+    r"^(?:[A-Z&.]+\s+){0,2}(?:PRIVATE|PVT\.?)\s+(?:LIMITED|LTD\.?)$|^(?:[A-Z&.]+\s+){0,2}(?:LIMITED|LTD\.?|LLP)$"
+)
+_BESIDE_SUPPLIER_ADDRESS = re.compile(
+    r"(?:^|\s+)(?:Cash\s*/\s*Debit\s+Memo|Cash\s+Memo|Debit\s+Memo|Credit\s+Memo|Bill\s+No\b\.?|"
+    r":\s*[A-Z]{1,4}-\d{3,})", re.I)
+_WORDS_ONLY = re.compile(r"[A-Z][A-Z&.']*(?:\s+[A-Z][A-Z&.']*){1,5}")
+
+
 def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
     """(name, address) from the supplier's block, biggest company name first."""
     candidates = [
@@ -848,12 +865,25 @@ def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
     size, index, name = max(
         candidates, key=lambda c: (0 if _AGENT_OF.match(c[2]) else 1, c[0], -c[1])
     )
+    if index > 0 and _NAME_TAIL_ONLY.match(name):
+        # The name wrapped before its legal suffix: Soham ERP prints "SAI
+        # VENKATA RAMADA SOHAM ERP" over "SOLUTIONS PRIVATE LIMITED", same size,
+        # and only the second line names a company. The line above joins only
+        # when it is printed as large and is words alone - no figure, no label.
+        above_size, above = lines[index - 1]
+        head = _clean_name(above)
+        if (abs(above_size - size) <= 0.3 and _WORDS_ONLY.fullmatch(head or "")
+                and not _NOT_ADDRESS.search(head) and not _BUYER_HEADING.search(head)):
+            name = f"{head} {name}"
 
     address_parts = []
     for _, text in lines[index + 1:index + 6]:
         if _NOT_ADDRESS.search(text) or _COMPANY.search(text):
             continue
-        cleaned = re.sub(r"\s+", " ", text).strip()
+        # The document's own title box printed beside the address (Soham ERP:
+        # "Cash/Debit Memo", "Bill No. : D-00004") ends the address line.
+        text = _BESIDE_SUPPLIER_ADDRESS.split(text)[0]
+        cleaned = re.sub(r"\s+", " ", text).strip(" ,:")
         if cleaned:
             address_parts.append(cleaned)
     address = ", ".join(address_parts).strip(" ,") or None
@@ -1138,6 +1168,10 @@ def _tax_head(heading: str, interstate: Optional[bool], local: Optional[str] = N
         # knows whether it charges SGST or UTGST.
         return "utgst" if "utgst" in names and "sgst" not in names else pairs
     if "igst" in names:
+        return "igst"
+    # A plain "GST %" heading names no head. The printed IGST footer or the
+    # parties' state codes still settle where that rate belongs.
+    if interstate is True:
         return "igst"
     return "cgst"
 
@@ -2804,6 +2838,31 @@ def _labelled_totals(invoice_meta: dict, text: str) -> None:
         leaf = invoice_meta.get(key) or {}
         if value and (not leaf.get("value") or leaf.get("confidence") == _SUMMED_CONFIDENCE):
             invoice_meta[key] = _f(value)
+    # Some ERP layouts print "IGST Amt. 3656.93" beside a tax-slab total,
+    # without the word "Total" in the label. The matching total row proves
+    # this is the invoice head, rather than a line-item tax column.
+    igst = _printed_igst_total(text)
+    if igst and not (invoice_meta.get("total_igst_amount") or {}).get("value"):
+        invoice_meta["total_igst_amount"] = _f(igst)
+
+
+def _printed_igst_total(text: str) -> Optional[str]:
+    """Unambiguous IGST footer value, cross-checked with its slab total row."""
+    if re.search(r"\b(?:CGST|SGST|UTGST)\b", text or "", re.I):
+        return None
+    found = set(re.findall(
+        r"(?<![A-Za-z])IGST[ \t]+Amt\.?[ \t]*:?[ \t]*([\d,]+\.\d{2})(?![\d.])",
+        text or "", re.I,
+    ))
+    if len(found) != 1:
+        return None
+    value = next(iter(found))
+    if not re.search(
+        r"\bTotal[ \t]+[\d,]+\.\d{2}[ \t]+" + re.escape(value) + r"(?![\d.])",
+        text or "", re.I,
+    ):
+        return None
+    return value.replace(",", "")
 
 
 _SUMMARY_FIGURE = re.compile(r"^₹?-?[\d,]*\d\.\d{2}%?$")
@@ -3360,6 +3419,8 @@ def parse_invoice_pdf(data: bytes, read_every_page: bool = False,
                         on_page = {g for _, g in gstins_on_page(page_texts[page_no])}
                         if len(on_page) >= 2 and len({g[:2] for g in on_page}) == 1:
                             interstate = False
+                    if interstate is None and _printed_igst_total(page_texts[page_no]):
+                        interstate = True
                 # Two ways to find the table, and we keep whichever actually
                 # yields more line items.
                 #

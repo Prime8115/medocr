@@ -654,7 +654,49 @@ def _page_words(page) -> List[Word]:
 def extract_word_tables(page, layout: Optional[List[dict]] = None) -> List[List[List[str]]]:
     """Rebuild line-item tables from a PDF page's word positions. `layout` is
     an earlier page's columns, for a continuation page that prints no header."""
-    return tables_from_words(_page_words(page), layout)
+    return tables_from_words(_page_words(page), layout, _vertical_rules(page))
+
+
+def _vertical_rules(page) -> List[Tuple[float, float, float]]:
+    """(x, top, bottom) of each vertical line drawn on the page."""
+    try:
+        return [(float(e["x0"]), float(e["top"]), float(e["bottom"])) for e in page.edges
+                if e.get("orientation") == "v" and float(e["bottom"]) - float(e["top"]) > 20]
+    except Exception:  # noqa: BLE001 - a page without drawing is read by its words alone
+        return []
+
+
+def _ruled_edges(columns: List[dict], body: List[Line], edges: List[float],
+                 rules: Sequence[Tuple[float, float, float]]) -> List[float]:
+    """Put a boundary on the line the bill itself draws between two columns.
+
+    Words and their gaps only suggest where a column ends; a drawn rule says
+    so. Soham ERP's GST invoice rules "Company" off from "Product Description"
+    at x 62 and prints the name "PK PERACETAMOL 0" from x 63, but the midpoint
+    between the two headings fell at x 73 - so every name lost "PK" to the
+    company column. A rule is used only when it is the one rule in the gap
+    between the two headings, runs down from above the first row, and no
+    row's word along it crosses it. Scans and unruled bills have no rules and are unchanged.
+    """
+    if not rules or not body:
+        return edges
+    words = [w for _, row in body for w in row]
+    top = min(float(w["top"]) for w in words)
+    # Drawn from above the first row down through it: the table's own rule,
+    # not a box elsewhere on the page.
+    drawn = [(round(x, 1), t, b) for x, t, b in rules if t <= top + 1 and b >= top + 10]
+    out = list(edges)
+    for i in range(1, len(edges) - 1):
+        left, right = columns[i - 1], columns[i]
+        between = [r for r in drawn if left["x1"] < r[0] < right["x0"]]
+        if len({x for x, _, _ in between}) != 1:
+            continue
+        x, t, b = between[0]
+        if any(float(w["x0"]) < x < float(w["x1"]) for w in words if t <= float(w["top"]) <= b):
+            continue
+        if out[i - 1] < x < out[i + 1]:
+            out[i] = x
+    return out
 
 
 def page_layout(page) -> Optional[List[dict]]:
@@ -674,7 +716,8 @@ def page_layout(page) -> Optional[List[dict]]:
     return columns if len(columns) >= 5 else None
 
 
-def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None) -> List[List[List[str]]]:
+def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None,
+                      rules: Sequence[Tuple[float, float, float]] = ()) -> List[List[List[str]]]:
     """Rebuild line-item tables from positioned words. Same shape as extract_tables().
 
     The words may come from anywhere that can say where each one sits - a
@@ -721,6 +764,7 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
             rows_below = rows_below[:i]
             break
     edges = _channel_edges(columns, rows_below, edges)
+    edges = _ruled_edges(columns, rows_below, edges, rules)
     n = len(columns)
     header = [col["label"] for col in columns]
 

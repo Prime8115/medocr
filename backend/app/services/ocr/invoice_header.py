@@ -398,6 +398,32 @@ _PARTY_HEADINGS = {
     # was printed on the bill.
     "ship_to": re.compile(r"\bship(?:p?ed)?\s*to\b", re.I),
 }
+_TO_HEADING = re.compile(r"To\s*[,:]$")
+_COPY_LABEL = re.compile(
+    r"\b(?:ORIGINAL|DUPLICATE|TRIPLICATE|QUADRUPLICATE)\s+(?:COPY\s+)?FOR\s+"
+    r"(?:RECIPIENT|BUYER|TRANSPORTER|SUPPLIER|ASSESSEE)\b", re.I)
+
+
+def is_to_heading(words, i: int) -> bool:
+    """A buyer column headed by a bare "To," or "To:".
+
+    Soham ERP's GST invoice prints the supplier on the left and "To," over the
+    buyer's block on the right, with no "Bill to". Unrecognised, both columns
+    were read as the supplier's, and the buyer's PAN then swapped the
+    supplier's GSTIN for the buyer's. Only a "To," that opens its own column
+    counts - nothing printed just left of it on the line - so the "To:" of a
+    "Period From: 01/10 To: 31/10" is never taken for a heading.
+    """
+    word = words[i]
+    if not _TO_HEADING.match(str(word["text"])):
+        return False
+    top, x0 = float(word["top"]), float(word["x0"])
+    return not any(
+        abs(float(w["top"]) - top) <= 3.5 and x0 - 10 < float(w["x1"]) <= x0 + 0.5
+        for j, w in enumerate(words) if j != i
+    )
+
+
 _STOP = re.compile(
     r"(gs\s*t\s*in|gstin|pan\s*no|pan\s*:|d\.?l\.?\s*no|drug\s*lic|food\s*lic|fssai|cin|"
     r"e-?mail|phone|mob\b|tel\b|invoice|state\s*code|pos\s*:|place\s*of\s*supply|"
@@ -672,6 +698,10 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
         if _REF_COLUMN.match(phrase):
             anchors.append((float(word["x0"]), top, "_refs"))
 
+    if not any(key == "bill_to" for _, _, key in anchors):
+        # No "Bill to" anywhere: a bare "To," column heading is the buyer's.
+        anchors += [(float(w["x0"]), float(w["top"]), "bill_to") for i, w in enumerate(words)
+                    if float(w["top"]) <= limit and is_to_heading(words, i)][:1]
     parties = [a for a in anchors if a[2] != "_refs"]
     if not parties:
         return {}
@@ -831,6 +861,9 @@ def party_details(text: str) -> Dict[str, Optional[str]]:
         # column cut falls mid-heading: V L's bill-to block opens "Receiver
         # (Billed to) Details of", its ship-to block "Consignee (Shiped".
         without = _PARTY_PROSE.sub(" ", without)
+        # A bare "To," heading (Soham ERP), and the copy label printed beside
+        # it ("ORIGINAL FOR RECIPIENT"), are not the buyer's name.
+        without = _COPY_LABEL.sub(" ", re.sub(r"^\s*To\s*[,:]\s*", "", without))
         # A field label that OPENS the line is just that field's name
         # ("Name : EASTERN AGENCIES...", Overseas); one in the middle is two
         # columns colliding, and is handled below.
