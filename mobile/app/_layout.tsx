@@ -40,6 +40,7 @@ function RootNav() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="review/[id]" options={{ title: 'Review' }} />
+      <Stack.Screen name="organization" options={{ title: 'Organization' }} />
     </Stack>
   );
 }

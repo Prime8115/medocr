@@ -167,6 +167,24 @@ appear automatically because the original audit events are retained. A shop
 owner has no cross-customer access unless explicitly granted this platform
 role. Do not grant it to a customer account.
 
+### Organizations, workspaces and licensed users
+
+The organization migration runs during backend startup. It creates one
+organization and workspace for each existing shop; invoices, supplier lessons
+and connectors stay in that workspace. A new self-registered organization gets
+the Solo plan: one user seat and one workspace. In the web admin, a platform
+admin uses **Organizations** to assign a larger plan; the organization admin
+then uses **Organization** to add users and grant workspaces. Android users can
+open **Settings → Organization and workspaces** for the same controls. One user
+uses one seat across all assigned workspaces. Each signed-in device selects
+its workspace independently, and the backend validates that selection on
+every request. Users should finish pending offline uploads before switching.
+
+The current add-user flow sets a temporary password. Share it privately with
+the intended user and have them change it after first sign-in. A deactivated
+user loses access immediately and frees a seat. Keep at least one active
+organization admin. Back up PostgreSQL before installing this migration.
+
 - **Updates:** back up database and source storage, note the current commit, `git pull` the reviewed release, then run the same `docker compose ... up -d --build` command. Backend startup applies Alembic migrations. A code rollback may require restoring the matching database backup; do not assume a schema downgrade is safe.
 - **Backups:** schedule a PostgreSQL custom-format dump (`pg_dump -Fc`) and a snapshot of the Compose `source_storage` volume. Keep backups encrypted outside the server along with any `SOURCE_ENCRYPTION_KEYS`, and practice restoring both to a staging instance. A source backup without its encryption key cannot recover exact originals.
 - **Monitoring:** check `docker compose ... ps`, backend and Caddy logs, `/health`, OCR job failures, low disk space, database backup age, and failed ERP deliveries. Restrict log access; never copy raw invoice data or secrets into support tickets.

@@ -2,8 +2,8 @@
 
 An organisation holds the licence (app/services/licensing.py) and owns one or
 more workspaces - the `shops` table, each with its own bills, suppliers and
-settings. A user belongs to one organisation; `users.shop_id` is the workspace
-they are working in now, so every existing tenancy check is unchanged.
+settings. A user belongs to one organisation; `users.shop_id` is their login
+default, while the signed session selects the workspace for each request.
 See docs/ORG_USER_MANAGEMENT_PRD.md.
 """
 from sqlalchemy import Boolean, Column, Date, ForeignKey, String
@@ -18,7 +18,7 @@ class Organization(Base, TimestampMixin):
 
     id = Column(String(32), primary_key=True, default=gen_uuid)
     name = Column(String(255), nullable=False)
-    plan = Column(String(32), nullable=False, default="starter")
+    plan = Column(String(32), nullable=False, default="solo")
     valid_until = Column(Date, nullable=True)        # none = no expiry
     is_active = Column(Boolean, nullable=False, default=True)
 

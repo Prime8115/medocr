@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { useAuth } from '@/src/auth/AuthContext';
@@ -41,6 +41,7 @@ const TYPE_INFO: Record<ConnectorType, { label: string; help: string }> = {
 };
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const { user, signOut } = useAuth();
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
@@ -196,6 +197,8 @@ export default function SettingsScreen() {
           <View style={{ flexDirection: 'row', marginTop: spacing.sm }}>
             <Badge label={user?.role === 'owner' ? 'Owner' : 'Staff'} tone="info" />
           </View>
+          <Button title="Organization and workspaces" variant="secondary"
+            onPress={() => router.push('/organization')} style={{ marginTop: spacing.md }} />
           <Button title="Log out" variant="danger" onPress={signOut} style={{ marginTop: spacing.lg }} />
         </Card>
 

@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, setToken } from './client';
 
 export interface User {
   id: string;
@@ -13,10 +13,12 @@ export interface User {
   workspaces?: { id: string; name: string }[];
 }
 
-/** Work in another workspace: every screen follows (POST /v1/auth/workspace). */
+/** Select another workspace in this browser session. */
 export async function switchWorkspace(workspaceId: string): Promise<User> {
   const res = await api.post('/v1/auth/workspace', { workspace_id: workspaceId });
-  return res.data as User;
+  const session = res.data as { access_token: string; user: User };
+  setToken(session.access_token);
+  return session.user;
 }
 
 export async function login(email: string, password: string): Promise<string> {

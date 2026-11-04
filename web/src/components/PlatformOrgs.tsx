@@ -12,7 +12,7 @@ export default function PlatformOrgs() {
   const [plans, setPlans] = useState<Record<string, Plan>>({});
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: '', plan: 'starter', valid_until: '', workspace_name: '', admin_email: '', admin_password: '' });
+  const [form, setForm] = useState({ name: '', plan: 'solo', valid_until: '', workspace_name: '', admin_email: '', admin_password: '' });
 
   const load = useCallback(async () => {
     setOrgs(await listOrgs());
@@ -52,7 +52,7 @@ export default function PlatformOrgs() {
               const body = { ...form, valid_until: form.valid_until || null, workspace_name: form.workspace_name || undefined };
               if (await run(() => createOrg(body), `${form.name} created.`)) {
                 setCreating(false);
-                setForm({ name: '', plan: 'starter', valid_until: '', workspace_name: '', admin_email: '', admin_password: '' });
+                setForm({ name: '', plan: 'solo', valid_until: '', workspace_name: '', admin_email: '', admin_password: '' });
               }
             }}>
             <label>Name<input className="field-input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
