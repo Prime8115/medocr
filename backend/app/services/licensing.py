@@ -15,12 +15,13 @@ from app.models.user import User
 
 # Fixed plans, smallest first. Changed here only.
 PLANS = {
+    "solo": {"label": "Solo", "users": 1, "workspaces": 1},
     "starter": {"label": "Starter", "users": 2, "workspaces": 1},
     "growth": {"label": "Growth", "users": 5, "workspaces": 3},
     "business": {"label": "Business", "users": 15, "workspaces": 10},
     "enterprise": {"label": "Enterprise", "users": 50, "workspaces": 50},
 }
-DEFAULT_PLAN = "starter"
+DEFAULT_PLAN = "solo"
 
 ADMIN, MEMBER = "owner", "staff"
 
@@ -99,15 +100,14 @@ def check_can_add_workspace(db: Session, org: Organization) -> None:
 
 
 def accessible_workspaces(db: Session, user: User) -> List[Shop]:
-    """The workspaces this user may open: every one of the organisation for an
-    admin, the ones given to a member - and always the current one."""
+    """The workspaces this user may open: all for an admin, assigned for staff."""
     if not user.org_id:
         shop = db.get(Shop, user.shop_id)
         return [shop] if shop else []
     q = db.query(Shop).filter(Shop.org_id == user.org_id)
     if user.role != ADMIN:
         ids = [r.shop_id for r in db.query(UserWorkspace).filter(UserWorkspace.user_id == user.id)]
-        q = q.filter(Shop.id.in_(ids or [user.shop_id]))
+        q = q.filter(Shop.id.in_(ids or [""]))
     return q.order_by(Shop.name).all()
 
 

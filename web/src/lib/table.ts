@@ -9,10 +9,9 @@
  *
  *  - **Order by what a pharmacist checks first.** Item, then quantity, rate and
  *    amount; batch, expiry and the rest follow.
- *  - **Every column, always.** The client's import needs every field on every
- *    invoice, so a column the bill does not print is shown blank rather than
- *    left out - an absent column reads as "the app did not look", a blank one
- *    as "the invoice does not have it".
+ *  - **Most columns, always.** The client's import needs every field. PTS is
+ *    hidden when every row is blank because a visible PTS heading implies the
+ *    supplier printed that price. The field remains in row details and exports.
  */
 import type { Leaf } from '../api/documents';
 import { getLeaf, type Fields } from './payload';
@@ -96,10 +95,13 @@ export function rateSource(items: Record<string, Leaf>[]): string | undefined {
   return best;
 }
 
-/** Every column, in priority order; a field the invoice lacks renders blank. */
+/** Hide only PTS when no line carries it; other fields remain reviewable. */
 export function invoiceColumns(fields: Fields): Column[] {
-  const source = rateSource(lineItems(fields));
-  return CATALOG.map((c) => (c.key === 'rate' && source ? { ...c, sub: source } : c));
+  const items = lineItems(fields);
+  const source = rateSource(items);
+  const hasPts = items.some((item) => String(item?.pts?.value ?? '').trim() !== '');
+  return CATALOG.filter((c) => c.key !== 'pts' || hasPts)
+    .map((c) => (c.key === 'rate' && source ? { ...c, sub: source } : c));
 }
 
 export function totalWidth(columns: Column[]): number {

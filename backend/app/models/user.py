@@ -9,7 +9,7 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
 
     id = Column(String(32), primary_key=True, default=gen_uuid)
-    # The workspace the user is working in now - every tenancy check reads it.
+    # Login-default workspace. Each signed session selects its workspace in JWT.
     shop_id = Column(String(32), ForeignKey("shops.id"), nullable=False, index=True)
     # The organisation the user belongs to; "owner" is its admin, "staff" a member.
     org_id = Column(String(32), ForeignKey("organizations.id"), nullable=True, index=True)

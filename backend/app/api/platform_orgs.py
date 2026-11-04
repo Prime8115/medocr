@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import require_platform_admin
@@ -61,7 +62,8 @@ def list_orgs(db: Session = Depends(get_db), _: User = Depends(require_platform_
 @router.post("", status_code=201)
 def create_org(body: NewOrg, db: Session = Depends(get_db), me: User = Depends(require_platform_admin)):
     _check_plan(body.plan)
-    if db.query(User).filter(User.email == body.admin_email).first():
+    admin_email = str(body.admin_email).strip().lower()
+    if db.query(User).filter(func.lower(User.email) == admin_email).first():
         raise HTTPException(status_code=400, detail="This email is already in use.")
     org = Organization(name=body.name.strip(), plan=body.plan, valid_until=body.valid_until, is_active=True)
     db.add(org)
@@ -69,13 +71,13 @@ def create_org(body: NewOrg, db: Session = Depends(get_db), me: User = Depends(r
     shop = Shop(name=(body.workspace_name or body.name).strip(), org_id=org.id)
     db.add(shop)
     db.flush()
-    admin = User(email=body.admin_email, hashed_password=hash_password(body.admin_password), role=ADMIN,
+    admin = User(email=admin_email, hashed_password=hash_password(body.admin_password), role=ADMIN,
                  org_id=org.id, shop_id=shop.id, is_active=True)
     db.add(admin)
     db.flush()
     licensing.set_workspaces(db, admin, [shop.id])
     db.add(AuditLog(shop_id=shop.id, actor_id=me.id, action="platform.org_created", target=org.id,
-                    detail={"name": org.name, "plan": org.plan, "admin": body.admin_email}))
+                    detail={"name": org.name, "plan": org.plan, "admin": admin_email}))
     db.commit()
     return licensing.summary(db, org)
 
@@ -83,7 +85,7 @@ def create_org(body: NewOrg, db: Session = Depends(get_db), me: User = Depends(r
 @router.patch("/{org_id}")
 def change_org(org_id: str, body: OrgChange, db: Session = Depends(get_db),
                me: User = Depends(require_platform_admin)):
-    org = db.get(Organization, org_id)
+    org = db.query(Organization).filter(Organization.id == org_id).with_for_update().first()
     if not org:
         raise HTTPException(status_code=404, detail="Organisation not found.")
     _check_plan(body.plan)

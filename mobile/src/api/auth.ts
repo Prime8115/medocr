@@ -5,6 +5,15 @@ export interface User {
   email: string;
   role: string;
   shop_id: string;
+  org_id?: string | null;
+  org_name?: string | null;
+  workspace_name?: string | null;
+  workspaces?: { id: string; name: string }[];
+}
+
+export async function switchWorkspace(workspaceId: string): Promise<{ access_token: string; user: User }> {
+  const res = await api.post('/v1/auth/workspace', { workspace_id: workspaceId });
+  return res.data as { access_token: string; user: User };
 }
 
 export async function login(email: string, password: string): Promise<string> {

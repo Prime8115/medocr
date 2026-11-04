@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_owner
@@ -25,6 +26,14 @@ router = APIRouter()
 
 def _org(db: Session, user: User) -> Organization:
     org = db.get(Organization, user.org_id) if user.org_id else None
+    if not org:
+        raise HTTPException(status_code=404, detail="No organisation for this account.")
+    return org
+
+
+def _locked_org(db: Session, user: User) -> Organization:
+    """Serialize entitlement changes for one organization on PostgreSQL."""
+    org = db.query(Organization).filter(Organization.id == user.org_id).with_for_update().first()
     if not org:
         raise HTTPException(status_code=404, detail="No organisation for this account.")
     return org
@@ -86,22 +95,23 @@ def list_users(db: Session = Depends(get_db), user: User = Depends(require_owner
 
 @router.post("/users", status_code=201)
 def add_user(body: NewUser, db: Session = Depends(get_db), user: User = Depends(require_owner)):
-    org = _org(db, user)
+    org = _locked_org(db, user)
     try:
         licensing.check_can_add_user(db, org)
     except LicenceError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
-    if db.query(User).filter(User.email == body.email).first():
+    email = str(body.email).strip().lower()
+    if db.query(User).filter(func.lower(User.email) == email).first():
         raise HTTPException(status_code=400, detail="This email is already in use.")
     ids = _workspaces_in_org(db, org, body.workspace_ids)
     if body.role == MEMBER and not ids:
         raise HTTPException(status_code=422, detail="Give a member at least one workspace.")
-    new = User(email=body.email, hashed_password=hash_password(body.password), role=body.role,
+    new = User(email=email, hashed_password=hash_password(body.password), role=body.role,
                org_id=org.id, shop_id=(ids[0] if ids else user.shop_id), is_active=True)
     db.add(new)
     db.flush()
     licensing.set_workspaces(db, new, ids)
-    _audit(db, user, "org.user_added", new.id, email=body.email, role=body.role, workspaces=ids)
+    _audit(db, user, "org.user_added", new.id, email=email, role=body.role, workspaces=ids)
     db.commit()
     return _user_out(db, new, user)
 
@@ -109,7 +119,7 @@ def add_user(body: NewUser, db: Session = Depends(get_db), user: User = Depends(
 @router.patch("/users/{user_id}")
 def change_user(user_id: str, body: UserChange, db: Session = Depends(get_db),
                 user: User = Depends(require_owner)):
-    org = _org(db, user)
+    org = _locked_org(db, user)
     target = db.query(User).filter(User.id == user_id, User.org_id == org.id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -182,7 +192,7 @@ def list_workspaces(db: Session = Depends(get_db), user: User = Depends(get_curr
 
 @router.post("/workspaces", status_code=201)
 def add_workspace(body: WorkspaceIn, db: Session = Depends(get_db), user: User = Depends(require_owner)):
-    org = _org(db, user)
+    org = _locked_org(db, user)
     try:
         licensing.check_can_add_workspace(db, org)
     except LicenceError as exc:

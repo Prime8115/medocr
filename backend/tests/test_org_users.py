@@ -2,18 +2,23 @@
 from tests.conftest import register_and_login
 
 
-def test_admin_adds_users_up_to_the_plan_and_members_see_only_their_workspaces(client):
+def test_admin_adds_users_up_to_the_plan_and_members_see_only_their_workspaces(client, db_session):
     admin = register_and_login(client, email="admin@org.com", shop="Org One")
     org = client.get("/v1/org", headers=admin).json()
-    assert (org["plan"], org["seats_used"], org["seats_allowed"]) == ("starter", 1, 2)
+    assert (org["plan"], org["seats_used"], org["seats_allowed"]) == ("solo", 1, 1)
     ws = client.get("/v1/org/workspaces", headers=admin).json()
+    # One seat by default. A platform admin assigns more before inviting staff.
+    r = client.post("/v1/org/users", headers=admin, json={"email": "m1@org.com", "password": "password123",
+                                                          "role": "staff", "workspace_ids": [ws[0]["id"]]})
+    assert r.status_code == 403 and "seats" in r.json()["detail"]
+    # An upgraded customer may add staff up to its plan.
+    from app.models.organization import Organization
+    with db_session() as db:
+        db.get(Organization, org["id"]).plan = "starter"
+        db.commit()
     r = client.post("/v1/org/users", headers=admin, json={"email": "m1@org.com", "password": "password123",
                                                           "role": "staff", "workspace_ids": [ws[0]["id"]]})
     assert r.status_code == 201, r.text
-    # Starter: 2 seats - the third is refused with the reason.
-    r = client.post("/v1/org/users", headers=admin, json={"email": "m2@org.com", "password": "password123",
-                                                          "role": "staff", "workspace_ids": [ws[0]["id"]]})
-    assert r.status_code == 403 and "seats" in r.json()["detail"]
     # Starter allows one workspace.
     assert client.post("/v1/org/workspaces", headers=admin, json={"name": "Branch 2"}).status_code == 403
     # A member cannot manage users, and cannot switch outside their workspaces.
@@ -69,9 +74,12 @@ def test_documents_follow_the_current_workspace(client, db_session):
     finally:
         s.close()
     assert len(client.get("/v1/documents/", headers=boss).json()) == 1          # Branch A
-    me = client.post("/v1/auth/workspace", headers=boss, json={"workspace_id": b["id"]}).json()
+    switched = client.post("/v1/auth/workspace", headers=boss, json={"workspace_id": b["id"]}).json()
+    me = switched["user"]
     assert me["workspace_name"] == "Branch B"
-    assert len(client.get("/v1/documents/", headers=boss).json()) == 2          # Branch B
+    branch_b = {"Authorization": f"Bearer {switched['access_token']}"}
+    assert len(client.get("/v1/documents/", headers=branch_b).json()) == 2     # Branch B
+    assert len(client.get("/v1/documents/", headers=boss).json()) == 1         # Other device stays in A
     # A member given only Branch A cannot open Branch B.
     client.post("/v1/org/users", headers=boss, json={"email": "clerk@chain.com", "password": "password123",
                                                      "role": "staff", "workspace_ids": [a["id"]]})
@@ -81,8 +89,13 @@ def test_documents_follow_the_current_workspace(client, db_session):
     assert org["plan"] == "growth"
 
 
-def test_deactivating_frees_a_seat_and_stops_sign_in(client):
+def test_deactivating_frees_a_seat_and_stops_sign_in(client, db_session):
     admin = register_and_login(client, email="a@seat.com", shop="Seats")
+    from app.models.organization import Organization
+    org_id = client.get("/v1/org", headers=admin).json()["id"]
+    with db_session() as db:
+        db.get(Organization, org_id).plan = "starter"
+        db.commit()
     ws = client.get("/v1/org/workspaces", headers=admin).json()[0]["id"]
     u = client.post("/v1/org/users", headers=admin, json={"email": "b@seat.com", "password": "password123",
                                                           "role": "staff", "workspace_ids": [ws]}).json()
@@ -158,3 +171,20 @@ def test_an_expired_licence_stops_scanning_but_keeps_scanned_bills_open(client, 
     client.patch(f"/v1/platform/orgs/{org['id']}", headers=ops, json={"clear_valid_until": True})
     upload = client.post("/v1/documents/", headers=lead, files={"file": ("bill.png", b"\x89PNG\r\n", "image/png")})
     assert upload.status_code != 403
+
+
+def test_email_identity_is_case_insensitive(client, db_session):
+    admin = register_and_login(client, email="Owner@Case.example", shop="Case Shop")
+    assert client.post("/v1/auth/login", data={"username": "OWNER@CASE.EXAMPLE",
+                                                "password": "password123"}).status_code == 200
+    duplicate = client.post("/v1/auth/register", json={"email": "owner@case.example",
+                                                      "password": "password123", "shop_name": "Other"})
+    assert duplicate.status_code == 400
+    from app.models.organization import Organization
+    org_id = client.get("/v1/org", headers=admin).json()["id"]
+    with db_session() as db:
+        db.get(Organization, org_id).plan = "starter"
+        db.commit()
+    workspace = client.get("/v1/org/workspaces", headers=admin).json()[0]["id"]
+    assert client.post("/v1/org/users", headers=admin, json={"email": "OWNER@CASE.EXAMPLE",
+        "password": "password123", "workspace_ids": [workspace]}).status_code == 400

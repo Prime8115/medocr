@@ -20,7 +20,7 @@ branch_labels = None
 depends_on = None
 
 # The plans as they stood when this ran (app/services/licensing.py), smallest first.
-_PLANS = (("starter", 2), ("growth", 5), ("business", 15), ("enterprise", 50))
+_PLANS = (("solo", 1), ("starter", 2), ("growth", 5), ("business", 15), ("enterprise", 50))
 
 
 def upgrade() -> None:
@@ -28,7 +28,7 @@ def upgrade() -> None:
         "organizations",
         sa.Column("id", sa.String(length=32), primary_key=True),
         sa.Column("name", sa.String(length=255), nullable=False),
-        sa.Column("plan", sa.String(length=32), nullable=False, server_default="starter"),
+        sa.Column("plan", sa.String(length=32), nullable=False, server_default="solo"),
         sa.Column("valid_until", sa.Date(), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

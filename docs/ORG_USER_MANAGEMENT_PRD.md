@@ -39,7 +39,7 @@ The outcome:
 | Organisation | The customer company. Holds the licence. | New `organizations` table. |
 | Workspace | A shop, branch or GSTIN inside the organisation. Owns its bills and data. | Existing `shops` table plus `org_id`. Every existing shop becomes a workspace. |
 | User | A person who signs in. Belongs to one organisation. | `users` plus `org_id`. |
-| Current workspace | The workspace the user is working in now. | `users.shop_id`, so all existing tenancy works unchanged. |
+| Current workspace | The workspace selected in this sign-in session. | Signed JWT `shop_id`; `users.shop_id` remains the login default. Each request validates access before using the selected workspace. |
 | Workspace access | Which workspaces a member may open. | New `user_workspaces` table. |
 | Org admin | Manages users and workspaces, and may open every workspace. | `role = "owner"`. |
 | Member | Works only in the workspaces they are given. | `role = "staff"`. |
@@ -53,6 +53,7 @@ changed there only.
 
 | Plan | Users (active) | Workspaces |
 |---|---|---|
+| Solo | 1 | 1 |
 | Starter | 2 | 1 |
 | Growth | 5 | 3 |
 | Business | 15 | 10 |
@@ -98,9 +99,9 @@ A licence also has an optional **valid-until** date, and the organisation an
 
 ### 5.2 Every user
 
-1. A workspace switcher in the sidebar: the current workspace's name, and a
-   list of those the user can open. Switching changes the current workspace
-   and reloads the page.
+1. A workspace switcher in the web sidebar and Android settings: the current
+   workspace's name, and a list of those the user can open. Switching issues
+   a new token for that session. Another device stays in its own workspace.
 2. `GET /v1/auth/me` returns the organisation, the current workspace and the
    workspaces the user can open.
 
@@ -113,7 +114,7 @@ A licence also has an optional **valid-until** date, and the organisation an
 
 ### 5.4 Sign-up and existing customers
 
-- `POST /v1/auth/register` creates an organisation on the Starter plan, its
+- `POST /v1/auth/register` creates an organisation on the Solo plan, its
   first workspace and its first admin, as one step.
 - The migration gives every existing shop its own organisation, named after
   the shop and on the smallest plan that fits its current active users.
@@ -141,7 +142,7 @@ Every change is written to the audit log of the workspace it happened in:
 | `GET /v1/org/workspaces` | any user | Workspaces the user can open (all, for an admin) |
 | `POST /v1/org/workspaces` | org admin | Add a workspace (limit-checked) |
 | `PATCH /v1/org/workspaces/{id}` | org admin | Rename |
-| `POST /v1/auth/workspace` | any user | Switch the current workspace |
+| `POST /v1/auth/workspace` | any user | Issue a new workspace-scoped access token |
 | `GET /v1/platform/orgs` | platform admin | Every organisation with usage |
 | `POST /v1/platform/orgs` | platform admin | Create an organisation, first workspace and admin |
 | `PATCH /v1/platform/orgs/{id}` | platform admin | Plan, valid-until date, active |
@@ -153,13 +154,13 @@ Every change is written to the audit log of the workspace it happened in:
 - Self-service plan purchase and billing.
 - Per-workspace roles. A user is an admin or a member for the whole
   organisation.
-- A workspace switcher in the Android app. The app works in the user's
-  current workspace, which the web admin switches.
+- Automatic email delivery for the temporary password. The admin passes it to
+  the new user using their chosen private channel.
 - Moving a workspace between organisations.
 
 ## 8. Acceptance
 
-1. A new sign-up gets an organisation (Starter), a workspace and an admin.
+1. A new sign-up gets an organisation (Solo, one seat), a workspace and an admin.
 2. An admin adds users up to the plan's seat count; the next is refused with
    the reason.
 3. A member sees only bills from workspaces they were given. Switching to a
@@ -175,10 +176,16 @@ Every change is written to the audit log of the workspace it happened in:
     existing bills still open. Renewal restores scanning.
 9. The migration upgrades and downgrades cleanly, and existing shops keep
    every bill, lesson and setting.
+10. Switching workspace on one phone or browser does not change the workspace
+    of another signed-in device. Pending offline uploads block a mobile switch.
+11. PTS is absent on the Sai Venkata invoice: its PDF prints P.T.R. and Net
+    Rate, and review hides an all-blank PTS column while exports keep it null.
 
 ## 9. Open questions
 
-1. Plan seat and workspace numbers: placeholders in §4, to confirm.
+1. Growth, Business and Enterprise limits in §4 are current product defaults;
+   commercial pricing and entitlement changes can be configured later. New
+   self-registered organisations always start with one seat.
 2. ~~After the valid-until date, should scanning also stop?~~ Decided
    4 November 2026: yes. Scanning stops; scanned bills stay open (section 4).
 3. Should a member be allowed to see the organisation's plan and usage? This

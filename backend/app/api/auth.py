@@ -5,6 +5,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
@@ -21,10 +22,11 @@ router = APIRouter()
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
-    """Create an organisation (Starter plan), its first workspace and its admin."""
+    """Create an organisation (one seat), its first workspace and its admin."""
     from app.services import licensing
 
-    if db.query(User).filter(User.email == payload.email).first():
+    email = str(payload.email).strip().lower()
+    if db.query(User).filter(func.lower(User.email) == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
     org = Organization(name=payload.shop_name, plan=licensing.DEFAULT_PLAN, is_active=True)
@@ -35,7 +37,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     db.flush()  # assign shop.id
 
     user = User(
-        email=payload.email,
+        email=email,
         hashed_password=hash_password(payload.password),
         shop_id=shop.id,
         org_id=org.id,
@@ -52,7 +54,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form.username).first()
+    user = db.query(User).filter(func.lower(User.email) == form.username.strip().lower()).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if not user.is_active:
@@ -83,21 +85,26 @@ class WorkspaceSwitch(BaseModel):
     workspace_id: str
 
 
-@router.post("/workspace", response_model=UserOut)
+class WorkspaceSession(BaseModel):
+    access_token: str
+    user: UserOut
+
+
+@router.post("/workspace", response_model=WorkspaceSession)
 def switch_workspace(body: WorkspaceSwitch, db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):
-    """Work in another of the user's workspaces: every screen and API follows."""
+    """Select a workspace for this session without moving the user's other devices."""
     from app.services import licensing
 
     if body.workspace_id not in {s.id for s in licensing.accessible_workspaces(db, user)}:
         raise HTTPException(status_code=403, detail="You do not have access to that workspace.")
     if body.workspace_id != user.shop_id:
-        previous, user.shop_id = user.shop_id, body.workspace_id
         db.add(AuditLog(shop_id=body.workspace_id, actor_id=user.id, action="user.workspace_switched",
-                        target=user.id, detail={"from": previous}))
+                        target=user.id, detail={"from": user.shop_id}))
         db.commit()
-        db.refresh(user)
-    return me(db, user)
+    selected = type(user)(user.record, body.workspace_id)
+    return WorkspaceSession(access_token=create_access_token(user.id, body.workspace_id, user.role),
+                            user=me(db, selected))
 
 
 @router.post("/change-password")

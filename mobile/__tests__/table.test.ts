@@ -48,6 +48,15 @@ describe('invoice table columns', () => {
     expect(keys).toContain('discount_percent'); // no row has a discount - still shown, blank
   });
 
+  test('hides PTS when absent and shows it when a line has a printed value', () => {
+    expect(invoiceColumns(invoice).some((c) => c.key === 'pts')).toBe(false);
+    const withPts: Fields = { line_items: [
+      { description: f('A'), pts: f(null) },
+      { description: f('B'), pts: f('98.40') },
+    ] };
+    expect(invoiceColumns(withPts).some((c) => c.key === 'pts')).toBe(true);
+  });
+
   test('a sparse invoice still gets every column, blank where it has nothing', () => {
     const sparse: Fields = { line_items: [{ description: f('X') }] };
     const columns = invoiceColumns(sparse);

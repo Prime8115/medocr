@@ -5,7 +5,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
-EXPECTED_TABLES = {"shops", "users", "documents", "connectors", "push_deliveries", "audit_log", "problem_report_reviews"}
+EXPECTED_TABLES = {"shops", "users", "documents", "connectors", "push_deliveries", "audit_log", "problem_report_reviews", "organizations", "user_workspaces"}
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -90,4 +90,27 @@ def test_report_upgrade_preserves_existing_complaints(tmp_path):
         assert connection.execute(text("SELECT detail FROM audit_log WHERE id='old-report'")).scalar_one()
         assert connection.execute(text("SELECT COUNT(*) FROM problem_report_reviews")).scalar_one() == 0
         assert "is_platform_admin" in {c["name"] for c in inspect(engine).get_columns("users")}
+    engine.dispose()
+
+
+def test_organization_upgrade_keeps_existing_users_and_workspaces(tmp_path):
+    from sqlalchemy import text
+
+    cfg = _alembic_config(f"sqlite:///{tmp_path / 'orgs.db'}")
+    command.upgrade(cfg, "a18c34d790f2")
+    engine = create_engine(cfg.get_main_option("sqlalchemy.url"))
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO shops (id, name, created_at, updated_at) VALUES ('shop-a', 'Pharmacy A', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+        for uid in ("owner", "clerk"):
+            connection.execute(text("""INSERT INTO users
+                (id, shop_id, email, hashed_password, role, is_active, created_at, updated_at)
+                VALUES (:id, 'shop-a', :email, 'hash', :role, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """), {"id": uid, "email": f"{uid}@example.com", "role": "owner" if uid == "owner" else "staff"})
+    command.upgrade(cfg, "head")
+    with engine.connect() as connection:
+        org = connection.execute(text("SELECT id, plan FROM organizations")).one()
+        assert org[1] == "starter"  # two existing users are grandfathered
+        assert connection.execute(text("SELECT org_id FROM shops WHERE id='shop-a'")).scalar_one() == org[0]
+        assert connection.execute(text("SELECT COUNT(*) FROM users WHERE org_id=:id"), {"id": org[0]}).scalar_one() == 2
+        assert connection.execute(text("SELECT COUNT(*) FROM user_workspaces WHERE shop_id='shop-a'")).scalar_one() == 2
     engine.dispose()

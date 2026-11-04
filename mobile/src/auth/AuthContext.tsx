@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import * as SecureStore from 'expo-secure-store';
 
 import { setTokenGetter } from '../api/client';
-import { login as apiLogin, me as apiMe, register as apiRegister, User } from '../api/auth';
+import { login as apiLogin, me as apiMe, register as apiRegister, switchWorkspace as apiSwitchWorkspace, User } from '../api/auth';
 
 const TOKEN_KEY = 'mediscan_token';
 
@@ -12,6 +12,7 @@ interface AuthState {
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, shopName: string) => Promise<void>;
   signOut: () => Promise<void>;
+  switchWorkspace: (workspaceId: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -60,6 +61,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       async signUp(email, password, shopName) {
         await apiRegister(email, password, shopName);
         await persistToken(await apiLogin(email, password));
+      },
+      async switchWorkspace(workspaceId) {
+        const session = await apiSwitchWorkspace(workspaceId);
+        tokenRef.current = session.access_token;
+        await SecureStore.setItemAsync(TOKEN_KEY, session.access_token);
+        setUser(session.user);
       },
       async signOut() {
         tokenRef.current = null;
