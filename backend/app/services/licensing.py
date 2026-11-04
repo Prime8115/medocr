@@ -70,6 +70,19 @@ def _may_add(org: Organization) -> None:
         raise LicenceError(f"The licence expired on {org.valid_until.isoformat()}.")
 
 
+def check_can_scan(org: Optional[Organization], today: Optional[date] = None) -> None:
+    """Reading a bill - an upload, a scan again or a recheck - needs a licence
+    in force. An expired licence stops scanning; the bills already read stay
+    open to review, correct and approve (PRD section 4)."""
+    if org is None:
+        return
+    if not org.is_active:
+        raise LicenceError("This organisation is inactive. Contact MediScan support.")
+    if expired(org, today):
+        raise LicenceError(f"The licence expired on {org.valid_until.isoformat()}. "
+                           "Renew it to scan bills - bills already scanned stay open.")
+
+
 def check_can_add_user(db: Session, org: Organization) -> None:
     """Adding or reactivating one user needs a free seat."""
     _may_add(org)

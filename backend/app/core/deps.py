@@ -41,6 +41,18 @@ def get_current_user(
     return user
 
 
+def require_scan_licence(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    """The user, when their organisation's licence lets them scan a bill."""
+    from app.models.organization import Organization
+    from app.services.licensing import LicenceError, check_can_scan
+
+    try:
+        check_can_scan(db.get(Organization, user.org_id) if user.org_id else None)
+    except LicenceError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    return user
+
+
 def require_owner(user: User = Depends(get_current_user)) -> User:
     if user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner role required")

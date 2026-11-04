@@ -124,3 +124,37 @@ def test_only_platform_admins_reach_the_platform_pages(client):
     assert client.get("/v1/platform/orgs", headers=someone).status_code == 403
     assert client.post("/v1/platform/orgs", headers=someone, json={
         "name": "X", "admin_email": "y@x.com", "admin_password": "password123"}).status_code == 403
+
+
+def test_an_expired_licence_stops_scanning_but_keeps_scanned_bills_open(client, db_session, mock_ocr):
+    from app.models.document import Document
+
+    ops = _platform_admin(client, db_session, email="ops3@mediscan.in")
+    org = client.post("/v1/platform/orgs", headers=ops, json={
+        "name": "Lapsed", "plan": "starter", "admin_email": "lead@lapsed.in", "admin_password": "password123"}).json()
+    _, lead = _login(client, "lead@lapsed.in")
+    shop_id = client.get("/v1/auth/me", headers=lead).json()["shop_id"]
+    s = db_session()
+    try:
+        doc = Document(shop_id=shop_id, doc_type="invoice", status="needs_review", payload={"fields": {}},
+                       image_ref="x")
+        s.add(doc)
+        s.commit()
+        doc_id = doc.id
+    finally:
+        s.close()
+
+    client.patch(f"/v1/platform/orgs/{org['id']}", headers=ops, json={"valid_until": "2020-01-01"})
+    upload = client.post("/v1/documents/", headers=lead, files={"file": ("bill.png", b"\x89PNG\r\n", "image/png")})
+    assert upload.status_code == 403 and "expired" in upload.json()["detail"]
+    assert client.post(f"/v1/documents/{doc_id}/retry", headers=lead).status_code == 403
+    assert client.post(f"/v1/documents/{doc_id}/recheck", headers=lead,
+                       json={"path": "invoice.invoice_no"}).status_code == 403
+    # ...the bills already scanned stay open to review.
+    assert client.get(f"/v1/documents/{doc_id}", headers=lead).status_code == 200
+    assert client.get("/v1/documents/", headers=lead).status_code == 200
+
+    # Renewed: scanning is back.
+    client.patch(f"/v1/platform/orgs/{org['id']}", headers=ops, json={"clear_valid_until": True})
+    upload = client.post("/v1/documents/", headers=lead, files={"file": ("bill.png", b"\x89PNG\r\n", "image/png")})
+    assert upload.status_code != 403

@@ -69,6 +69,10 @@ A licence also has an optional **valid-until** date, and the organisation an
 - **Over the limit** (a downgrade, or an existing customer moved onto plans):
   nothing is removed. The organisation shows as over its limit, and adding is
   refused until it is back within the limit.
+- **Expired licence (past valid-until): scanning stops.** Uploading a bill,
+  Scan again and Recheck are refused with the reason. Bills already scanned
+  stay open to review, correct, approve and send, so no data is cut off.
+  Renewing (a new valid-until, or none) restores scanning at once.
 - **Inactive organisation:** its users cannot sign in or use the API.
   Platform admins are never locked out.
 
@@ -167,13 +171,15 @@ Every change is written to the audit log of the workspace it happened in:
 7. A platform admin creates an organisation and changes its plan. A
    downgrade below current use blocks adding, and removes no one.
 8. An inactive organisation's users cannot sign in.
+8a. With an expired licence, uploading, Scan again and Recheck are refused;
+    existing bills still open. Renewal restores scanning.
 9. The migration upgrades and downgrades cleanly, and existing shops keep
    every bill, lesson and setting.
 
 ## 9. Open questions
 
 1. Plan seat and workspace numbers: placeholders in §4, to confirm.
-2. After the valid-until date, should scanning also stop, or only adding
-   users and workspaces? This release blocks only adding.
+2. ~~After the valid-until date, should scanning also stop?~~ Decided
+   4 November 2026: yes. Scanning stops; scanned bills stay open (section 4).
 3. Should a member be allowed to see the organisation's plan and usage? This
    release shows it to every user.

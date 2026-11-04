@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
-from app.core.deps import get_current_user, require_owner
+from app.core.deps import get_current_user, require_owner, require_scan_licence
 from app.database import SessionLocal, get_db
 from app.models.audit_log import AuditLog
 from app.models.connector import Connector
@@ -404,7 +404,7 @@ async def submit_document(
     doc_type: Optional[str] = Form(None),
     allow_duplicate: bool = Form(False),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_scan_licence),
 ):
     """Submit a document (image/PDF) for OCR. doc_type optional (auto-detected).
 
@@ -566,7 +566,7 @@ def retry_document(
     document_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_scan_licence),
 ):
     """Re-run OCR on a document's stored image (e.g. after an 'AI busy' failure)
     without needing to photograph it again."""
@@ -1117,7 +1117,7 @@ def recheck_field(
     document_id: str,
     body: RecheckRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_scan_licence),
 ):
     """Ask the AI again about ONE field the reviewer doubts (services/recheck.py).
 
