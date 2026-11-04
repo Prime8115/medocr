@@ -64,7 +64,10 @@ def test_documents_follow_the_current_workspace(client, db_session):
         "admin_email": "boss@chain.com", "admin_password": "password123"}).json()
     _, boss = _login(client, "boss@chain.com")
     b = client.post("/v1/org/workspaces", headers=boss, json={"name": "Branch B"}).json()
+    assert b["member_count"] == 1  # the owner can open every workspace
     a = [w for w in client.get("/v1/org/workspaces", headers=boss).json() if w["name"] == "Branch A"][0]
+    owner = client.get("/v1/org/users", headers=boss).json()[0]
+    assert set(owner["workspace_ids"]) == {a["id"], b["id"]}
     s = db_session()
     try:
         s.add(Document(shop_id=a["id"], doc_type="invoice", status="needs_review", payload={}))

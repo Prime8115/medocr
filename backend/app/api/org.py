@@ -44,8 +44,11 @@ def _audit(db: Session, user: User, action: str, target: str, **detail) -> None:
 
 
 def _user_out(db: Session, u: User, me: User) -> dict:
+    workspace_ids = ([s.id for s in licensing.accessible_workspaces(db, u)]
+                     if u.role == ADMIN else licensing.workspace_ids_of(db, u))
     return {"id": u.id, "email": u.email, "role": u.role, "is_active": bool(u.is_active),
-            "workspace_ids": licensing.workspace_ids_of(db, u), "current_workspace_id": u.shop_id,
+            "workspace_ids": workspace_ids,
+            "current_workspace_id": me.shop_id if u.id == me.id else u.shop_id,
             "created_at": u.created_at.isoformat() if u.created_at else None, "is_self": u.id == me.id}
 
 
@@ -180,7 +183,11 @@ class WorkspaceIn(BaseModel):
 def _workspace_out(db: Session, s: Shop) -> dict:
     from app.models.organization import UserWorkspace
 
-    members = db.query(UserWorkspace).filter(UserWorkspace.shop_id == s.id).count()
+    admins = db.query(User).filter(User.org_id == s.org_id, User.role == ADMIN,
+                                   User.is_active.is_(True)).count()
+    staff = db.query(UserWorkspace).join(User, User.id == UserWorkspace.user_id).filter(
+        UserWorkspace.shop_id == s.id, User.role == MEMBER, User.is_active.is_(True)).count()
+    members = admins + staff
     return {"id": s.id, "name": s.name, "member_count": members}
 
 
