@@ -30,7 +30,7 @@ The outcome:
 | Adding users | Only `POST /v1/auth/register`, which creates a new shop with its owner. There is no way to add a user to an existing shop. |
 | Licence | None. |
 | Platform admin | `is_platform_admin` flag, `scripts/set_platform_admin.py`, and a Customer reports screen. |
-| Org / workspace code | None. The `codex/org-users` branch in `mediscan-sohamerp` holds no work beyond `main`. |
+| Org / workspace code | None at this document's baseline; organization and workspace management was implemented in a later release. |
 
 ## 3. Concepts
 
