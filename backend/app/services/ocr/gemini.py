@@ -36,6 +36,15 @@ def _is_transient(exc: Exception) -> bool:
     return any(m in msg for m in _TRANSIENT_MARKERS) or _is_timeout(exc)
 
 
+def _is_model_not_found(exc: Exception) -> bool:
+    """A retired model may return 404; another configured model can still work."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    return (str(code) == "404" or "404" in message) and "model" in message and (
+        "not found" in message or "not_found" in message
+    )
+
+
 def _rate_limit_info(exc: Exception) -> Tuple[Optional[float], bool]:
     """(seconds Gemini says to wait, whether the DAILY quota ran out).
 
@@ -316,9 +325,10 @@ class GeminiProvider(OCRProvider):
 
     def _generate_with_fallback(self, contents, config=None, first: Optional[str] = None):
         """Try the primary model (with retries); on persistent transient failure,
-        try the fallback model, which has a quota of its own. Non-transient errors
-        propagate. A busy outcome says how long to wait, and whether it is the
-        day's quota on both models."""
+        try the fallback model, which has a quota of its own. A retired model's
+        404 also tries the other model; other permanent errors propagate. A busy
+        outcome says how long to wait, and whether it is the day's quota on
+        both models."""
         from app.services.ocr.key_pool import QuotaWait
 
         def busy(exc: Exception, others: Tuple[Exception, ...] = ()) -> OCRError:
@@ -341,10 +351,16 @@ class GeminiProvider(OCRProvider):
         if len(order) == 2 and model_is_resting(order[0]) and not model_is_resting(order[1]):
             order.reverse()
         errors: list = []
-        for model in order:
+        for index, model in enumerate(order):
             try:
                 return self._generate(model, contents, config)
             except Exception as exc:  # noqa: BLE001
+                if _is_model_not_found(exc):
+                    rest_model(model)
+                    if index + 1 < len(order):
+                        errors.append(exc)
+                        continue
+                    raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
                 if not _is_transient(exc):
                     raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
                 errors.append(exc)

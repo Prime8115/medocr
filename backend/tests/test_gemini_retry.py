@@ -12,8 +12,10 @@ from app.services.ocr.base import OCRError
 def _fresh_schema_memory():
     """Each test starts as a fresh worker that has seen no schema refusals."""
     gem._SCHEMA_REFUSED.clear()
+    gem.reset_model_health()
     yield
     gem._SCHEMA_REFUSED.clear()
+    gem.reset_model_health()
 
 
 class Overloaded(Exception):
@@ -22,6 +24,20 @@ class Overloaded(Exception):
 
 class BadRequest(Exception):
     code = 400
+
+
+class MissingModel(Exception):
+    code = 404
+
+    def __str__(self):
+        return "404 NOT_FOUND: models/retired is not found for API version v1"
+
+
+class MissingDocument(Exception):
+    code = 404
+
+    def __str__(self):
+        return "404 NOT_FOUND: document is not found"
 
 
 class FakeResp:
@@ -83,6 +99,30 @@ def test_falls_back_to_secondary_model(monkeypatch):
     p = _provider(monkeypatch, script, retries=2)
     p.extract(b"img", "image/jpeg", "prescription")
     assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_retired_primary_uses_fallback_once_and_later_scans_start_there(monkeypatch):
+    payload = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    p = _provider(monkeypatch, [MissingModel(), payload, payload], retries=3)
+    assert p.extract(b"img", "image/jpeg", "prescription")["patient"]["name"]["value"] == "Alice"
+    assert p.extract(b"img", "image/jpeg", "prescription")["patient"]["name"]["value"] == "Alice"
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash"]
+
+
+def test_two_missing_models_report_rejection_not_busy(monkeypatch):
+    p = _provider(monkeypatch, [MissingModel(), MissingModel()], retries=3)
+    with pytest.raises(OCRError) as error:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert error.value.kind == "rejected"
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_unrelated_404_does_not_try_another_model(monkeypatch):
+    p = _provider(monkeypatch, [MissingDocument()], retries=3)
+    with pytest.raises(OCRError) as error:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert error.value.kind == "rejected"
+    assert p._client.models.calls == ["gemini-2.5-flash"]
 
 
 def test_both_overloaded_raises_busy_error(monkeypatch):
