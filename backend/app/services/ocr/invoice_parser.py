@@ -812,9 +812,17 @@ def supplier_region_lines(page) -> List[Tuple[float, str]]:
     if not words:
         return []
 
-    boundary = _buyer_boundary(words, float(page.height))
-    if boundary is not None:
-        words = [w for w in words if float(w["x1"]) <= boundary - 2]
+    from app.services.ocr.invoice_header import left_to_divider
+
+    left_buyer = left_to_divider(page, words)
+    if left_buyer:
+        # A full-width vendor letterhead ends where the left-hand 'To,' buyer
+        # box begins. Cutting by x alone would discard the vendor instead.
+        words = [w for w in words if float(w["top"]) < left_buyer[0] - 2]
+    else:
+        boundary = _buyer_boundary(words, float(page.height))
+        if boundary is not None:
+            words = [w for w in words if float(w["x1"]) <= boundary - 2]
 
     # The header takes the same room on a landscape page as on a portrait one,
     # which is more of its height: East India's PAN and e-mail sit at 33-38%.
@@ -858,7 +866,20 @@ def _supplier_details(lines: List[Tuple[float, str]]) -> tuple:
     ]
     candidates = [c for c in candidates if len(c[2]) >= 4]
     if not candidates:
-        return None, None
+        # A prominent trading name need not contain PHARMA/PVT/LTD. Some
+        # suppliers print their name above the GSTIN with no legal suffix.
+        # Require a GSTIN in this block and a visibly larger early heading;
+        # otherwise address fragments such as "MUMBAI NASHIK" could win.
+        if not any(_GSTIN_SHAPE.search(text) for _, text in lines):
+            return None, None
+        ordinary_size = sorted(size for size, _ in lines)[len(lines) // 2]
+        candidates = [
+            (size, i, _clean_name(text)) for i, (size, text) in enumerate(lines)
+            if i < 3 and size >= ordinary_size + 2
+            and _WORDS_ONLY.fullmatch(_clean_name(text)) and not _DOC_WORDS.search(text)
+        ]
+        if not candidates:
+            return None, None
 
     # A party named only as "C.A. of <principal>" is last resort; otherwise the
     # largest print wins, and ties go to whichever is printed first.
@@ -1391,6 +1412,14 @@ def _tax_base(item: dict, rate_cell=None) -> Optional[str]:
     if gross and abs(float(gross) * (1 - float(disc) / 100) - float(amount)) <= max(0.05, 0.001 * float(amount)):
         return amount
     prices = [_num(rate_cell)] + [_num((item.get(k) or {}).get("value")) for k in ("rate", "pts", "ptr")]
+    # Some suppliers print the price before discount (PTS/PTR) beside a Net
+    # Rate and Amount that already include it. The amount may also equal
+    # quantity x Net Rate, so that test alone would discount it twice.
+    # Require the independent higher price to prove that discount was taken.
+    if any(p and float(p) > float(amount) / float(qty) and
+           abs(float(qty) * float(p) * (1 - float(disc) / 100) - float(amount))
+           <= max(0.05, 0.001 * float(amount)) for p in prices):
+        return amount
     if any(p and abs(float(qty) * float(p) - float(amount)) <= max(0.05, 0.001 * float(amount)) for p in prices):
         return f"{float(amount) * (1 - float(disc) / 100):.2f}"
     return amount
