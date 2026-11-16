@@ -169,6 +169,20 @@ def test_response_schema_is_accepted_without_fallback(doc_type):
     assert provider.schema_fallbacks == 0, f"Gemini refused the {doc_type} response schema"
 
 
+def test_the_primary_model_still_exists():
+    """A fallback can hide a retired primary, so probe the effective model."""
+    from app.services.ocr.gemini import GeminiProvider
+
+    provider = GeminiProvider()
+    try:
+        provider._generate(provider._primary, ["Reply with the single word: ok"])
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).lower()
+        assert "404" not in message and "not_found" not in message, (
+            f"primary model {provider._primary!r} no longer exists: {exc}"
+        )
+
+
 def test_the_fallback_model_still_exists():
     """The model we fall back to must actually be servable.
 

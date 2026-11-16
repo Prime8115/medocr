@@ -125,6 +125,12 @@ def test_unrelated_404_does_not_try_another_model(monkeypatch):
     assert p._client.models.calls == ["gemini-2.5-flash"]
 
 
+def test_old_primary_alias_is_migrated_even_if_still_set_in_the_environment(monkeypatch):
+    p = _provider(monkeypatch, [], model="gemini-flash-lite-latest",
+                  fallback="gemini-3.5-flash")
+    assert p._primary == "gemini-3.5-flash-lite"
+
+
 def test_both_overloaded_raises_busy_error(monkeypatch):
     script = [Overloaded(), Overloaded(), Overloaded(), Overloaded()]
     p = _provider(monkeypatch, script, retries=2)
@@ -143,6 +149,14 @@ def test_non_transient_error_not_retried(monkeypatch):
 
 class RateLimited(Exception):
     code = 429
+
+
+def test_fallback_quota_wait_is_not_masked_by_retired_primary(monkeypatch):
+    p = _provider(monkeypatch, [RateLimited(), MissingModel()], retries=1)
+    with pytest.raises(OCRError) as error:
+        p._generate_with_fallback(["prompt"], first="gemini-2.0-flash")
+    assert error.value.kind == "busy"
+    assert p._client.models.calls == ["gemini-2.0-flash", "gemini-2.5-flash"]
 
 
 def test_multi_key_rotation_on_429(monkeypatch):

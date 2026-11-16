@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     gemini_api_keys: Optional[str] = None
     # Maximum concurrent background OCR jobs across the server (smooth pacing for simultaneous users)
     ocr_max_concurrent_jobs: int = 6
-    # Use high-throughput, low-latency Flash-Lite as primary (sub-2s latency, high quota)
-    ocr_model: str = "gemini-flash-lite-latest"
+    # Stable Flash-Lite endpoint for high-throughput document parsing.
+    ocr_model: str = "gemini-3.5-flash-lite"
     # Fallback tried when the primary is overloaded or errors.
     #
     # gemini-2.5-flash sat here until it was RETIRED - Google answers 404 "no
