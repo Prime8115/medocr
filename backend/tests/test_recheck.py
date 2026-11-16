@@ -95,6 +95,68 @@ def test_a_scan_has_no_text_to_check_against():
     assert out["on_page"] is None and out["agrees"] is True
 
 
+def test_a_digital_pdf_recheck_recovers_proved_tax_and_net_values(monkeypatch):
+    """Line tax may be calculated even when its figure is not printed per row."""
+    source = {
+        "invoice": {key: {"value": value, "confidence": 1.0} for key, value in {
+            "total_amount": "6431.10", "total_taxable_amount": "5820.00",
+            "total_gst_amount": "611.10", "total_cgst_amount": "305.55",
+            "total_sgst_amount": "305.55",
+        }.items()},
+        "line_items": [
+            {key: {"value": value, "confidence": 0.85 if key.endswith("amount") else 1.0}
+             for key, value in values.items()}
+            for values in (
+                {"amount": "1940.00", "quantity": "1", "batch_no": "A1",
+                 "cgst_amount": "174.60", "sgst_amount": "174.60", "net_amount": "2289.20"},
+                {"amount": "2910.00", "quantity": "3", "batch_no": "A2",
+                 "cgst_amount": "72.75", "sgst_amount": "72.75", "net_amount": "3055.50"},
+                {"amount": "970.00", "quantity": "2", "batch_no": "A3",
+                 "cgst_amount": "58.20", "sgst_amount": "58.20", "net_amount": "1086.40"},
+            )
+        ],
+        "_hints": {"document_text": ("Total Taxable Value 5820.00\nTotal GST 611.10\n"
+                                      "CGST VALUE 305.55\nSGST VALUE 305.55\n"
+                                      "NET INVOICE VALUE 6431.10")},
+    }
+    monkeypatch.setattr("app.services.ocr.pdf_utils.is_digital_pdf", lambda _: True)
+    monkeypatch.setattr("app.services.ocr.invoice_parser.parse_invoice_pdf", lambda _: source)
+    fields = copy.deepcopy(source)
+    fields["line_items"][0].pop("cgst_amount")
+    fields["line_items"][0].pop("sgst_amount")
+    fields["line_items"][0].pop("net_amount")
+    for key in ("total_amount", "total_cgst_amount", "total_sgst_amount"):
+        fields["invoice"].pop(key)
+    ai = _AI(None)
+    for key, value in (("cgst_amount", "174.60"), ("sgst_amount", "174.60"),
+                       ("net_amount", "2289.20")):
+        out = recheck.recheck(ai, fields, None, f"line_items[0].{key}", b"%PDF", "application/pdf")
+        assert (out["found"], out["on_page"]) == (value, None)
+        assert "Calculated" in out["message"]
+    for key, value in (("total_cgst_amount", "305.55"),
+                       ("total_sgst_amount", "305.55"), ("total_amount", "6431.10")):
+        out = recheck.recheck(ai, fields, None, f"invoice.{key}", b"%PDF", "application/pdf")
+        assert (out["found"], out["on_page"]) == (value, True)
+    assert not ai.asked
+
+    page_text = source["_hints"]["document_text"]
+    monkeypatch.setattr("app.services.ocr.pdf_utils.extract_text_pages",
+                        lambda _: [page_text + "\nA1 1940.00", page_text])
+    selected = recheck._verified_pdf_value(fields, "line_items[0].cgst_amount",
+                                           b"%PDF", "", "money", page=1)
+    assert selected["found"] == "174.60" and selected["page"] == 1
+    assert recheck._verified_pdf_value(fields, "line_items[0].cgst_amount",
+                                       b"%PDF", "", "money", page=2) is None
+
+    # A missing row or a tax sum that disagrees with the printed footer must
+    # never be presented as a verified calculated recheck.
+    source["line_items"][0]["cgst_amount"]["value"] = "170.00"
+    assert recheck._verified_pdf_value(fields, "line_items[0].cgst_amount", b"%PDF", "", "money") is None
+    source["line_items"][0]["cgst_amount"]["value"] = "174.60"
+    fields["line_items"][0]["quantity"]["value"] = "9"
+    assert recheck._verified_pdf_value(fields, "line_items[0].cgst_amount", b"%PDF", "", "money") is None
+
+
 def test_the_api_answers_without_changing_the_bill(client, db_session, monkeypatch):
     from app.models.audit_log import AuditLog
     from app.models.document import Document

@@ -262,6 +262,10 @@ def _reference_shaped(field: str, found: str, text: str) -> bool:
                 r"(?:-|pin(?:\s*code)?\s*:?)\s*" + bare + r"\b", text or "", re.I):
             return False   # "MUMBAI - 400056": the address's PIN code
         return bool(re.search(r"\d", bare))
+    # An empty L.R.No. beside a buyer address may run into its next line:
+    # "L.R.No. :\nNEAR CENTRAL ROAD..." is no lorry receipt number.
+    if field == "lr_no" and bare.upper() in {"NEAR", "ROAD", "STREET", "ADDRESS"}:
+        return False
     return not re.fullmatch(r"[0-9a-f]{16,}", bare, re.I)
 
 
@@ -422,6 +426,31 @@ def is_to_heading(words, i: int) -> bool:
         abs(float(w["top"]) - top) <= 3.5 and x0 - 10 < float(w["x1"]) <= x0 + 0.5
         for j, w in enumerate(words) if j != i
     )
+
+
+def left_to_divider(page, words) -> Optional[Tuple[float, float, float]]:
+    """Buyer headed 'To,' on the LEFT, below a full-width supplier letterhead.
+
+    Require the supplier's GSTIN above the heading and a drawn centre divider
+    through the buyer block. Without both, a bare 'To,' may belong to another
+    layout, and the normal side-by-side party reader remains in charge.
+    """
+    for i, word in enumerate(words):
+        top, x0 = float(word["top"]), float(word["x0"])
+        if x0 > 40 or top > float(page.height) * 0.45 or not is_to_heading(words, i):
+            continue
+        above = " ".join(str(w["text"]) for w in words if float(w["top"]) < top - 2)
+        if not _GSTIN_SHAPE.search(above):
+            continue
+        dividers = [line for line in page.lines
+                    if abs(float(line["x0"]) - float(line["x1"])) < 1
+                    and float(page.width) * 0.3 < float(line["x0"]) < float(page.width) * 0.7
+                    and float(line["top"]) <= top + 4
+                    and float(line["bottom"]) >= top + 35]
+        if dividers:
+            divider = min(dividers, key=lambda line: abs(float(line["x0"]) - float(page.width) / 2))
+            return top, float(divider["x0"]), float(divider["bottom"])
+    return None
 
 
 _STOP = re.compile(
@@ -672,6 +701,16 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
         return {}
     if not words:
         return {}
+    split = left_to_divider(page, words)
+    if split:
+        top, right, bottom = split
+        buyer_words = [w for w in words if float(w["x1"]) < right - 2
+                       and top - 2 <= float(w["top"]) < min(bottom - 2, limit)]
+        if buyer_words:
+            from app.services.ocr.pdf_table import _visual_lines
+
+            return {"bill_to": "\n".join(
+                " ".join(str(w["text"]) for w in row) for _, row in _visual_lines(buyer_words))}
     anchors: List[Tuple[float, float, str]] = []   # (x0, top, key)
     for i, word in enumerate(words):
         top = float(word["top"])
@@ -753,14 +792,16 @@ def party_regions(page, word_tolerance: float = 1.5) -> Dict[str, str]:
 _ADDRESS_LIKE = re.compile(
     r"(\b[A-Z]?\d+[/-]|\bno\.?\s*\d|\bfloor\b|\broad\b|\brd\b|\bstreet\b|\bgala\b|"
     r"\bplot\b|\bsector\b|\bbuilding\b|\bcomplex\b|\bhighway\b|\bdistrict\b|"
-    r"\bmumbai\b|\bpune\b|\bdelhi\b|\b\d{6}\b)",
+    r"\bmumbai\b|\bpune\b|\bdelhi\b|\b\d{6}\b|"
+    r"^\d{1,4}\s+(?:\S+\s+){0,3}(?:society|road|street|lane|nagar)\b)",
     re.I,
 )
 # The first token that says "this is now an address". Used to cut a name that
 # runs straight into its address on one visual line ("EASTERN AGENCIES
 # HEALTHCARE A-2 FIRST FLOOR..."), which a line break alone does not separate.
 _ADDRESS_START = re.compile(
-    r"(?=\b(?:[A-Z]-\d+\b|\d+[/,-]|no\.?\s*\d|gala|plot|floor|road|rd\b|street|marg|lane|"
+    r"(?=^\d{1,4}\s+(?:\S+\s+){0,3}(?:society|road|street|lane|nagar)\b|"
+    r"\b(?:[A-Z]-\d+\b|\d+[/,-]|no\.?\s*\d|gala|plot|floor|road|rd\b|street|marg|lane|"
     r"sector|building|complex|compound|highway|opp\b|near|behind|\d{6}\b))",
     re.I,
 )

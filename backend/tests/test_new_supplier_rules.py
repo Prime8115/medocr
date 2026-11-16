@@ -576,6 +576,30 @@ def test_line_tax_is_on_the_value_after_the_lines_own_discount():
     assert _tax_base(after) == "1145.61"
 
 
+def test_net_rate_and_amount_already_include_the_printed_discount():
+    """A separate PTS proves that Net Rate/Amount already include 3% off."""
+    from app.services.ocr.invoice_parser import _build_item, _tax_base
+
+    heading = ["Product Description", "Qty", "P.T.S.", "Net Rate", "Disc %", "Amount", "GST %"]
+    columns = {"description": 0, "quantity": 1, "pts": 2, "rate": 3,
+               "discount_percent": 4, "amount": 5}
+    rows = [
+        ("ALPHA TABLET", "1", "2000.00", "1940.00", "1940.00", "18.00", "174.60", "2289.20"),
+        ("BETA CAPSULE", "3", "1000.00", "970.00", "2910.00", "5.00", "72.75", "3055.50"),
+        ("GAMMA POWDER", "2", "500.00", "485.00", "970.00", "12.00", "58.20", "1086.40"),
+    ]
+    items = []
+    for name, qty, pts, rate, amount, gst, head, net in rows:
+        item = _build_item([name, qty, pts, rate, "3.00", amount, gst], columns,
+                           heading, [6], interstate=False, local="sgst")
+        assert _tax_base(item) == amount
+        assert _v(item, "cgst_amount") == _v(item, "sgst_amount") == head
+        assert _v(item, "net_amount") == net
+        items.append(item)
+    assert round(sum(float(_v(item, "cgst_amount")) for item in items), 2) == 305.55
+    assert round(sum(float(_v(item, "net_amount")) for item in items), 2) == 6431.10
+
+
 def test_a_reading_without_quantities_or_names_goes_to_the_ai():
     from app.services.ocr import _parse_is_trustworthy_enough
 

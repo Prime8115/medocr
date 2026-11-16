@@ -18,6 +18,7 @@ an invented answer is never offered as if it were read.
 import json
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -273,6 +274,123 @@ def _same(kind: str, a: str, b: str) -> bool:
     return same(kind, a, b)
 
 
+def _money(node) -> Optional[Decimal]:
+    raw = (node or {}).get("value") if isinstance(node, dict) else None
+    try:
+        value = Decimal(str(raw).replace(",", ""))
+        return value if value.is_finite() else None
+    except (InvalidOperation, TypeError):
+        return None
+
+
+def _verified_pdf_value(fields: dict, path: str, file_bytes: bytes,
+                        current: str, kind: str, page: Optional[int] = None) -> Optional[dict]:
+    """Recheck a printed total or a proved derived line value without AI.
+
+    A line's CGST, SGST and net are often not printed separately. A model asked
+    to transcribe them must answer null. Offer the calculated value only when
+    the source PDF's own taxable and tax totals confirm every line, and a
+    current row uniquely matches a source row by amount plus quantity/batch.
+    """
+    header = re.fullmatch(r"invoice\.(total_amount|total_cgst_amount|total_sgst_amount)", path)
+    line = re.fullmatch(r"line_items\[(\d+)\]\.(cgst_amount|sgst_amount|net_amount)", path)
+    if not (header or line):
+        return None
+    try:
+        from app.services.ocr.pdf_utils import extract_text_pages, is_digital_pdf
+        from app.services.ocr.invoice_parser import parse_invoice_pdf
+
+        if not is_digital_pdf(file_bytes):
+            return None
+        source = parse_invoice_pdf(file_bytes)
+        if not source:
+            return None
+        text = (source.get("_hints") or {}).get("document_text") or ""
+        if page is not None:
+            pages = extract_text_pages(file_bytes)
+            if page < 1 or page > len(pages):
+                return None
+            text = pages[page - 1]
+        invoice = source.get("invoice") or {}
+        if header:
+            # A figure merely appearing somewhere on a PDF does not prove its
+            # label. Require the printed taxable, tax and final totals to foot.
+            base, tax, total = (_money(invoice.get(key)) for key in
+                                ("total_taxable_amount", "total_gst_amount", "total_amount"))
+            if any(value is None for value in (base, tax, total)) or abs(base + tax - total) > Decimal("1.00"):
+                return None
+            for key in ("total_taxable_amount", "total_gst_amount", "total_amount"):
+                proof = invoice.get(key) or {}
+                if proof.get("confidence") != 1.0 or not printed_on_page(str(proof.get("value")), "money", text):
+                    return None
+            if header.group(1) in ("total_cgst_amount", "total_sgst_amount"):
+                cgst, sgst = (_money(invoice.get(key)) for key in
+                              ("total_cgst_amount", "total_sgst_amount"))
+                if cgst is None or sgst is None or abs(cgst + sgst - tax) > Decimal("0.03"):
+                    return None
+            leaf = invoice.get(header.group(1)) or {}
+            value = str(leaf.get("value") or "")
+            if leaf.get("confidence") != 1.0 or not printed_on_page(value, kind, text):
+                return None
+            return {"path": path, "current": current or None, "found": value,
+                    "printed_label": None, "printed_text": None, "page": page,
+                    "on_page": True, "agrees": _same(kind, current, value),
+                    "message": f"The source PDF prints {value} for this invoice total. Confirm it against the page."}
+
+        source_items = source.get("line_items") or []
+        current_items = fields.get("line_items") or []
+        index, key = int(line.group(1)), line.group(2)
+        if index >= len(current_items):
+            return None
+        current_item = current_items[index] or {}
+        amount = _money(current_item.get("amount"))
+        qty = _money(current_item.get("quantity"))
+        batch = _leaf(current_item, "batch_no").upper()
+        if amount is None or (qty is None and not batch):
+            return None
+        candidates = [item for item in source_items
+                      if _money(item.get("amount")) == amount
+                      and (qty is None or _money(item.get("quantity")) == qty)
+                      and (not batch or _leaf(item, "batch_no").upper() == batch)]
+        if len(candidates) != 1:
+            return None
+        if page is not None and (not printed_on_page(str(amount), "money", text)
+                                 or (batch and not printed_on_page(batch, "text", text))):
+            return None
+        # A correct row on an incomplete page is not enough: all three printed
+        # totals must reconcile with the full set of source rows first.
+        for field, row_field in (("total_taxable_amount", "amount"),
+                                 ("total_cgst_amount", "cgst_amount"),
+                                 ("total_sgst_amount", "sgst_amount")):
+            leaf = invoice.get(field) or {}
+            expected = _money(leaf)
+            values = [_money(item.get(row_field)) for item in source_items]
+            if leaf.get("confidence") != 1.0 or expected is None or any(v is None for v in values) \
+                    or not printed_on_page(str(leaf.get("value")), "money", text) \
+                    or abs(sum(values, Decimal("0")) - expected) > Decimal("0.03"):
+                return None
+        if key == "net_amount":
+            total = _money(invoice.get("total_amount"))
+            nets = [_money(item.get("net_amount")) for item in source_items]
+            if total is None or not printed_on_page(str((invoice.get("total_amount") or {}).get("value")),
+                                                    "money", text) or any(v is None for v in nets) or \
+                    abs(sum(nets, Decimal("0")) - total) > Decimal("1.00"):
+                return None  # round-off may account for less than one rupee
+        leaf = candidates[0].get(key) or {}
+        value = str(leaf.get("value") or "")
+        if not value:
+            return None
+        return {"path": path, "current": current or None, "found": value,
+                "printed_label": None, "printed_text": None, "page": page,
+                "on_page": None, "agrees": _same(kind, current, value),
+                "message": (f"Calculated {value} from this line's printed taxable amount and GST rate. "
+                            "The line value is not separately printed; the sum matches the PDF's tax totals. "
+                            "Confirm it against the source before using it.")}
+    except Exception:  # noqa: BLE001 - the existing AI recheck remains available
+        log.exception("Could not verify a source-PDF total for recheck")
+        return None
+
+
 def _pages(file_bytes: bytes, content_type: str, fields: dict, path: str) -> Tuple[bytes, str]:
     """Show the whole short bill or a uniquely located line on a long bill.
 
@@ -313,6 +431,10 @@ def recheck(provider, fields: dict, page_text: Optional[str], path: str,
     """The AI's answer for one field, checked against the page. Raises
     RecheckError for a field that cannot be asked about; never changes `fields`."""
     prompt, current, kind = question(fields, path, doc_type)
+    if doc_type == "invoice" and content_type == "application/pdf":
+        verified = _verified_pdf_value(fields, path, file_bytes, current, kind, page)
+        if verified is not None:
+            return verified
     if page is not None:
         from app.services.source import page_total
         from app.services.ocr.pdf_utils import split_pdf
