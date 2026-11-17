@@ -370,8 +370,10 @@ def _check_rates_give_the_tax(c: _Checks, fields: dict, items: List[dict], combi
             if _close(as_printed, tax, 1.0 + 0.02 * len(items), 0.015):
                 expected = as_printed
     if _close(expected, tax, 1.0 + 0.02 * len(items), 0.015):
-        if abs(expected - tax) <= 0.01 * len(items) + 0.005:
-            message = "The lines' GST rates agree with the bill's tax after line rounding."
+        if abs(expected - tax) < 0.005:
+            message = "The lines' GST rates match the bill's tax."
+        elif abs(expected - tax) <= 0.01 * len(items) + 0.005:
+            message = "The lines' GST rates agree with the bill's tax within rounding."
         else:
             message = (f"The rates estimate {expected:.2f}; the bill states {tax:.2f}. "
                        "The difference is within the check's tolerance.")

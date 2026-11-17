@@ -311,7 +311,7 @@ def test_tax_check_explains_paisa_rounding_without_reporting_a_mismatch():
     }
     check = _rates_check(fields)
     assert check["status"] == "pass"
-    assert "after line rounding" in check["message"]
+    assert "within rounding" in check["message"]
     assert "0.33" not in check["message"]
 
 
