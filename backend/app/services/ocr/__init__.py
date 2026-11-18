@@ -961,6 +961,10 @@ def _read_with_ai(document_id, file_bytes, content_type, doc_type, on_progress):
             "seconds": round(sum(c["seconds"] for c in calls), 1),
             "calls": calls[-20:],
         }
+        for key in ("input_tokens", "output_tokens", "thinking_tokens", "total_tokens"):
+            values = [c[key] for c in calls if isinstance(c.get(key), int)]
+            if values:
+                result["meta"]["ai_calls"][key] = sum(values)
         log.info("document %s: %d AI call(s), %.1fs in all", document_id, len(calls),
                  result["meta"]["ai_calls"]["seconds"])
     if unsure:

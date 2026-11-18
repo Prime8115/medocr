@@ -380,7 +380,9 @@ def test_the_calls_reach_the_documents_meta(monkeypatch):
     class Recorded(gem.GeminiProvider):
         def __init__(self):
             self.calls = [{"model": "m", "seconds": 1.5, "outcome": "timeout"},
-                          {"model": "f", "seconds": 4.0, "outcome": "ok"}]
+                          {"model": "f", "seconds": 4.0, "outcome": "ok",
+                           "input_tokens": 1000, "output_tokens": 200,
+                           "thinking_tokens": 50, "total_tokens": 1250}]
             self.name = "gemini"
 
         def classify(self, *_a):
@@ -394,6 +396,9 @@ def test_the_calls_reach_the_documents_meta(monkeypatch):
     meta = ocr.process_document("d", b"img", "image/jpeg", "invoice")["meta"]
     assert meta["ai_calls"]["count"] == 2
     assert meta["ai_calls"]["seconds"] == 5.5
+    assert meta["ai_calls"]["input_tokens"] == 1000
+    assert meta["ai_calls"]["output_tokens"] == 200
+    assert meta["ai_calls"]["thinking_tokens"] == 50
 
 
 # --- a model that hung or is overloaded is tried last for a while -------------
