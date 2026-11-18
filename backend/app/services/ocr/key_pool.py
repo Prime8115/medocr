@@ -1,8 +1,9 @@
 """Thread-safe Gemini API key pool: round-robin rotation, client caching, and
 rate-limit awareness that survives from one scan to the next.
 
-Gemini counts its quotas per key AND per model - Flash-Lite running out says
-nothing about the fallback model. So besides the original per-key cooldown,
+Gemini counts quotas per project and model - keys in one project share a
+limit, while Flash-Lite running out says nothing about the fallback model.
+Besides the original per-key cooldown,
 the pool tracks, for every (key, model):
 
 * a cooldown, set from what Gemini says when it refuses a request - the

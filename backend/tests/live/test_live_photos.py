@@ -187,7 +187,7 @@ def test_real_phone_photos_of_receipts():
                 score.check("line qty", _same_num(_v(it, "quantity"), line["qty"]),
                             f"{tag} {line['name']!r} qty {_v(it, 'quantity')!r}, is {line['qty']}")
     score.report()
-    assert score.unread < len(answers["receipts"]), "the AI read none of the photos"
+    assert score.unread <= 2, f"the AI could not read {score.unread} of {len(answers['receipts'])} photos"
     assert score.rate() >= 0.70, f"{score.name}: {score.rate():.1%} of fields right"
 
 
@@ -231,7 +231,7 @@ def test_handwritten_pharmacy_bills():
             score.check("amount", _same_num(got["amount"], line["amount"]),
                         f"{tag} {line['name']} amount {got['amount']!r}, is {line['amount']}")
     score.report()
-    assert score.unread < 6, "the AI read none of the bills"
+    assert score.unread <= 1, f"the AI could not read {score.unread} of 6 handwritten bills"
     assert score.rate() >= 0.80, f"{score.name}: {score.rate():.1%} of fields right"
 
 

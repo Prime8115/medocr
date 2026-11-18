@@ -41,8 +41,9 @@ class MissingDocument(Exception):
 
 
 class FakeResp:
-    def __init__(self, text):
+    def __init__(self, text, usage_metadata=None):
         self.text = text
+        self.usage_metadata = usage_metadata
 
 
 class FakeModels:
@@ -57,7 +58,22 @@ class FakeModels:
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
-        return FakeResp(item)
+        return item if isinstance(item, FakeResp) else FakeResp(item)
+
+
+def test_successful_call_records_token_usage_for_cost_measurement(monkeypatch):
+    from types import SimpleNamespace
+
+    usage = SimpleNamespace(prompt_token_count=1000, candidates_token_count=200,
+                            thoughts_token_count=50, total_token_count=1250)
+    payload = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    provider = _provider(monkeypatch, [FakeResp(payload, usage)])
+    provider.extract(b"image", "image/jpeg", "prescription")
+    assert {k: provider.calls[0][k] for k in
+            ("input_tokens", "output_tokens", "thinking_tokens", "total_tokens")} == {
+                "input_tokens": 1000, "output_tokens": 200,
+                "thinking_tokens": 50, "total_tokens": 1250,
+            }
 
 
 class FakeClient:

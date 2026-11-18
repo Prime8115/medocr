@@ -296,8 +296,17 @@ class GeminiProvider(OCRProvider):
                 resp = client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
-                self.calls.append({"model": model, "key": key_no,
-                                   "seconds": round(time.monotonic() - started, 1), "outcome": "ok"})
+                call = {"model": model, "key": key_no,
+                        "seconds": round(time.monotonic() - started, 1), "outcome": "ok"}
+                usage = getattr(resp, "usage_metadata", None)
+                for name, attr in (("input_tokens", "prompt_token_count"),
+                                   ("output_tokens", "candidates_token_count"),
+                                   ("thinking_tokens", "thoughts_token_count"),
+                                   ("total_tokens", "total_token_count")):
+                    value = getattr(usage, attr, None)
+                    if isinstance(value, int) and value >= 0:
+                        call[name] = value
+                self.calls.append(call)
                 return resp
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
