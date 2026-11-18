@@ -77,24 +77,24 @@ export default function CaptureScreen() {
       if (net.isConnected) {
         const res = await uploadDocument(file, docType);
         setPicked(null);
-        router.push(`/review/${res.document_id}`);
         if (res.duplicate) {
           Alert.alert(t('alreadyScanned'), res.message ?? '', [
-            { text: t('openEarlier'), style: 'cancel' },
+            { text: t('openEarlier'), style: 'cancel', onPress: () => router.push(`/review/${res.document_id}`) },
             {
               text: t('scanAgain'),
               onPress: async () => {
                 try {
                   const again = await uploadDocument(file, docType, true);
-                  router.replace(`/review/${again.document_id}`);
+                  router.push(`/review/${again.document_id}`);
                 } catch (e) {
                   Alert.alert(t('failed'), refusalMessage(e) ?? t('errorGeneric'));
                 }
               },
             },
           ]);
-        } else if (res.message) {
-          Alert.alert(t('uploaded'), res.message);
+        } else {
+          router.push(`/review/${res.document_id}`);
+          if (res.message) Alert.alert(t('uploaded'), res.message);
         }
       } else {
         await add({ uri: file.uri, fileName: file.name, contentType: file.type, docType });

@@ -297,6 +297,24 @@ def test_rates_that_give_the_bills_tax_pass():
     assert _rates_check(_rate_bill(["5"] * 6))["status"] == "pass"
 
 
+def test_tax_check_explains_paisa_rounding_without_reporting_a_mismatch():
+    """Split heads round to a paisa each; the raw combined rate is a paisa lower."""
+    fields = {
+        "invoice": {"total_taxable_amount": {"value": "6.60"},
+                    "total_gst_amount": {"value": "0.34"},
+                    "total_cgst_amount": {"value": "0.17"},
+                    "total_sgst_amount": {"value": "0.17"}},
+        "line_items": [
+            {"amount": {"value": "6.60"}, "gst_percent": {"value": "5"},
+             "cgst_amount": {"value": "0.17"}, "sgst_amount": {"value": "0.17"}}
+        ],
+    }
+    check = _rates_check(fields)
+    assert check["status"] == "pass"
+    assert "within rounding" in check["message"]
+    assert "0.33" not in check["message"]
+
+
 def test_a_misread_rate_is_caught_without_line_tax_amounts():
     """MSV on production: two 5% lines read as 12% and 18%."""
     check = _rates_check(_rate_bill(["5", "5", "12", "5", "5", "18"]))
