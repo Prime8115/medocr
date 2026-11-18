@@ -36,6 +36,15 @@ def _is_transient(exc: Exception) -> bool:
     return any(m in msg for m in _TRANSIENT_MARKERS) or _is_timeout(exc)
 
 
+def _is_model_not_found(exc: Exception) -> bool:
+    """A retired model may return 404; another configured model can still work."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    return (str(code) == "404" or "404" in message) and "model" in message and (
+        "not found" in message or "not_found" in message
+    )
+
+
 def _rate_limit_info(exc: Exception) -> Tuple[Optional[float], bool]:
     """(seconds Gemini says to wait, whether the DAILY quota ran out).
 
@@ -162,8 +171,8 @@ def compact_schema(model_cls) -> dict:
 
 
 # (model, doc_type) pairs whose response schema the model has refused in this
-# process. gemini-flash-lite-latest refuses the invoice schema every time, so
-# without this every invoice paid for a request that could only fail first.
+# process. A model that refuses the invoice schema on every call would otherwise
+# cost an extra rejected request on every invoice.
 # Per process, not persisted: a model that starts accepting it is noticed on
 # the next restart (and each deploy restarts the worker).
 _SCHEMA_REFUSED: set = set()
@@ -221,7 +230,11 @@ class GeminiProvider(OCRProvider):
         # scan is not rediscovered - by being refused - on every next one.
         self._key_pool = key_pool or (shared_pool(keys, settings.ocr_rpm_per_key) if keys else None)
         self._client = None
-        self._primary = settings.ocr_model
+        # Existing deployments may still set the retired alias in OCR_MODEL.
+        # Translate only that known-broken value; custom model choices remain
+        # under the operator's control.
+        self._primary = ("gemini-3.5-flash-lite" if settings.ocr_model == "gemini-flash-lite-latest"
+                         else settings.ocr_model)
         self._fallback = settings.ocr_fallback_model
         self._max_retries = max(1, settings.ocr_max_retries)
         self._base_backoff = settings.ocr_base_backoff
@@ -283,8 +296,17 @@ class GeminiProvider(OCRProvider):
                 resp = client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
-                self.calls.append({"model": model, "key": key_no,
-                                   "seconds": round(time.monotonic() - started, 1), "outcome": "ok"})
+                call = {"model": model, "key": key_no,
+                        "seconds": round(time.monotonic() - started, 1), "outcome": "ok"}
+                usage = getattr(resp, "usage_metadata", None)
+                for name, attr in (("input_tokens", "prompt_token_count"),
+                                   ("output_tokens", "candidates_token_count"),
+                                   ("thinking_tokens", "thoughts_token_count"),
+                                   ("total_tokens", "total_token_count")):
+                    value = getattr(usage, attr, None)
+                    if isinstance(value, int) and value >= 0:
+                        call[name] = value
+                self.calls.append(call)
                 return resp
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -316,9 +338,10 @@ class GeminiProvider(OCRProvider):
 
     def _generate_with_fallback(self, contents, config=None, first: Optional[str] = None):
         """Try the primary model (with retries); on persistent transient failure,
-        try the fallback model, which has a quota of its own. Non-transient errors
-        propagate. A busy outcome says how long to wait, and whether it is the
-        day's quota on both models."""
+        try the fallback model, which has a quota of its own. A retired model's
+        404 also tries the other model; other permanent errors propagate. A busy
+        outcome says how long to wait, and whether it is the day's quota on
+        both models."""
         from app.services.ocr.key_pool import QuotaWait
 
         def busy(exc: Exception, others: Tuple[Exception, ...] = ()) -> OCRError:
@@ -341,10 +364,22 @@ class GeminiProvider(OCRProvider):
         if len(order) == 2 and model_is_resting(order[0]) and not model_is_resting(order[1]):
             order.reverse()
         errors: list = []
-        for model in order:
+        for index, model in enumerate(order):
             try:
                 return self._generate(model, contents, config)
             except Exception as exc:  # noqa: BLE001
+                if _is_model_not_found(exc):
+                    rest_model(model)
+                    if index + 1 < len(order):
+                        errors.append(exc)
+                        continue
+                    # If the viable model already reported a temporary or
+                    # daily quota wait, do not mask it with a retired model's
+                    # 404 merely because the retired model was tried last.
+                    waiting = [error for error in errors if isinstance(error, QuotaWait) or _is_transient(error)]
+                    if waiting:
+                        raise busy(waiting[-1], tuple(waiting[:-1])) from waiting[-1]
+                    raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
                 if not _is_transient(exc):
                     raise OCRError(f"AI request was rejected: {_brief(exc)}", kind="rejected") from exc
                 errors.append(exc)

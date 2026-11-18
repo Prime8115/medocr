@@ -12,8 +12,10 @@ from app.services.ocr.base import OCRError
 def _fresh_schema_memory():
     """Each test starts as a fresh worker that has seen no schema refusals."""
     gem._SCHEMA_REFUSED.clear()
+    gem.reset_model_health()
     yield
     gem._SCHEMA_REFUSED.clear()
+    gem.reset_model_health()
 
 
 class Overloaded(Exception):
@@ -24,9 +26,24 @@ class BadRequest(Exception):
     code = 400
 
 
+class MissingModel(Exception):
+    code = 404
+
+    def __str__(self):
+        return "404 NOT_FOUND: models/retired is not found for API version v1"
+
+
+class MissingDocument(Exception):
+    code = 404
+
+    def __str__(self):
+        return "404 NOT_FOUND: document is not found"
+
+
 class FakeResp:
-    def __init__(self, text):
+    def __init__(self, text, usage_metadata=None):
         self.text = text
+        self.usage_metadata = usage_metadata
 
 
 class FakeModels:
@@ -41,7 +58,22 @@ class FakeModels:
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
-        return FakeResp(item)
+        return item if isinstance(item, FakeResp) else FakeResp(item)
+
+
+def test_successful_call_records_token_usage_for_cost_measurement(monkeypatch):
+    from types import SimpleNamespace
+
+    usage = SimpleNamespace(prompt_token_count=1000, candidates_token_count=200,
+                            thoughts_token_count=50, total_token_count=1250)
+    payload = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    provider = _provider(monkeypatch, [FakeResp(payload, usage)])
+    provider.extract(b"image", "image/jpeg", "prescription")
+    assert {k: provider.calls[0][k] for k in
+            ("input_tokens", "output_tokens", "thinking_tokens", "total_tokens")} == {
+                "input_tokens": 1000, "output_tokens": 200,
+                "thinking_tokens": 50, "total_tokens": 1250,
+            }
 
 
 class FakeClient:
@@ -85,6 +117,36 @@ def test_falls_back_to_secondary_model(monkeypatch):
     assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
 
+def test_retired_primary_uses_fallback_once_and_later_scans_start_there(monkeypatch):
+    payload = json.dumps({"patient": {"name": {"value": "Alice"}}})
+    p = _provider(monkeypatch, [MissingModel(), payload, payload], retries=3)
+    assert p.extract(b"img", "image/jpeg", "prescription")["patient"]["name"]["value"] == "Alice"
+    assert p.extract(b"img", "image/jpeg", "prescription")["patient"]["name"]["value"] == "Alice"
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash"]
+
+
+def test_two_missing_models_report_rejection_not_busy(monkeypatch):
+    p = _provider(monkeypatch, [MissingModel(), MissingModel()], retries=3)
+    with pytest.raises(OCRError) as error:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert error.value.kind == "rejected"
+    assert p._client.models.calls == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_unrelated_404_does_not_try_another_model(monkeypatch):
+    p = _provider(monkeypatch, [MissingDocument()], retries=3)
+    with pytest.raises(OCRError) as error:
+        p.extract(b"img", "image/jpeg", "prescription")
+    assert error.value.kind == "rejected"
+    assert p._client.models.calls == ["gemini-2.5-flash"]
+
+
+def test_old_primary_alias_is_migrated_even_if_still_set_in_the_environment(monkeypatch):
+    p = _provider(monkeypatch, [], model="gemini-flash-lite-latest",
+                  fallback="gemini-3.5-flash")
+    assert p._primary == "gemini-3.5-flash-lite"
+
+
 def test_both_overloaded_raises_busy_error(monkeypatch):
     script = [Overloaded(), Overloaded(), Overloaded(), Overloaded()]
     p = _provider(monkeypatch, script, retries=2)
@@ -103,6 +165,14 @@ def test_non_transient_error_not_retried(monkeypatch):
 
 class RateLimited(Exception):
     code = 429
+
+
+def test_fallback_quota_wait_is_not_masked_by_retired_primary(monkeypatch):
+    p = _provider(monkeypatch, [RateLimited(), MissingModel()], retries=1)
+    with pytest.raises(OCRError) as error:
+        p._generate_with_fallback(["prompt"], first="gemini-2.0-flash")
+    assert error.value.kind == "busy"
+    assert p._client.models.calls == ["gemini-2.0-flash", "gemini-2.5-flash"]
 
 
 def test_multi_key_rotation_on_429(monkeypatch):
@@ -310,7 +380,9 @@ def test_the_calls_reach_the_documents_meta(monkeypatch):
     class Recorded(gem.GeminiProvider):
         def __init__(self):
             self.calls = [{"model": "m", "seconds": 1.5, "outcome": "timeout"},
-                          {"model": "f", "seconds": 4.0, "outcome": "ok"}]
+                          {"model": "f", "seconds": 4.0, "outcome": "ok",
+                           "input_tokens": 1000, "output_tokens": 200,
+                           "thinking_tokens": 50, "total_tokens": 1250}]
             self.name = "gemini"
 
         def classify(self, *_a):
@@ -324,6 +396,9 @@ def test_the_calls_reach_the_documents_meta(monkeypatch):
     meta = ocr.process_document("d", b"img", "image/jpeg", "invoice")["meta"]
     assert meta["ai_calls"]["count"] == 2
     assert meta["ai_calls"]["seconds"] == 5.5
+    assert meta["ai_calls"]["input_tokens"] == 1000
+    assert meta["ai_calls"]["output_tokens"] == 200
+    assert meta["ai_calls"]["thinking_tokens"] == 50
 
 
 # --- a model that hung or is overloaded is tried last for a while -------------

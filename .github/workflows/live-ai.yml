@@ -30,6 +30,11 @@ on:
       - 'backend/tests/live/**'
       - '.github/workflows/live-ai.yml'
   workflow_dispatch:
+    inputs:
+      photo_suite:
+        description: 'Run the full photo and handwriting suite (uses about 16 AI reads)'
+        type: boolean
+        default: false
 
 concurrency:
   group: live-ai
@@ -45,10 +50,9 @@ jobs:
       # Ride out a briefly overloaded model instead of reporting it as broken.
       OCR_MAX_RETRIES: '4'
       OCR_BASE_BACKOFF: '5'
-      # Real receipt photos and handwritten bills, scored field by field
-      # (tests/live/test_live_photos.py): about 16 AI reads, so on a push or by
-      # hand - not every night.
-      RUN_PHOTO_SUITE: ${{ github.event_name != 'schedule' && '1' || '0' }}
+      # The full photo suite consumes about 16 calls and can exhaust a free
+      # project's daily quota. Run it only when explicitly requested.
+      RUN_PHOTO_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.photo_suite == true && '1' || '0' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

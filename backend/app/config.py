@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     gemini_api_keys: Optional[str] = None
     # Maximum concurrent background OCR jobs across the server (smooth pacing for simultaneous users)
     ocr_max_concurrent_jobs: int = 6
-    # Use high-throughput, low-latency Flash-Lite as primary (sub-2s latency, high quota)
-    ocr_model: str = "gemini-flash-lite-latest"
+    # Stable Flash-Lite endpoint for high-throughput document parsing.
+    ocr_model: str = "gemini-3.5-flash-lite"
     # Fallback tried when the primary is overloaded or errors.
     #
     # gemini-2.5-flash sat here until it was RETIRED - Google answers 404 "no
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # but add latency before failing. Pinned model versions go away; the live
     # check now calls this model nightly so the next retirement surfaces within
     # a day instead of being discovered by a pharmacist.
-    ocr_fallback_model: Optional[str] = "gemini-3.5-flash"
+    ocr_fallback_model: Optional[str] = "gemini-3.1-flash-lite"
     # 0 = the AI gives the same answer for the same page every time. Above it,
     # each reading varies - the same scan once came back without its Bill-to
     # GSTIN and once with it.
@@ -60,9 +60,9 @@ class Settings(BaseSettings):
     ocr_model_rest_seconds: float = 600.0
     ocr_max_retries: int = 2          # attempts per model on transient errors (fast failover)
     ocr_base_backoff: float = 1.0     # seconds; doubles each retry
-    # Requests per minute the app allows itself per key and model, so it paces
-    # itself below Gemini's quota instead of being refused. The free tier allows
-    # about 15 for Flash-Lite; 0 turns the limit off (a paid key, say).
+    # Local requests per minute per key and model. Google's quota is per
+    # project, so multiple keys from the same project share its capacity.
+    # Configure this conservatively for that project; 0 turns local pacing off.
     ocr_rpm_per_key: int = 10
     # How long a scan may wait in place for a free slot before going back to
     # the queue (which waits as long as Gemini said, without holding a worker).
