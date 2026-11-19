@@ -616,12 +616,12 @@ def without_overprint(page):
             else:
                 lines.append([c])
         edge: Dict[Tuple[float, int], float] = {}     # run -> where it first runs over other text
+        same: Dict[Tuple[float, int], float] = {}     # the same, where one letter lies on itself
+        tops: Dict[Tuple[float, int], Tuple[float, float]] = {}
         pairs = 0
         for line in lines:
             line.sort(key=lambda c: float(c["x0"]))
             for a, b in zip(line, line[1:]):
-                if a["text"] == b["text"]:
-                    continue
                 width = min(float(a["x1"]) - float(a["x0"]), float(b["x1"]) - float(b["x0"]))
                 sa, sb = starts[order[id(a)]], starts[order[id(b)]]
                 if width <= 0 or float(a["x1"]) - float(b["x0"]) <= 0.5 * width or abs(sa[0] - sb[0]) <= 1.0:
@@ -630,11 +630,30 @@ def without_overprint(page):
                 # party block so) is one value, not one cell over another.
                 if texts[sa] in texts[sb] or texts[sb] in texts[sa]:
                     continue
-                pairs += 1
                 run, other = (sa, sb) if sa[0] < sb[0] else (sb, sa)
+                tops[run] = (float(a["top"]), float(a.get("size") or 8))
+                if a["text"] == b["text"]:
+                    same[run] = min(same.get(run, float("inf")), other[0])
+                    continue
+                pairs += 1
                 edge[run] = min(edge.get(run, float("inf")), other[0])
-        if pairs < _OVERPRINT_PAIRS:
+        if not pairs:
             return page
+        if pairs < _OVERPRINT_PAIRS:
+            # Fewer overlaps than make a page drawn over itself - unless every
+            # run-on crosses a line the bill draws between cells: a cell's text
+            # carried past its own rule is the same run-on. Gujarat Enzyme's
+            # clipped maker "GUJARAT EN" runs over the rule at x 56.5 into each
+            # product name - on one row only as its N over "NATTOZYMS"'s N.
+            rules = _vertical_rules(page)
+            for run, x in same.items():
+                edge[run] = min(edge.get(run, float("inf")), x)
+            # The rule is where it runs over - within a letter of the other
+            # text - not one it merely spans on the way (Cosmin prints batch
+            # and expiry as one run across their rule).
+            if not all(any(start[0] + 1 < x <= edge[start] + 0.5 and edge[start] - x <= tops[start][1]
+                           and t <= tops[start][0] <= b for x, t, b in rules) for start in edge):
+                return page
         # Cut where the other text starts, leaving a word's gap before it.
         drop = {id(c) for c, start in zip(chars, starts)
                 if start in edge and float(c["x1"]) > edge[start] - 0.25 * float(c.get("size") or 8)}
@@ -699,6 +718,51 @@ def _ruled_edges(columns: List[dict], body: List[Line], edges: List[float],
     return out
 
 
+def _split_by_rules(columns: List[dict], body: List[Line],
+                    rules: Sequence[Tuple[float, float, float]]) -> List[dict]:
+    """Split a heading cluster where the bill draws a line between its words.
+
+    Gujarat Enzyme (Soham ERP) prints "Sr." and "Company" 4pt apart, so they
+    read as one heading and every maker came out "1 GUJARAT"; a rule at x 21.1
+    divides them. A cluster is split only at a rule drawn down from the
+    heading line through the rows, lying in a gap between two of its heading
+    words, crossed by no row's word, with values on both sides in half the
+    rows. Unruled bills and scans are unchanged.
+    """
+    if not rules or not body:
+        return columns
+    words = [w for _, row in body for w in row]
+    top = min(float(w["top"]) for w in words)
+    out: List[dict] = []
+    for col in columns:
+        heads = sorted(col["words"], key=lambda w: float(w["x0"]))
+        head_top = min(float(w["top"]) for w in heads)
+        cut = None
+        for a, b in zip(heads, heads[1:]):
+            gap = {round(x, 1) for x, t, bottom in rules
+                   if float(a["x1"]) < x < float(b["x0"]) and t <= head_top + 1 and bottom >= top + 10}
+            if len(gap) != 1:
+                continue
+            x = gap.pop()
+            if any(float(w["x0"]) < x < float(w["x1"]) for w in words):
+                continue
+            rows = [[w for w in row if col["x0"] - 2 <= (float(w["x0"]) + float(w["x1"])) / 2 <= col["x1"] + 2]
+                    for _, row in body]
+            rows = [r for r in rows if r]
+            left = sum(1 for r in rows if any(float(w["x1"]) <= x for w in r))
+            right = sum(1 for r in rows if any(float(w["x0"]) >= x for w in r))
+            if rows and min(left, right) >= max(1, len(rows) // 2):
+                cut = x
+                break
+        if cut is None:
+            out.append(col)
+            continue
+        for part in ([w for w in heads if float(w["x1"]) <= cut], [w for w in heads if float(w["x0"]) >= cut]):
+            out.append({"x0": min(float(w["x0"]) for w in part), "x1": max(float(w["x1"]) for w in part),
+                        "words": part, "label": _label(part)})
+    return out
+
+
 def page_layout(page) -> Optional[List[dict]]:
     """The item table's columns on this page - its headings and where they
     sit - or None when the page prints no header band."""
@@ -753,6 +817,7 @@ def tables_from_words(words: Sequence[Word], layout: Optional[List[dict]] = None
                 break
         columns = _add_unheaded_leading_column(columns, body)
         columns = _split_by_channels(columns, body)
+        columns = _split_by_rules(columns, body, rules)
     if len(columns) < 5:
         return []
     edges = _boundaries(columns)
