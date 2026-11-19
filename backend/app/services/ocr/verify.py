@@ -640,7 +640,10 @@ def _discount_fits(it: dict, how: str) -> Optional[str]:
     gst = sum(p for p, t in heads if p) or _n(it.get("gst_percent")) or 0.0
     tax = sum(t for p, t in heads if t is not None) if any(t is not None for p, t in heads) else (
         net - a if net is not None and a is not None else None)
-    for key in ("discount_percent", "scheme_percent", "cd_percent"):
+    # Not a scheme %: it names the free goods on offer (Zydus prints "SCH%
+    # 10.00" on a line charged in full, with no free goods given), not money
+    # taken off the line.
+    for key in ("discount_percent", "cd_percent"):
         d = _n(it.get(key))
         if not d or d <= 0:
             continue
@@ -698,7 +701,12 @@ def line_verdicts(items: List[dict], checks: List[dict]) -> List[dict]:
             # Free goods (rate 0) or a line discounted to nothing - Ajanta's
             # expired returns credited at 100% special discount.
             off = _n(it.get("discount_amount"))
-            if r == 0 or (off is not None and abs(q * r - off) <= 0.02 + 0.005 * abs(q)):
+            # ...or a free supply the bill marks with nil tax beside it:
+            # Cipla Health's "1-F" strip and Bharat's replacement stock.
+            taxes = [_n(it.get(f"{h}_amount")) for h in _HEADS]
+            nil_tax = any(t is not None for t in taxes) and all(not t for t in taxes)
+            free = _v(it.get("free_supply")).lower() == "true" or nil_tax
+            if r == 0 or free or (off is not None and abs(q * r - off) <= 0.02 + 0.005 * abs(q)):
                 how = "a free line, charged nothing"
                 note = "Charged nothing, as the bill shows."
             else:
