@@ -27,6 +27,8 @@ export interface TableRow {
   /** Index into the untouched line_items array — what the edit sheet needs. */
   index: number;
   attention: boolean;
+  /** Its quantity, rate and amount agree to the paisa (server's line verdict). */
+  verified?: boolean;
 }
 
 function HeaderCell({ column }: { column: Column }) {
@@ -79,6 +81,7 @@ const Row = memo(function Row({
               ]}
               numberOfLines={2}
             >
+              {column.key === 'description' && row.verified ? <Text style={styles.tick}>✓ </Text> : null}
               {cellText(row.item, column) || '—'}
             </Text>
           </View>
@@ -164,6 +167,7 @@ const styles = StyleSheet.create({
   headerSub: { ...font.caption, fontSize: 10, color: colors.textMuted },
   cellText: { ...font.caption, fontSize: 13, color: colors.text },
   cellPrimary: { fontWeight: '600' },
+  tick: { color: colors.success, fontWeight: '700' },
   right: { textAlign: 'right' },
   empty: { ...font.body, color: colors.textMuted, textAlign: 'center', padding: spacing.xl },
 });

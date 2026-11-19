@@ -1,4 +1,4 @@
-import { choicesOf, openChecks, optionText, pendingChoices, verdictOf, verificationOf, Verification } from '../src/lib/verification';
+import { choicesOf, lineVerdictsOf, linesVerifiedLabel, openChecks, optionText, pendingChoices, verdictOf, verificationOf, Verification } from '../src/lib/verification';
 
 const v = (over: Partial<Verification> = {}): Verification => ({
   checks: [
@@ -96,5 +96,25 @@ describe('choices', () => {
   test('a decided choice is no longer pending', () => {
     const decided = { meta: { choices: [{ ...payload.meta.choices[0], chosen: 0 }] } };
     expect(pendingChoices(decided)).toEqual([]);
+  });
+});
+
+describe('line verdicts', () => {
+  const payload = (lines: unknown) => ({ meta: { verification: { ...v(), lines } } });
+  const two = [
+    { status: 'verified', note: 'Amount is quantity x rate.' },
+    { status: 'check', note: 'Quantity x rate is 100.00; the amount is 90.00.' },
+  ];
+
+  test('reads each line verdict and counts the verified ones', () => {
+    const verdicts = lineVerdictsOf(payload(two), 2);
+    expect(verdicts?.[1].status).toBe('check');
+    expect(linesVerifiedLabel(verdicts)).toBe('1 of 2 lines verified');
+  });
+
+  test('shows none when the lines on screen are not the ones judged', () => {
+    expect(lineVerdictsOf(payload(two), 3)).toBeNull();
+    expect(lineVerdictsOf({ meta: { verification: v() } }, 2)).toBeNull();
+    expect(linesVerifiedLabel(null)).toBeNull();
   });
 });

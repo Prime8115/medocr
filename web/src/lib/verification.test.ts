@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { choicesOf, openChecks, optionText, pendingChoices, verdictOf, verificationOf, type Verification } from './verification';
+import { choicesOf, lineVerdictsOf, linesVerifiedLabel, openChecks, optionText, pendingChoices, verdictOf, verificationOf, type Verification } from './verification';
 
 const v = (over: Partial<Verification> = {}): Verification => ({
   checks: [
@@ -109,5 +109,24 @@ describe('filledNotes - learned columns', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain('Learned from your earlier corrections');
     expect(notes[0]).toContain('RETAILER RATE');
+  });
+});
+
+describe('line verdicts', () => {
+  const payload = (lines: unknown) => ({ meta: { verification: { checks: [], passed: 0, failed: 0, verdict: 'incomplete', lines } } });
+  const two = [
+    { status: 'verified', note: 'Amount is quantity x rate.' },
+    { status: 'check', note: 'Quantity x rate is 100.00; the amount is 90.00.' },
+  ];
+
+  test('reads each line verdict and counts the verified ones', () => {
+    const verdicts = lineVerdictsOf(payload(two), 2);
+    expect(verdicts?.[1].status).toBe('check');
+    expect(linesVerifiedLabel(verdicts)).toBe('1 of 2 lines verified');
+  });
+
+  test('shows none when the lines on screen are not the ones judged', () => {
+    expect(lineVerdictsOf(payload(two), 3)).toBeNull();
+    expect(linesVerifiedLabel(null)).toBeNull();
   });
 });
