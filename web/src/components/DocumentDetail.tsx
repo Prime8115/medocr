@@ -23,6 +23,8 @@ import { formatMoney } from '../lib/table';
 import { kindLabel, otherParts, pagesLabel, partTitle } from '../lib/parts';
 import {
   choicesOf,
+  lineVerdictsOf,
+  linesVerifiedLabel,
   openChecks,
   optionText,
   pendingChoices,
@@ -276,7 +278,11 @@ export default function DocumentDetail() {
   const billTotal = getLeaf(fields, 'invoice.total_amount')?.value ?? null;
   const rawItems = (fields.line_items as Record<string, Leaf>[]) || [];
 
+  // The server's verdict on each line's figures: verified, or to check.
+  const lineVerdicts = lineVerdictsOf(doc.payload, itemSections.length);
+
   const needsAttention = (i: number): boolean => {
+    if (lineVerdicts?.[i]?.status === 'check') return true;
     const section = itemSections[i];
     if (section?.fields.some((f) => isLowConfidence(getLeaf(fields, f.path)?.confidence ?? null))) return true;
     if (inv?.connected) {
@@ -297,6 +303,7 @@ export default function DocumentDetail() {
       item: rawItems[i] ?? {},
       index: i,
       attention: needsAttention(i),
+      verified: lineVerdicts?.[i]?.status === 'verified',
       matchScore: matchFor(i)?.candidates?.length ? matchFor(i)!.best_score : null,
     }));
 
@@ -517,6 +524,7 @@ export default function DocumentDetail() {
             ) : null}
             <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>
               {itemSections.length} items{meta?.pages ? ` · ${pagesLabel(meta.pages)}` : ''}
+              {linesVerifiedLabel(lineVerdicts) ? ` · ${linesVerifiedLabel(lineVerdicts)}` : ''}
               {inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}
             </span>
           </div>
@@ -684,6 +692,13 @@ export default function DocumentDetail() {
               <h3 style={{ margin: 0 }}>{itemSections[editItem].title}</h3>
               <button className="btn-secondary" disabled={busy != null} onClick={() => { void saveAndCloseItem(); }}>{busy === 'save' ? 'Saving…' : 'Save & close'}</button>
             </div>
+            {lineVerdicts?.[editItem] ? (
+              <div style={{ marginTop: -8, marginBottom: 14, fontSize: 13,
+                color: lineVerdicts[editItem].status === 'verified' ? 'var(--success)' : 'var(--warning)' }}>
+                {lineVerdicts[editItem].status === 'verified' ? '✓ Figures verified. ' : '⚠ Check this line. '}
+                {lineVerdicts[editItem].note}
+              </div>
+            ) : null}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
               {itemSections[editItem].fields.map((spec) => {
                 const leaf = getLeaf(fields, spec.path);

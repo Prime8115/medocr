@@ -44,6 +44,8 @@ import {
   Choice,
   choicesOf,
   filledNotes,
+  lineVerdictsOf,
+  linesVerifiedLabel,
   openChecks,
   optionText,
   pendingChoices,
@@ -482,7 +484,11 @@ export default function ReviewScreen() {
   const matchForIndex = (i: number): MatchItem | undefined =>
     inv?.connected ? inv.items[i] : undefined;
 
+  // The server's verdict on each line's figures: verified, or to check.
+  const lineVerdicts = lineVerdictsOf(payload, itemSections.length);
+
   const needsAttention = (section: Section, i: number): boolean => {
+    if (lineVerdicts?.[i]?.status === 'check') return true;
     if (section.fields.some((f) => isLowConfidence(getLeaf(fields, f.path)?.confidence ?? null))) return true;
     if (inv?.connected) {
       const mi = inv.items[i];
@@ -516,6 +522,7 @@ export default function ReviewScreen() {
     item: rawItems[i] ?? {},
     index: i,
     attention: needsAttention(section, i),
+    verified: lineVerdicts?.[i]?.status === 'verified',
   }));
   const slabFooter = isInvoice && slabRows.length > 0
     ? <GstSlabSummary rows={slabRows} /> : undefined;
@@ -571,7 +578,7 @@ export default function ReviewScreen() {
             </Text>
             <Text style={styles.confidence}>
               {itemSections.length > 0
-                ? `${itemSections.length} items${meta?.pages ? ` · ${pagesLabel(meta.pages)}` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
+                ? `${itemSections.length} items${meta?.pages ? ` · ${pagesLabel(meta.pages)}` : ''}${linesVerifiedLabel(lineVerdicts) ? ` · ${linesVerifiedLabel(lineVerdicts)}` : ''}${inv?.connected ? ` · ${inv.matched}/${inv.total} matched` : ''}`
                 : `${t('review')} · ${confidencePercent(doc.overall_confidence)}`}
             </Text>
           </View>
@@ -723,7 +730,8 @@ export default function ReviewScreen() {
             ) : null
           }
           renderItem={({ item: { section, i } }) => (
-            <ItemRow section={section} fields={fields} match={matchForIndex(i)} onPress={() => setEditIndex(i)} />
+            <ItemRow section={section} fields={fields} match={matchForIndex(i)} verified={lineVerdicts?.[i]?.status === 'verified'}
+              onPress={() => setEditIndex(i)} />
           )}
         />
       )}
@@ -1015,6 +1023,12 @@ export default function ReviewScreen() {
                   <Text style={styles.modalDone}>{saving ? 'Saving…' : 'Save & close'}</Text>
                 </TouchableOpacity>
               </View>
+              {lineVerdicts?.[editIndex] ? (
+                <Text style={[styles.lineVerdict, lineVerdicts[editIndex].status === 'verified' ? styles.lineVerdictOk : styles.lineVerdictCheck]}>
+                  {lineVerdicts[editIndex].status === 'verified' ? '✓ Figures verified. ' : '⚠ Check this line. '}
+                  {lineVerdicts[editIndex].note}
+                </Text>
+              ) : null}
               <ScrollView>
                 {itemSections[editIndex].fields.map((spec) => {
                   const leaf = getLeaf(fields, spec.path);
@@ -1101,11 +1115,13 @@ function ItemRow({
   section,
   fields,
   match,
+  verified,
   onPress,
 }: {
   section: Section;
   fields: Fields;
   match?: MatchItem;
+  verified?: boolean;
   onPress: () => void;
 }) {
   const primary = getLeaf(fields, section.fields[0].path)?.value || '(unnamed)';
@@ -1115,7 +1131,10 @@ function ItemRow({
   return (
     <TouchableOpacity style={styles.itemRow} onPress={onPress} activeOpacity={0.7}>
       <View style={{ flex: 1 }}>
-        <Text style={styles.itemPrimary} numberOfLines={1}>{primary}</Text>
+        <Text style={styles.itemPrimary} numberOfLines={1}>
+          {verified ? <Text style={styles.lineTick}>✓ </Text> : null}
+          {primary}
+        </Text>
         {secondary ? <Text style={styles.itemSecondary} numberOfLines={1}>{secondary}</Text> : null}
       </View>
       {best != null && (
@@ -1128,6 +1147,10 @@ function ItemRow({
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: spacing.xl },
+  lineTick: { color: colors.success, fontWeight: '700' },
+  lineVerdict: { ...font.caption, marginTop: -spacing.sm, marginBottom: spacing.md },
+  lineVerdictOk: { color: colors.success },
+  lineVerdictCheck: { color: colors.warning },
   parts: { marginTop: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, backgroundColor: colors.primaryTint },
   partsTitle: { ...font.label, color: colors.text },
   partsLink: { ...font.body, color: colors.primary, paddingVertical: spacing.sm },

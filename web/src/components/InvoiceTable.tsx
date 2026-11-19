@@ -18,6 +18,8 @@ export interface TableRow {
   /** Index into the untouched line_items array — what the edit modal needs. */
   index: number;
   attention: boolean;
+  /** Its quantity, rate and amount agree to the paisa (server's line verdict). */
+  verified?: boolean;
   /** Inventory match score, when inventory is connected. */
   matchScore?: number | null;
 }
@@ -113,6 +115,8 @@ export default function InvoiceTable({
                       style={{ ...cellStyle(column, ci === 0, low, rowBg), borderTop: '1px solid var(--border-glass)' }}
                       title={cellText(row.item, column)}
                     >
+                      {column.key === 'description' && row.verified
+                        ? <span style={{ color: 'var(--success)', fontWeight: 700 }} title="Figures verified">✓ </span> : null}
                       {cellText(row.item, column) || '—'}
                     </td>
                   );

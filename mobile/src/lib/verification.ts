@@ -24,6 +24,31 @@ export interface Verification {
   verdict: 'verified' | 'needs_check' | 'checks_passed' | 'incomplete' | 'reviewed';
   review_requirements?: Check[];
   acknowledged?: { id: string; by?: string; at?: string }[];
+  /** Each line: its quantity, rate and amount agree to the paisa ("verified"),
+   * or not ("check"), and why. Absent on documents read before it existed. */
+  lines?: LineVerdict[];
+  lines_verified?: number;
+}
+
+export interface LineVerdict {
+  status: 'verified' | 'check';
+  note: string;
+}
+
+/** The server's verdict on each line - null when there is none, or when the
+ * lines on screen no longer match the ones it judged (one added or removed
+ * and not yet saved), so a verdict is never shown on the wrong line. */
+export function lineVerdictsOf(payload: unknown, lineCount: number): LineVerdict[] | null {
+  const lines = verificationOf(payload)?.lines;
+  if (!Array.isArray(lines) || lines.length === 0 || lines.length !== lineCount) return null;
+  return lines;
+}
+
+/** "12 of 14 lines verified", or null when there are no verdicts. */
+export function linesVerifiedLabel(verdicts: LineVerdict[] | null): string | null {
+  if (!verdicts) return null;
+  const ok = verdicts.filter((v) => v.status === 'verified').length;
+  return `${ok} of ${verdicts.length} line${verdicts.length === 1 ? '' : 's'} verified`;
 }
 
 export function verificationOf(payload: unknown): Verification | null {

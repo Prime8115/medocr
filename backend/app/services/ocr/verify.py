@@ -22,6 +22,7 @@ This wraps the integrity checks in invoice_checks - it does not re-implement
 them - and adds the identities those did not cover.
 """
 import datetime as _dt
+import itertools
 import re
 from typing import Dict, Iterable, List, Optional
 
@@ -544,6 +545,180 @@ def _verdict(c: _Checks, check_id: str, label: str, tested: int, bad: list, prob
         c.add(check_id, label, "fail", f"{where}: {problem}.", fields)
 
 
+# ------------------------------------------------------------ line verdicts ---
+
+# The line fields a verdict vouches for: a failed check on one of these makes
+# the line one to check. A 7-digit HSN or an odd expiry does not unsettle the
+# figures - those checks speak for themselves.
+_FIGURE = re.compile(r"quantity|free_quantity|rate|amount|gross_amount|net_amount|discount_\w+|scheme_\w+"
+                     r"|cd_\w+|gst_percent|(?:cgst|sgst|igst|utgst)_(?:percent|amount)")
+
+
+def _line_bases(it: dict) -> List[tuple]:
+    """(how, value): what the line's amount may be, from its quantity and rate
+    and the discounts it prints - each applied the ways bills apply them."""
+    q, r = _n(it.get("quantity")), _n(it.get("rate"))
+    if q is None or r is None:
+        return []
+    free = _n(it.get("free_quantity")) or 0.0
+    pcts = [x for x in (_n(it.get(k)) for k in ("discount_percent", "scheme_percent", "cd_percent"))
+            if x and 0 < x < 100]
+    offs = [x for x in (_n(it.get(k)) for k in ("discount_amount", "cd_amount", "scheme_value")) if x and x > 0]
+    out = []
+    for qty, qhow in ((q, ""), (q - free, " less the free quantity") if 0 < free < q else (None, "")):
+        if qty is None:
+            continue
+        base = qty * r
+        priced = [("quantity x rate" + qhow, base)]
+        for k in range(1, len(pcts) + 1):
+            for combo in itertools.combinations(pcts, k):
+                each = 1.0
+                for p in combo:
+                    each *= 1 - p / 100.0
+                priced.append(("quantity x rate less its discount %" + qhow, base * each))
+                priced.append(("quantity x rate less its discount %" + qhow, base * (1 - sum(combo) / 100.0)))
+        for how, value in priced:
+            out.append((how, value))
+            for k in range(1, len(offs) + 1):
+                for combo in itertools.combinations(offs, k):
+                    out.append((how + " and its discount", value - sum(combo)))
+    return out
+
+
+def _tie(it: dict, share: Optional[float] = None) -> Optional[str]:
+    """How the line's figures agree, to the paisa, or None when they do not."""
+    q, r, a = _n(it.get("quantity")), _n(it.get("rate")), _n(it.get("amount"))
+    if q is None or r is None or a is None:
+        return None
+    # Rate printed to the paisa: a quantity of 840 can be 4.20 off by rounding.
+    tol = 0.02 + 0.005 * abs(q)
+    for how, value in _line_bases(it):
+        if abs(value - a) <= tol:
+            return how
+        if share and abs(value * share - a) <= tol + 0.0005 * a:
+            return how + f" less the same {100 * (1 - share):.2f}% as every line of the bill"
+    gross, off = _n(it.get("gross_amount")), _n(it.get("discount_amount"))
+    if gross is not None and abs(q * r - gross) <= tol and off is not None and abs(gross - off - a) <= 0.02:
+        return "gross less its discount"
+    return None
+
+
+def _unprinted_cash_discount(items: List[dict]) -> Optional[float]:
+    """The share every line keeps of quantity x rate when the bill takes the
+    same off each and prints no figure for it - Zuventus and Sanofi charge
+    99.5% on every line, Brinton 10/11 (one in eleven free). None unless at
+    least two lines show the same share to four places, from 90% to under
+    100%."""
+    shares = []
+    for it in items:
+        q, r, a = _n(it.get("quantity")), _n(it.get("rate")), _n(it.get("amount"))
+        if q and r and a and q * r > 0 and _tie(it) is None:
+            shares.append(a / (q * r))
+    if len(shares) < 2 or not 0.9 <= min(shares) < 0.9999 or max(shares) - min(shares) > 0.0001:
+        return None
+    return sum(shares) / len(shares)
+
+
+def _discount_fits(it: dict, how: str) -> Optional[str]:
+    """None when every discount the line prints is part of its figures; else
+    the discount that is not. A line can agree without its discount and still
+    be right, when the discount sits elsewhere: inside the rate (Gujarat
+    Enzyme's PTS 6,750 less 3% is its rate 6,547.50), in the gross (Lupin),
+    in the tax base only (Aurowin taxes 95% of the amount), or as the value of
+    the free goods (Troikaa). A discount none of that explains - Brinton's
+    "70.20%", its rate read into the discount column - is not."""
+    # The line's own discounts already in its figures, or nothing charged. A
+    # bill-wide cash discount does not account for a discount printed on the
+    # line: Brinton's three lines keep 10/11 of quantity x rate each, one of
+    # eleven free, with the free goods' value read into "discount %".
+    if "its discount" in how or "free line" in how:
+        return None
+    q, r, a = _n(it.get("quantity")), _n(it.get("rate")), _n(it.get("amount"))
+    free = _n(it.get("free_quantity")) or 0.0
+    gross, net = _n(it.get("gross_amount")), _n(it.get("net_amount"))
+    heads = [(_n(it.get(f"{h}_percent")), _n(it.get(f"{h}_amount"))) for h in _HEADS]
+    gst = sum(p for p, t in heads if p) or _n(it.get("gst_percent")) or 0.0
+    tax = sum(t for p, t in heads if t is not None) if any(t is not None for p, t in heads) else (
+        net - a if net is not None and a is not None else None)
+    for key in ("discount_percent", "scheme_percent", "cd_percent"):
+        d = _n(it.get(key))
+        if not d or d <= 0:
+            continue
+        keep = 1 - d / 100.0
+        fits = (
+            (0 < d < 100 and gross is not None and _close(gross * keep, a, 0.05, 0.001))
+            or (0 < d < 100 and any(p is not None and _close(p * keep, r, 0.011, 0.0005)
+                                    for p in (_n(it.get(k)) for k in ("ptr", "pts", "mrp"))))
+            or (0 < d < 100 and gst and tax is not None and _close(a * keep * gst / 100.0, tax, 0.1, 0.01))
+            # A scheme printed as a share of the goods: 2 free on 12 is 16.66%.
+            or (free and q and _close(100.0 * free / (q + free), d, 0.05, 0.0) or free and q
+                and _close(100.0 * free / q, d, 0.05, 0.0))
+        )
+        if not fits:
+            return f"{key.replace('_', ' ')} {d:g}%"
+    for key in ("discount_amount", "cd_amount", "scheme_value"):
+        off = _n(it.get(key))
+        if not off or off <= 0:
+            continue
+        fits = ((free and r is not None and _close(free * r, off, 0.05, 0.001))
+                or (gross is not None and _close(gross - off, a, 0.05, 0.001))
+                or (gst and tax is not None and _close((a - off) * gst / 100.0, tax, 0.1, 0.01)))
+        if not fits:
+            return f"{key.replace('_', ' ')} {off:,.2f}"
+    return None
+
+
+def line_verdicts(items: List[dict], checks: List[dict]) -> List[dict]:
+    """Each line, verified or to check, and why.
+
+    Verified: its quantity, rate and amount agree to the paisa - after the
+    discounts the line itself prints - and no check found anything wrong on
+    it. A misread figure almost never lands on a value that still agrees, so
+    such a line can be trusted without looking at the paper. Anything else is
+    to check, saying what did not agree. This vouches for the figures only:
+    names, batches and dates are not arithmetic.
+    """
+    implicated: Dict[int, List[str]] = {}
+    for check in checks:
+        if check.get("status") != "fail":
+            continue
+        for path in check.get("fields") or []:
+            m = re.fullmatch(r"line_items\[(\d+)\]\.(\w+)", path)
+            if m and _FIGURE.fullmatch(m.group(2)) and check["label"] not in implicated.setdefault(int(m.group(1)), []):
+                implicated[int(m.group(1))].append(check["label"])
+    share = _unprinted_cash_discount(items)
+    out = []
+    for i, it in enumerate(items):
+        q, r, a = _n(it.get("quantity")), _n(it.get("rate")), _n(it.get("amount"))
+        missing = [k for k, x in (("quantity", q), ("rate", r), ("amount", a)) if x is None]
+        how = None
+        if missing:
+            note = f"No {' or '.join(missing)} to check the line by."
+        elif a == 0:
+            # Free goods (rate 0) or a line discounted to nothing - Ajanta's
+            # expired returns credited at 100% special discount.
+            off = _n(it.get("discount_amount"))
+            if r == 0 or (off is not None and abs(q * r - off) <= 0.02 + 0.005 * abs(q)):
+                how = "a free line, charged nothing"
+                note = "Charged nothing, as the bill shows."
+            else:
+                note = "Charged nothing although it has a rate - check it is free."
+        else:
+            how = _tie(it, share)
+            note = "" if how else (f"Quantity x rate is {q * r:,.2f}; the amount is {a:,.2f} "
+                                   "and the line prints no discount that explains it.")
+        loose = _discount_fits(it, how) if how else None
+        if loose:
+            how, note = None, (f"Quantity x rate gives the amount, so the printed {loose} is not part "
+                               "of it - check that discount against the paper.")
+        elif how and implicated.get(i):
+            how, note = None, "Figures agree, but: " + "; ".join(implicated[i]) + "."
+        elif how:
+            note = f"Amount is {how}."
+        out.append({"status": "verified" if how else "check", "note": note})
+    return out
+
+
 # -------------------------------------------------------------------- entry ---
 
 def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
@@ -585,10 +760,13 @@ def verify_invoice(fields: dict, report: dict, today: Optional[_dt.date] = None,
 
     from app.services.ocr.coverage import requirements, summarize
 
+    lines = line_verdicts(items, c.items)
     return summarize({
         "checks": c.items,
         "review_requirements": requirements(fields, report),
         "acknowledged": [],
+        "lines": lines,
+        "lines_verified": sum(x["status"] == "verified" for x in lines),
     })
 
 

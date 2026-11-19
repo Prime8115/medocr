@@ -2,7 +2,7 @@
   "expo": {
     "name": "mobile",
     "slug": "mobile",
-    "version": "1.5.16",
+    "version": "1.5.17",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "mobile",
@@ -11,7 +11,7 @@
       "supportsTablet": true
     },
     "android": {
-      "versionCode": 116,
+      "versionCode": 117,
       "package": "com.mediscan.ocr",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
