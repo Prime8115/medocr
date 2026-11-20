@@ -671,6 +671,21 @@ def _discount_fits(it: dict, how: str) -> Optional[str]:
     return None
 
 
+def _fewer_units(q: float, r: float, a: float) -> Optional[str]:
+    """The note for a line charged for a whole number of units fewer than it
+    lists - Hetero's credit note lists 117 and credits exactly 97 x 20.38,
+    the other 20 most likely free goods it does not show. Still to check: a
+    quantity misread from a photo would look the same."""
+    if not r or not 0 < a < q * r:
+        return None
+    units = a / r
+    whole = round(units)
+    if whole < 1 or abs(units - whole) * r > 0.011:
+        return None
+    return (f"The amount is exactly {whole:g} x {r:,.2f}: {q - whole:g} of the {q:g} units are not "
+            "charged, most likely free goods the bill does not show. Confirm the quantity on the paper.")
+
+
 def line_verdicts(items: List[dict], checks: List[dict]) -> List[dict]:
     """Each line, verified or to check, and why.
 
@@ -713,7 +728,8 @@ def line_verdicts(items: List[dict], checks: List[dict]) -> List[dict]:
                 note = "Charged nothing although it has a rate - check it is free."
         else:
             how = _tie(it, share)
-            note = "" if how else (f"Quantity x rate is {q * r:,.2f}; the amount is {a:,.2f} "
+            note = "" if how else (_fewer_units(q, r, a) or
+                                   f"Quantity x rate is {q * r:,.2f}; the amount is {a:,.2f} "
                                    "and the line prints no discount that explains it.")
         loose = _discount_fits(it, how) if how else None
         if loose:

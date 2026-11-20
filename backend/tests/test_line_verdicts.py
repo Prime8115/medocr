@@ -118,3 +118,13 @@ def test_a_free_supply_with_nil_tax_is_a_free_line():
                  cgst_amount="0.00", sgst_amount="0.00")
     taxed = _line(quantity="1", rate="22.50", amount="0", cgst_amount="1.35", sgst_amount="1.35")
     assert _status([free, taxed]) == ["verified", "check"]
+
+
+def test_a_line_charged_for_fewer_whole_units_says_so():
+    """Hetero's credit note: 117 listed, exactly 97 x 20.38 credited. Still to
+    check - a misread quantity would look the same - but the note says why."""
+    out = line_verdicts([_line(quantity="117", rate="20.38", amount="1976.86"),
+                         _line(quantity="10", rate="18.50", amount="158.00")], [])
+    assert [v["status"] for v in out] == ["check", "check"]
+    assert "exactly 97 x 20.38" in out[0]["note"] and "20 of the 117" in out[0]["note"]
+    assert "no discount that explains it" in out[1]["note"]
