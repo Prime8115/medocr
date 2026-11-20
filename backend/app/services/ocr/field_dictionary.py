@@ -55,12 +55,17 @@ LINE_COLUMNS: Dict[str, Tuple[List[str], List[str]]] = {
     # never be mistaken for the billed quantity.
     # "Fr. Qty." (Kanchan) normalises to "frqty", which matched nothing before.
     # "D.Qty" (IPCA): the deal quantity - goods given free on the scheme.
-    # Not "Bonus Disc." (Medley): a discount rate, not free goods.
-    "free_quantity": (["freeqty", "frqty", "schemeqty", "dealqty", "free", "fqty", "scheme", "bonus"],
+    # Not "Bonus Disc." (Medley): a discount rate, not free goods - but "Disc.
+    # Qty" (K Sales) is: the quantity given as discount, read whole.
+    "free_quantity": (["freeqty", "frqty", "schemeqty", "dealqty", "discqty", "free", "fqty", "scheme",
+                       "bonus"],
                       ["%", "value", "amount", "disc"]),
     # "Billed Qty." before a bare "qty": Cipla prints "Loose Qty" (mostly empty)
     # first, and its billed quantity is the one the stock and the amount follow.
-    "quantity": (["quantity", "billedqty", "billqty", "qty", "nos", "units"], ["free", "fqty", "scheme", "bonus", "%"]),
+    # "Sale Qty" before a bare "qty": Alkem prints "Total Qty | Sale Qty |
+    # Discount", the total being what is sold plus what is given free.
+    "quantity": (["quantity", "billedqty", "billqty", "saleqty", "qty", "nos", "units"],
+                 ["free", "fqty", "scheme", "bonus", "%"]),
     "mrp": (["mrp"], ["%"]),
     # Lupin heads "Trade Price/Unit | TP/ PTR Value": the price, then the
     # line's value at it - never the PTR.
@@ -82,7 +87,9 @@ LINE_COLUMNS: Dict[str, Tuple[List[str], List[str]]] = {
     "discount_percent": (["disc%", "discount%", "discount", "disc", "dis"],
                          ["amt", "amount", "value", "rs", "price"]),
     # "Spl.Dis. Amount" (Ajanta) - "Dis." as well as "Disc.".
-    "discount_amount": (["discamt", "discountamt", "discountamount", "discamount", "disamount", "disamt"], ["%"]),
+    # "Value Disc (in Rs)" (Cipla Pharma): the discount in rupees.
+    "discount_amount": (["discamt", "discountamt", "discountamount", "discamount", "disamount", "disamt",
+                         "valuedisc"], ["%"]),
     "cd_percent": (["cd%", "cashdisc%", "cashdiscount%"], ["amt", "amount", "rs"]),
     "cd_amount": (["cdamt", "cdamount", "cashdiscamt", "cashdiscountamt"], ["%"]),
     "wp_percent": (["wp%", "wpdisc%"], ["amt", "amount"]),

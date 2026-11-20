@@ -163,7 +163,9 @@ def _keyword_columns(header_row, forbidden: Optional[dict] = None) -> dict:
                     continue
                 # "Taxable Amt after Disc." (Zuventus) IS the taxable amount;
                 # the discount it mentions is already taken off.
-                excluded = any(e in h for e in excludes) and not (
+                # A heading that IS the keyword is that field, whatever it
+                # spells: "Disc. Qty" (K Sales) is free goods, not a discount.
+                excluded = any(e in h for e in excludes) and h != keyword and not (
                     field == "amount" and keyword.startswith("taxable")) and not (
                     # "PRODUCT NAME (HSN CODE)" (Mankind) is the product's
                     # name, whatever else the heading mentions - and so is
@@ -1430,6 +1432,30 @@ _PACK_IN_NAME = re.compile(
     re.I)
 
 
+def _discount_reads_as(item: dict, figure: float) -> Optional[str]:
+    """Whether a discount figure the line prints is "money" or a "percent",
+    by the line's own arithmetic: what is left after taking it off - as
+    rupees, or as a rate - must be the taxable amount, to the paisa. None
+    when neither or both fit. The line's value before the discount is its
+    gross, or its quantity at the billed rate, PTS or PTR (the billed rate is
+    chosen only later)."""
+    amount = _num((item.get("amount") or {}).get("value"))
+    if amount is None or not 0 < figure:
+        return None
+    a = float(amount)
+    befores = [_num((item.get("gross_amount") or {}).get("value"))]
+    sold = _num((item.get("quantity") or {}).get("value"))
+    if sold:
+        befores += [float(sold) * float(p) for p in
+                    (_num((item.get(k) or {}).get("value")) for k in ("rate", "pts", "ptr")) if p]
+    befores = [float(b) for b in befores if b]
+    money = any(abs(b - figure - a) <= 0.02 for b in befores)
+    percent = figure < 100 and any(abs(b * (1 - figure / 100) - a) <= max(0.05, 0.0005 * a) for b in befores)
+    if money != percent:
+        return "money" if money else "percent"
+    return None
+
+
 def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 interstate: Optional[bool] = None,
                 local: Optional[str] = None) -> Optional[dict]:
@@ -1809,10 +1835,30 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
         item["quantity"] = _f(plus.group(1))
         item["free_quantity"] = _f(plus.group(2))
 
+    # Goods given as the "discount": Alkem's "Total Qty 840 | Sale Qty 700 |
+    # Discount 140" - the discount column counts the free units, the total
+    # less the quantity sold.
+    total_q = _num((item.get("total_quantity") or {}).get("value"))
+    sold = _num((item.get("quantity") or {}).get("value"))
+    if total_q is not None and sold is not None and not (item.get("free_quantity") or {}).get("value"):
+        for key in ("discount_percent", "discount_amount"):
+            given = _num((item.get(key) or {}).get("value"))
+            if given is not None and abs(float(total_q) - float(sold) - float(given)) < 0.001:
+                item["free_quantity"] = _f(f"{float(given):g}")
+                item.pop(key)
+                break
+
     # A "discount %" over 100 is money, not a rate: the ERP above heads its
     # discount column just "DISC" and prints 870.46 rupees in it.
     disc = _num((item.get("discount_percent") or {}).get("value"))
     if disc is not None and float(disc) > 100 and not (item.get("discount_amount") or {}).get("value"):
+        item["discount_amount"] = item.pop("discount_percent")
+    # ...and so is one under 100 that the line's own figures take off as
+    # rupees, not as a percentage: Brinton's "Disc./Scheme" column holds
+    # 553.20 on one line and 70.20 on the next - 772.20 less 70.20 is the
+    # taxable 702.00, where 70.20% off would leave 230.
+    elif disc is not None and 0 < float(disc) <= 100 and not (item.get("discount_amount") or {}).get("value") \
+            and _discount_reads_as(item, float(disc)) == "money":
         item["discount_amount"] = item.pop("discount_percent")
 
     # Anything the mapping did not claim is kept verbatim under the supplier's
@@ -2087,12 +2133,26 @@ def _build_item(row, cols: dict, header_row, gst_cols: List[int],
                 # Raptakos runs "Additional Discount" into its taxable value and
                 # SGST % headings: that column is claimed, and its 9.00 is a rate.
                 continue
+            # "Disc % / Amount" (Shreya Life) over "16.67 /" and "148.16" on
+            # the line below: the rate, then the money.
+            both = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*/\s*([\d,]+\.\d+)\s*", str(row[idx] or ""))
+            if "%" in head and both:
+                item["discount_percent"] = _f(both.group(1))
+                item["discount_amount"] = _f(both.group(2).replace(",", ""))
+                break
             # The line's own figures only: a footer run in beneath ("250
             # TABLETS 80 ," from Cipla's pending items) is not its discount.
             numbers = _NUM.findall(str(row[idx] or "").split("\n")[0])
             if numbers:
                 item["discount_amount"] = _f(numbers[-1].replace(",", ""))
             break
+
+    # The other way round: a "discount amount" the line's figures take off as
+    # a percentage - 16.67 off 888.80 leaving 740.64 is 16.67%, not rupees.
+    off = _num((item.get("discount_amount") or {}).get("value"))
+    if off is not None and not (item.get("discount_percent") or {}).get("value") \
+            and _discount_reads_as(item, float(off)) == "percent":
+        item["discount_percent"] = item.pop("discount_amount")
 
     # NetAmount is what the client's import posts against the purchase. Most
     # invoices do not print it as a column - they print the taxable value and

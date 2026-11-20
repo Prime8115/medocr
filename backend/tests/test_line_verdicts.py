@@ -109,3 +109,12 @@ def test_the_verification_carries_the_line_verdicts():
               "invoice": {"total_amount": _f("343.00")}}
     v = verify_invoice(fields, {"total_reconciles": True})
     assert [x["status"] for x in v["lines"]] == ["verified", "check"] and v["lines_verified"] == 1
+
+
+def test_a_free_supply_with_nil_tax_is_a_free_line():
+    """Cipla Health's "1-F" strip: valued, discounted, charged nothing, its
+    CGST and SGST printed as 0.00."""
+    free = _line(quantity="1", rate="22.50", gross_amount="22.50", discount_amount="3.75", amount="0",
+                 cgst_amount="0.00", sgst_amount="0.00")
+    taxed = _line(quantity="1", rate="22.50", amount="0", cgst_amount="1.35", sgst_amount="1.35")
+    assert _status([free, taxed]) == ["verified", "check"]
